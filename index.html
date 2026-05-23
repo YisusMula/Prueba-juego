@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pong</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>Pong</h1>
+      <section class="panel">
+        <label>
+          Modo de juego:
+          <select id="mode">
+            <option value="cpu">1 jugador vs máquina</option>
+            <option value="pvp">2 jugadores</option>
+          </select>
+        </label>
+        <label id="difficulty-wrapper">
+          Dificultad IA:
+          <select id="difficulty">
+            <option value="easy">Fácil</option>
+            <option value="medium" selected>Media</option>
+            <option value="hard">Difícil</option>
+          </select>
+        </label>
+        <button id="restart" type="button">Reiniciar partida</button>
+      </section>
+      <section class="scoreboard">
+        <div>Jugador 1: <span id="left-score">0</span></div>
+        <div id="right-label">Máquina: <span id="right-score">0</span></div>
+      </section>
+      <canvas id="game" width="800" height="500" aria-label="Juego de Pong"></canvas>
+      <p class="hint">
+        Controles: Jugador 1 (W/S). Jugador 2 (↑/↓) en modo 2 jugadores.
+      </p>
+      <p id="winner" class="winner"></p>
+    </main>
+    <script src="./script.js"></script>
+  </body>
+</html>

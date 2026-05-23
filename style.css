@@ -1,0 +1,63 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  font-family: Arial, sans-serif;
+  background: #0b1020;
+  color: #e8edf8;
+}
+
+.app {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 20px;
+}
+
+h1 {
+  margin: 0;
+}
+
+.panel,
+.scoreboard {
+  width: min(800px, 95vw);
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+button,
+select {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #9fb2da;
+  background: #101a33;
+  color: #e8edf8;
+}
+
+canvas {
+  width: min(800px, 95vw);
+  height: auto;
+  border: 2px solid #9fb2da;
+  border-radius: 8px;
+  background: #050914;
+}
+
+.hint {
+  margin: 0;
+  opacity: 0.85;
+}
+
+.winner {
+  margin: 0;
+  font-weight: 700;
+  min-height: 24px;
+  color: #ffd56b;
+}
