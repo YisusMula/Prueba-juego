@@ -3,7 +3,8 @@
  */
 
 import { PATH_LENGTH, positionAtDistance } from './map';
-import { statsAtLevel, towerType } from './towers';
+import { enemyType } from './enemies';
+import { frostFreezeCapacity, statsAtLevel, towerType } from './towers';
 import { WAVE_REST } from './state';
 import type { Enemy, GameState, Projectile, Tower } from './state';
 import {
@@ -20,9 +21,34 @@ export const FIXED_DT = 1 / 60;
 /** Tope de pasos por frame, para no encadenar cálculos tras un parón. */
 export const MAX_STEPS_PER_FRAME = 5;
 
+/** Cuánto se reduce la velocidad de un enemigo congelado por la torre de hielo. */
+export const FREEZE_SLOW_FACTOR = 0.06;
+/** Segundos que dura el efecto de congelación tras cada impacto. */
+export const FREEZE_DURATION = 1.6;
+
+/**
+ * Tras golpear una torre, segundos en los que el enemigo no puede volver a
+ * engancharse a ninguna. Un enemigo en golpe no se mueve, así que sin esta
+ * pausa seguiría exactamente donde estaba al terminar y se reengancharía a
+ * la misma torre en el acto, quedándose clavado para siempre en vez de
+ * seguir su camino.
+ */
+export const MELEE_REENGAGE_COOLDOWN = 1.5;
+
 function canTarget(tower: Tower, enemy: Enemy): boolean {
   const type = towerType(tower.typeId);
   return enemy.domain === 'air' ? type.canTargetAir : type.canTargetGround;
+}
+
+/**
+ * Progreso comparable hacia la meta, siga o no el enemigo el camino. Un
+ * enemigo fuera de camino no actualiza `distance`, así que se aproxima su
+ * avance sumando la distancia de fuga y lo recorrido en línea recta desde
+ * entonces; ambas magnitudes están en la misma escala de píxeles de mundo.
+ */
+function effectiveProgress(enemy: Enemy): number {
+  if (!enemy.offPath) return enemy.distance;
+  return enemy.breakawayDistance + enemy.offPathProgress;
 }
 
 /** Enemigo válido más avanzado en el recorrido dentro del alcance. */
@@ -34,7 +60,7 @@ export function findTarget(state: GameState, tower: Tower, range: number): Enemy
     const dx = enemy.x - tower.x;
     const dy = enemy.y - tower.y;
     if (dx * dx + dy * dy > range * range) continue;
-    if (best === null || enemy.distance > best.distance) best = enemy;
+    if (best === null || effectiveProgress(enemy) > effectiveProgress(best)) best = enemy;
   }
   return best;
 }
@@ -53,6 +79,59 @@ export function damageEnemy(state: GameState, enemy: Enemy, amount: number): voi
   addEffect(state, 'gold', enemy.x, enemy.y, { life: 0.8, text: `+${enemy.reward}` });
 }
 
+/** Torre viva más cercana dentro del alcance de golpe de un enemigo. */
+function findMeleeTarget(
+  state: GameState,
+  enemy: Enemy,
+  range: number,
+): Tower | null {
+  let best: Tower | null = null;
+  let bestDistSq = Infinity;
+  for (const tower of state.towers) {
+    if (tower.hp <= 0) continue;
+    const dx = tower.x - enemy.x;
+    const dy = tower.y - enemy.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq > range * range) continue;
+    if (distSq < bestDistSq) {
+      best = tower;
+      bestDistSq = distSq;
+    }
+  }
+  return best;
+}
+
+/** Resta estructura a la torre que el enemigo está golpeando, si sigue viva. */
+function applyMeleeDamage(state: GameState, enemy: Enemy, dpsAmount: number): void {
+  const target = state.towers.find((tower) => tower.id === enemy.meleeTargetId);
+  if (!target || target.hp <= 0) return;
+  target.hp = Math.max(0, target.hp - dpsAmount);
+}
+
+/**
+ * Intenta aplicar el efecto de congelación de una torre de hielo. Si la
+ * torre ya mantiene congelado al enemigo, solo refresca la duración sin
+ * gastar cupo; si no, gasta un hueco de su cupo por nivel. Sin cupo libre,
+ * el impacto no aplica congelación (pero sí su daño, ya aplicado aparte).
+ */
+function tryFreeze(state: GameState, towerId: number, enemy: Enemy): void {
+  const tower = state.towers.find((t) => t.id === towerId);
+  if (!tower) return;
+
+  tower.frozenTargets = tower.frozenTargets.filter((id) => {
+    const other = state.enemies.find((candidate) => candidate.id === id);
+    return other !== undefined && other.hp > 0 && other.slowTimer > 0;
+  });
+
+  const alreadyFrozen = tower.frozenTargets.includes(enemy.id);
+  if (!alreadyFrozen) {
+    const capacity = frostFreezeCapacity(tower.level);
+    if (tower.frozenTargets.length >= capacity) return;
+    tower.frozenTargets.push(enemy.id);
+  }
+  enemy.slowTimer = FREEZE_DURATION;
+}
+
 function updateWaves(state: GameState, dt: number): void {
   switch (state.wavePhase) {
     case 'preparing': {
@@ -64,7 +143,9 @@ function updateWaves(state: GameState, dt: number): void {
       state.spawnTimer -= dt;
       while (state.spawnTimer <= 0 && state.spawnQueue.length > 0) {
         const typeId = state.spawnQueue.shift();
-        if (typeId) spawnEnemy(state, typeId, state.currentWave.hpMultiplier);
+        if (typeId) {
+          spawnEnemy(state, typeId, state.currentWave.hpMultiplier, state.currentWave.speedMultiplier);
+        }
         state.spawnTimer += state.currentWave.spawnInterval;
       }
       if (state.spawnQueue.length === 0) state.wavePhase = 'clearing';
@@ -80,20 +161,72 @@ function updateWaves(state: GameState, dt: number): void {
   }
 }
 
+function leakEnemy(state: GameState, x: number, y: number): void {
+  loseLife(state);
+  state.stats.leaked += 1;
+  addEffect(state, 'leak', x, y, { life: 0.9, text: '-1' });
+}
+
 function updateEnemies(state: GameState, dt: number): void {
   const survivors: Enemy[] = [];
 
   for (const enemy of state.enemies) {
     if (enemy.hp <= 0) continue;
 
-    enemy.distance += enemy.speed * dt;
+    if (enemy.slowTimer > 0) enemy.slowTimer = Math.max(0, enemy.slowTimer - dt);
+    if (enemy.meleeCooldown > 0) enemy.meleeCooldown = Math.max(0, enemy.meleeCooldown - dt);
 
-    if (enemy.distance >= PATH_LENGTH) {
-      // Llega a la meta: resta una vida y no otorga oro.
-      loseLife(state);
-      state.stats.leaked += 1;
+    // Un enemigo que está golpeando una torre no avanza mientras dura el golpe.
+    if (enemy.meleeTimer > 0) {
+      enemy.meleeTimer = Math.max(0, enemy.meleeTimer - dt);
+      const type = enemyType(enemy.typeId);
+      applyMeleeDamage(state, enemy, type.meleeDps * dt);
+      if (enemy.meleeTimer <= 0) enemy.meleeCooldown = MELEE_REENGAGE_COOLDOWN;
+      survivors.push(enemy);
+      continue;
+    }
+
+    const type = enemyType(enemy.typeId);
+    if (type.canDamageTowers && enemy.meleeCooldown <= 0) {
+      const target = findMeleeTarget(state, enemy, type.meleeRange);
+      if (target) {
+        enemy.meleeTargetId = target.id;
+        enemy.meleeTimer = type.meleeDuration;
+        applyMeleeDamage(state, enemy, type.meleeDps * dt);
+        survivors.push(enemy);
+        continue;
+      }
+    }
+
+    const effectiveSpeed = enemy.slowTimer > 0 ? enemy.speed * FREEZE_SLOW_FACTOR : enemy.speed;
+
+    if (type.canSkipPath && !enemy.offPath && enemy.distance >= enemy.breakawayDistance) {
+      enemy.offPath = true;
+      enemy.offPathStart = { x: enemy.x, y: enemy.y };
       const goal = positionAtDistance(PATH_LENGTH);
-      addEffect(state, 'leak', goal.x, goal.y, { life: 0.9, text: '-1' });
+      enemy.offPathTotal = Math.hypot(goal.x - enemy.x, goal.y - enemy.y);
+      enemy.offPathProgress = 0;
+    }
+
+    if (enemy.offPath) {
+      enemy.offPathProgress += effectiveSpeed * dt;
+      if (enemy.offPathProgress >= enemy.offPathTotal) {
+        const goal = positionAtDistance(PATH_LENGTH);
+        leakEnemy(state, goal.x, goal.y);
+        continue;
+      }
+      const t = enemy.offPathTotal > 0 ? enemy.offPathProgress / enemy.offPathTotal : 1;
+      const goal = positionAtDistance(PATH_LENGTH);
+      enemy.x = enemy.offPathStart.x + (goal.x - enemy.offPathStart.x) * t;
+      enemy.y = enemy.offPathStart.y + (goal.y - enemy.offPathStart.y) * t;
+      survivors.push(enemy);
+      continue;
+    }
+
+    enemy.distance += effectiveSpeed * dt;
+    if (enemy.distance >= PATH_LENGTH) {
+      const goal = positionAtDistance(PATH_LENGTH);
+      leakEnemy(state, goal.x, goal.y);
       continue;
     }
 
@@ -125,6 +258,8 @@ function fire(state: GameState, tower: Tower, target: Enemy): void {
     canHitGround: type.canTargetGround,
     canHitAir: type.canTargetAir,
     angle,
+    towerId: tower.id,
+    applyFreeze: type.id === 'frost',
   });
 
   tower.cooldown = 1 / stats.fireRate;
@@ -135,6 +270,9 @@ function updateTowers(state: GameState, dt: number): void {
   for (const tower of state.towers) {
     tower.cooldown = Math.max(0, tower.cooldown - dt);
     tower.recoil = Math.max(0, tower.recoil - dt * 5);
+
+    // Sin estructura, la torre no adquiere objetivo ni dispara hasta repararse.
+    if (tower.hp <= 0) continue;
 
     const stats = statsAtLevel(towerType(tower.typeId), tower.level);
     const target = findTarget(state, tower, stats.range);
@@ -196,7 +334,10 @@ function impact(state: GameState, projectile: Projectile, target: Enemy | null):
     return;
   }
 
-  if (target) damageEnemy(state, target, projectile.damage);
+  if (target) {
+    damageEnemy(state, target, projectile.damage);
+    if (projectile.applyFreeze && target.hp > 0) tryFreeze(state, projectile.towerId, target);
+  }
 }
 
 function updateEffects(state: GameState, dt: number): void {

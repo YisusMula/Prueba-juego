@@ -2,18 +2,32 @@
  * Definición de oleadas. Se generan por fórmula en lugar de a mano para que
  * la dificultad crezca de forma estrictamente monótona y el juego no tenga
  * un final artificial.
+ *
+ * Cada tipo se introduce a partir de su propia oleada. Como un tipo con
+ * capacidades especiales (dañar torres, abandonar el camino) simplemente no
+ * existe antes de esa oleada, "nadie hace X antes de su oleada" se cumple
+ * por construcción, sin necesitar una condición aparte por capacidad.
  */
 
 import { ENEMY_TYPES, type EnemyTypeId } from './enemies';
 
-/** Primera oleada en la que aparecen criaturas aéreas. */
+/** Primera oleada de cada tipo, en el orden en que se introducen. */
+export const FIRST_FOX_WAVE = 2;
 export const FIRST_AIR_WAVE = 4;
-/** Primera oleada con criaturas resistentes. */
-export const FIRST_BRUTE_WAVE = 6;
+export const FIRST_DOG_WAVE = 6;
+export const FIRST_BOAR_WAVE = 7;
+export const FIRST_EAGLE_WAVE = 9;
+export const FIRST_GOBLIN_WAVE = 11;
+export const FIRST_VULTURE_WAVE = 13;
+export const FIRST_ORC_WAVE = 16;
 /** Cada cuántas oleadas aparece un jefe. */
 export const BOSS_EVERY = 10;
+
 /** Factor de crecimiento de la vida de los enemigos por oleada. */
 export const HP_GROWTH = 1.13;
+/** Crecimiento de velocidad por oleada, acotado para no volverse absurdo. */
+export const SPEED_GROWTH_PER_WAVE = 0.012;
+export const MAX_SPEED_MULTIPLIER = 1.5;
 
 export interface WaveGroup {
   typeId: EnemyTypeId;
@@ -27,6 +41,8 @@ export interface Wave {
   spawnInterval: number;
   /** Multiplicador de puntos de vida aplicado a los enemigos de la oleada. */
   hpMultiplier: number;
+  /** Multiplicador de velocidad aplicado a los enemigos de la oleada. */
+  speedMultiplier: number;
 }
 
 function positiveCount(value: number): number {
@@ -37,16 +53,31 @@ export function getWave(index: number): Wave {
   const n = Math.max(1, Math.floor(index));
   const groups: WaveGroup[] = [];
 
-  groups.push({ typeId: 'grunt', count: 4 + positiveCount(n * 1.2) });
+  groups.push({ typeId: 'rat', count: 5 + positiveCount(n * 1.3) });
 
-  if (n >= 2) {
-    groups.push({ typeId: 'runner', count: 2 + positiveCount((n - 1) * 0.6) });
+  if (n >= FIRST_FOX_WAVE) {
+    groups.push({ typeId: 'fox', count: 2 + positiveCount((n - FIRST_FOX_WAVE + 1) * 0.6) });
   }
   if (n >= FIRST_AIR_WAVE) {
-    groups.push({ typeId: 'bat', count: 1 + positiveCount((n - FIRST_AIR_WAVE) * 0.7) });
+    groups.push({ typeId: 'bat', count: 1 + positiveCount((n - FIRST_AIR_WAVE) * 0.6) });
   }
-  if (n >= FIRST_BRUTE_WAVE) {
-    groups.push({ typeId: 'brute', count: 1 + positiveCount((n - FIRST_BRUTE_WAVE) * 0.5) });
+  if (n >= FIRST_DOG_WAVE) {
+    groups.push({ typeId: 'dog', count: 1 + positiveCount((n - FIRST_DOG_WAVE) * 0.5) });
+  }
+  if (n >= FIRST_BOAR_WAVE) {
+    groups.push({ typeId: 'boar', count: 1 + positiveCount((n - FIRST_BOAR_WAVE) * 0.4) });
+  }
+  if (n >= FIRST_EAGLE_WAVE) {
+    groups.push({ typeId: 'eagle', count: 1 + positiveCount((n - FIRST_EAGLE_WAVE) * 0.4) });
+  }
+  if (n >= FIRST_GOBLIN_WAVE) {
+    groups.push({ typeId: 'goblin', count: 1 + positiveCount((n - FIRST_GOBLIN_WAVE) * 0.4) });
+  }
+  if (n >= FIRST_VULTURE_WAVE) {
+    groups.push({ typeId: 'vulture', count: 1 + positiveCount((n - FIRST_VULTURE_WAVE) * 0.35) });
+  }
+  if (n >= FIRST_ORC_WAVE) {
+    groups.push({ typeId: 'orc', count: 1 + positiveCount((n - FIRST_ORC_WAVE) * 0.3) });
   }
   // Los jefes son acumulativos: una vez aparecen, se quedan. Si solo salieran
   // en los múltiplos exactos, la oleada siguiente sería más fácil que la
@@ -58,11 +89,12 @@ export function getWave(index: number): Wave {
   return {
     index: n,
     groups,
-    spawnInterval: Math.max(0.32, 1.05 - n * 0.02),
+    spawnInterval: Math.max(0.3, 1.05 - n * 0.02),
     // Crecimiento geométrico: las torres tienen nivel máximo, así que un
     // escalado lineal acabaría siendo trivial de superar y la partida no
     // terminaría nunca.
     hpMultiplier: HP_GROWTH ** (n - 1),
+    speedMultiplier: Math.min(MAX_SPEED_MULTIPLIER, 1 + SPEED_GROWTH_PER_WAVE * (n - 1)),
   };
 }
 

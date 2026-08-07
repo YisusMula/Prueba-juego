@@ -104,7 +104,7 @@ describe('game-shell: derrota', () => {
   function loseAll(state: ReturnType<typeof createGameState>): void {
     quietRun(state);
     state.lives = 1;
-    const enemy = spawnEnemy(state, 'grunt', 1);
+    const enemy = spawnEnemy(state, 'rat', 1);
     enemy.distance = PATH_LENGTH - 1;
     run(state, 0.5);
   }

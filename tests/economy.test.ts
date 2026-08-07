@@ -32,7 +32,7 @@ describe('economy: vidas', () => {
     quietRun(state);
 
     for (let i = 0; i < 3; i += 1) {
-      const enemy = spawnEnemy(state, 'grunt', 1);
+      const enemy = spawnEnemy(state, 'rat', 1);
       enemy.distance = PATH_LENGTH - 1;
     }
     run(state, 0.5);
@@ -48,7 +48,7 @@ describe('economy: vidas', () => {
     state.lives = 1;
 
     for (let i = 0; i < 2; i += 1) {
-      const enemy = spawnEnemy(state, 'grunt', 1);
+      const enemy = spawnEnemy(state, 'rat', 1);
       enemy.distance = PATH_LENGTH - 1;
     }
     run(state, 0.5);
@@ -84,7 +84,7 @@ describe('economy: oro', () => {
     quietRun(state);
     state.gold = 100;
 
-    const enemy = spawnEnemy(state, 'brute', 1);
+    const enemy = spawnEnemy(state, 'dog', 1);
     enemy.distance = PATH_LENGTH - 1;
     run(state, 0.5);
 

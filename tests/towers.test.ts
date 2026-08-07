@@ -4,6 +4,7 @@ import {
   TOWER_TYPE_LIST,
   type TowerTypeId,
   effectiveDps,
+  frostFreezeCapacity,
   statsAtLevel,
   upgradeCost,
 } from '../src/game/towers';
@@ -14,14 +15,16 @@ import {
   getSelectedTower,
   handleWorldTap,
   placeTower,
+  repairSelectedTower,
   selectShopTower,
+  selectedTowerRepairCost,
   selectedTowerUpgradeCost,
   spawnEnemy,
   startGame,
   upgradeSelectedTower,
 } from '../src/game/state';
 import { cellCenter } from '../src/game/map';
-import { findTarget } from '../src/game/step';
+import { FREEZE_SLOW_FACTOR, findTarget } from '../src/game/step';
 import { grassBesidePath, quietRun, run } from './helpers';
 
 function placeAt(state: GameState, typeId: TowerTypeId, col: number, row: number): Tower {
@@ -56,17 +59,32 @@ describe('tower-system: catálogo', () => {
     expect(TOWER_TYPES.archer.projectile).toBe('arrow');
   });
 
-  it('a mayor coste base, mayor daño por segundo efectivo', () => {
-    for (const a of TOWER_TYPE_LIST) {
-      for (const b of TOWER_TYPE_LIST) {
+  it('a mayor coste base, mayor daño por segundo efectivo (torres de daño directo)', () => {
+    const damageFocused = TOWER_TYPE_LIST.filter((type) => type.id !== 'frost');
+    for (const a of damageFocused) {
+      for (const b of damageFocused) {
         if (a.cost < b.cost) expect(effectiveDps(a)).toBeLessThan(effectiveDps(b));
       }
+    }
+  });
+
+  it('la torre de hielo prioriza el control sobre el daño', () => {
+    for (const type of TOWER_TYPE_LIST) {
+      if (type.id === 'frost') continue;
+      expect(TOWER_TYPES.frost.damage).toBeLessThan(type.damage);
     }
   });
 
   it('hay al menos una torre antiaérea y una de área', () => {
     expect(TOWER_TYPE_LIST.some((type) => type.canTargetAir)).toBe(true);
     expect(TOWER_TYPE_LIST.some((type) => type.splashRadius > 0)).toBe(true);
+  });
+
+  it('la torre mágica y la de hielo atacan a tierra y aire', () => {
+    expect(TOWER_TYPES.magic.canTargetGround).toBe(true);
+    expect(TOWER_TYPES.magic.canTargetAir).toBe(true);
+    expect(TOWER_TYPES.frost.canTargetGround).toBe(true);
+    expect(TOWER_TYPES.frost.canTargetAir).toBe(true);
   });
 });
 
@@ -219,7 +237,7 @@ describe('tower-system: objetivos y disparo', () => {
 
   it('sin enemigos válidos en alcance no dispara', () => {
     const { state } = ambush('archer', 20);
-    const far = spawnEnemy(state, 'grunt', 1);
+    const far = spawnEnemy(state, 'rat', 1);
     far.distance = 0;
     far.speed = 0;
 
@@ -231,11 +249,11 @@ describe('tower-system: objetivos y disparo', () => {
   it('prioriza al enemigo más avanzado en el recorrido', () => {
     const { state, tower, distance } = ambush('archer');
 
-    const behind = spawnEnemy(state, 'grunt', 1);
+    const behind = spawnEnemy(state, 'rat', 1);
     behind.distance = distance - 20;
     behind.speed = 0;
 
-    const ahead = spawnEnemy(state, 'grunt', 1);
+    const ahead = spawnEnemy(state, 'rat', 1);
     ahead.distance = distance + 20;
     ahead.speed = 0;
 
@@ -245,7 +263,7 @@ describe('tower-system: objetivos y disparo', () => {
 
   it('respeta la cadencia de disparo', () => {
     const { state, tower, distance } = ambush('cannon');
-    const target = spawnEnemy(state, 'warlord', 60);
+    const target = spawnEnemy(state, 'dog', 40);
     target.distance = distance;
     target.speed = 0;
 
@@ -268,7 +286,7 @@ describe('tower-system: objetivos y disparo', () => {
 
   it('el proyectil aplica su daño al impactar', () => {
     const { state, distance } = ambush('archer');
-    const target = spawnEnemy(state, 'brute', 1);
+    const target = spawnEnemy(state, 'dog', 1);
     target.distance = distance;
     target.speed = 0;
 
@@ -281,16 +299,185 @@ describe('tower-system: objetivos y disparo', () => {
   it('el daño de área alcanza a varios enemigos juntos', () => {
     const { state, distance } = ambush('mortar');
 
-    const first = spawnEnemy(state, 'brute', 1);
+    const first = spawnEnemy(state, 'dog', 1);
     first.distance = distance + 15;
     first.speed = 0;
 
-    const second = spawnEnemy(state, 'brute', 1);
+    const second = spawnEnemy(state, 'dog', 1);
     second.distance = distance - 15;
     second.speed = 0;
 
     run(state, 3);
     expect(first.hp).toBeLessThan(first.maxHp);
     expect(second.hp).toBeLessThan(second.maxHp);
+  });
+});
+
+describe('tower-system: enemigos que dañan torres', () => {
+  it('un enemigo capaz reduce la estructura de una torre cercana', () => {
+    const { state, tower, distance } = ambush('archer');
+
+    const boar = spawnEnemy(state, 'boar', 1);
+    boar.distance = distance;
+    boar.speed = 0;
+
+    const maxHp = statsAtLevel(TOWER_TYPES.archer, 1).maxHp;
+    expect(tower.hp).toBe(maxHp);
+
+    run(state, 1);
+    expect(tower.hp).toBeLessThan(maxHp);
+  });
+
+  it('un enemigo sin esa capacidad no daña torres', () => {
+    const { state, tower, distance } = ambush('archer');
+    const maxHp = statsAtLevel(TOWER_TYPES.archer, 1).maxHp;
+
+    const rat = spawnEnemy(state, 'rat', 1);
+    rat.distance = distance;
+    rat.speed = 0;
+
+    run(state, 2);
+    expect(tower.hp).toBe(maxHp);
+  });
+
+  it('una torre sin estructura no dispara', () => {
+    const { state, tower, distance } = ambush('archer');
+    tower.hp = 0;
+
+    const enemy = spawnEnemy(state, 'rat', 1);
+    enemy.distance = distance;
+    enemy.speed = 0;
+
+    run(state, 2);
+    expect(state.projectiles).toHaveLength(0);
+    expect(enemy.hp).toBe(enemy.maxHp);
+  });
+
+  it('el enemigo reanuda su avance tras terminar el golpe', () => {
+    const { state, distance } = ambush('archer');
+    const boar = spawnEnemy(state, 'boar', 1);
+    boar.distance = distance;
+
+    run(state, 0.3);
+    expect(boar.meleeTimer).toBeGreaterThan(0);
+
+    run(state, 2.5);
+    expect(boar.meleeTimer).toBe(0);
+    // Habiendo dejado de estar clavado, ha avanzado desde el punto del golpe.
+    expect(boar.distance).toBeGreaterThan(distance);
+  });
+});
+
+describe('tower-system: reparación', () => {
+  it('reparar restaura la estructura y cobra su coste', () => {
+    const { state, tower } = ambush('cannon');
+    const maxHp = statsAtLevel(TOWER_TYPES.cannon, 1).maxHp;
+    tower.hp = Math.round(maxHp * 0.4);
+    state.selectedTowerId = tower.id;
+    state.gold = 10_000;
+
+    const cost = selectedTowerRepairCost(state) as number;
+    expect(cost).toBeGreaterThan(0);
+
+    const goldBefore = state.gold;
+    expect(repairSelectedTower(state)).toBe(true);
+    expect(tower.hp).toBe(maxHp);
+    expect(state.gold).toBe(goldBefore - cost);
+  });
+
+  it('reparar sin oro suficiente no hace nada', () => {
+    const { state, tower } = ambush('cannon');
+    const maxHp = statsAtLevel(TOWER_TYPES.cannon, 1).maxHp;
+    tower.hp = Math.round(maxHp * 0.2);
+    state.selectedTowerId = tower.id;
+    state.gold = 0;
+
+    expect(repairSelectedTower(state)).toBe(false);
+    expect(tower.hp).toBe(Math.round(maxHp * 0.2));
+    expect(state.gold).toBe(0);
+  });
+
+  it('una torre a máxima estructura no ofrece reparar', () => {
+    const { state, tower } = ambush('cannon');
+    state.selectedTowerId = tower.id;
+    expect(selectedTowerRepairCost(state)).toBeNull();
+  });
+
+  it('una torre reparada vuelve a disparar', () => {
+    const { state, tower, distance } = ambush('archer');
+    tower.hp = 0;
+    state.selectedTowerId = tower.id;
+    state.gold = 10_000;
+    expect(repairSelectedTower(state)).toBe(true);
+
+    const enemy = spawnEnemy(state, 'rat', 1);
+    enemy.distance = distance;
+    enemy.speed = 0;
+
+    run(state, 2);
+    expect(enemy.hp).toBeLessThan(enemy.maxHp);
+  });
+});
+
+describe('tower-system: efecto de congelación', () => {
+  it('un enemigo congelado avanza mucho más lento', () => {
+    const { state, distance } = ambush('frost');
+    const enemy = spawnEnemy(state, 'dog', 1);
+    enemy.distance = distance;
+
+    run(state, 2);
+    expect(enemy.slowTimer).toBeGreaterThan(0);
+
+    const before = enemy.distance;
+    run(state, 1 / 60);
+    const advanced = enemy.distance - before;
+    const normalAdvance = enemy.speed * (1 / 60);
+    expect(advanced).toBeCloseTo(normalAdvance * FREEZE_SLOW_FACTOR, 5);
+  });
+
+  it('en nivel bajo, la torre de hielo no congela a un segundo enemigo', () => {
+    expect(frostFreezeCapacity(1)).toBe(1);
+
+    const { state, tower, distance } = ambush('frost');
+    const first = spawnEnemy(state, 'dog', 1);
+    first.distance = distance - 20;
+    first.speed = 0;
+    const second = spawnEnemy(state, 'dog', 1);
+    second.distance = distance + 20;
+    second.speed = 0;
+
+    run(state, 3);
+
+    const frozenCount = [first, second].filter((enemy) => enemy.slowTimer > 0).length;
+    expect(frozenCount).toBeLessThanOrEqual(1);
+    expect(tower.frozenTargets.length).toBeLessThanOrEqual(1);
+  });
+
+  it('en nivel alto, la torre de hielo congela a varios enemigos', () => {
+    // La torre solo dispara al más avanzado de los dos, así que para
+    // congelar a ambos hace falta que cada uno lo sea en su momento: primero
+    // `a`, luego se adelanta `b` y pasa a recibir el siguiente impacto.
+    const { state, tower, distance } = ambush('frost');
+    tower.level = 5;
+    expect(frostFreezeCapacity(tower.level)).toBe(2);
+
+    const a = spawnEnemy(state, 'dog', 1);
+    a.distance = distance + 20;
+    a.speed = 0;
+    const b = spawnEnemy(state, 'dog', 1);
+    b.distance = distance - 20;
+    b.speed = 0;
+
+    run(state, 1.8);
+    expect(a.slowTimer).toBeGreaterThan(0);
+    expect(tower.frozenTargets).toContain(a.id);
+
+    b.distance = distance + 40;
+    run(state, 1);
+
+    expect(a.slowTimer).toBeGreaterThan(0);
+    expect(b.slowTimer).toBeGreaterThan(0);
+    expect(tower.frozenTargets).toContain(a.id);
+    expect(tower.frozenTargets).toContain(b.id);
   });
 });

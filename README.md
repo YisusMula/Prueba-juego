@@ -12,9 +12,13 @@ de nivel para que ninguna llegue.
   Las torres no se pueden poner sobre el camino. Si no te llega el oro, la torre
   aparece deshabilitada y no se puede seleccionar.
 - **Pulsa una torre colocada** para ver sus estadísticas y subirla de nivel. Cada
-  nivel cuesta más que el anterior, hasta el nivel 5.
+  nivel cuesta más que el anterior, hasta el nivel 8.
 - Cada criatura eliminada da oro; la cantidad depende de su tipo.
 - Cada criatura que llega al castillo **resta una vida y no da oro**.
+- A partir de cierta oleada, algunas criaturas **abandonan el camino** y cruzan
+  el prado en línea recta, y otras **dañan la estructura de una torre** al pasar
+  junto a ella. Una torre sin estructura deja de disparar hasta que la reparas
+  desde su panel, gastando oro.
 - Cuando las vidas llegan a 0 aparece la pantalla de derrota con un botón para
   reintentar.
 
@@ -25,14 +29,17 @@ de nivel para que ninguna llegue.
 | Arqueras | 45 | Tierra y aire | Cadencia alta, daño bajo |
 | Cañón | 60 | Solo tierra | Bolas de cañón, pega más fuerte |
 | Mortero | 140 | Solo tierra | Daño en área |
+| Torre de Hielo | 150 | Tierra y aire | Daño mínimo, pero congela; solo un enemigo a la vez salvo en niveles altos |
 | Ballesta | 190 | Tierra y aire | Largo alcance y mucho daño |
+| Torre Mágica | 260 | Tierra y aire | Rayos, el mayor daño del catálogo |
 
 ### Criaturas
 
-Duendes, corredores rápidos, ogros resistentes, murciélagos (**solo alcanzables
-por torres antiaéreas**) y, a partir de la oleada 10, señores de la guerra. Las
-oleadas crecen sin fin: cada una trae más criaturas y con más vida que la
-anterior.
+Una progresión de rata → zorro → perro → jabalí en tierra, y murciélago → águila
+→ buitre en el aire, con goblins, orcos y un jefe orco como gama alta. Cada
+oleada trae más criaturas, con más vida y algo más rápidas que la anterior.
+El jabalí, el buitre, el orco y el jefe orco pueden dañar torres cercanas; el
+goblin y el jefe orco pueden abandonar el camino.
 
 ### Controles
 
@@ -84,11 +91,12 @@ openspec/   Specs y propuesta de cambio (ver más abajo).
 ## Especificaciones
 
 El juego está especificado con [OpenSpec](https://github.com/Fission-AI/OpenSpec).
-La propuesta, el diseño, las tareas y las specs por capacidad viven en
-`openspec/changes/add-tower-defense-game/`. Cada escenario de las specs tiene su
-test correspondiente en `tests/`.
+Las specs vivas de cada capacidad están en `openspec/specs/`; los cambios en
+curso o archivados, con su propuesta, diseño y tareas, en
+`openspec/changes/`. Cada escenario de las specs tiene su test correspondiente
+en `tests/`.
 
 ```bash
 npx @fission-ai/openspec@latest list
-npx @fission-ai/openspec@latest validate add-tower-defense-game --strict
+npx @fission-ai/openspec@latest spec list
 ```

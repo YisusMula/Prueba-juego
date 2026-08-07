@@ -62,6 +62,12 @@
           </button>
         </div>
         <p id="tower-panel-level" class="tower-panel-level">Nivel 1</p>
+        <div class="tower-panel-hp">
+          <div class="tower-panel-hp-bar">
+            <div id="tower-panel-hp-fill" class="tower-panel-hp-fill"></div>
+          </div>
+          <span id="tower-panel-hp-text">100/100</span>
+        </div>
         <dl class="tower-panel-stats">
           <div><dt>Daño</dt><dd id="tower-panel-damage">0</dd></div>
           <div><dt>Alcance</dt><dd id="tower-panel-range">0</dd></div>
@@ -71,6 +77,9 @@
         <button id="btn-upgrade" class="btn btn-primary btn-block" type="button">
           <span id="upgrade-label">Mejorar</span>
           <span id="upgrade-price"> · <span id="tower-panel-cost">0</span> 🪙</span>
+        </button>
+        <button id="btn-repair" class="btn btn-repair btn-block" type="button" hidden>
+          Reparar · <span id="tower-panel-repair-cost">0</span> 🪙
         </button>
       </aside>
 

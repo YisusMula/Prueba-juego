@@ -153,7 +153,7 @@ export function renderScene(
   drawSelectionHighlight(ctx, state);
   drawPlacementPreview(ctx, state, camera, viewport, input.pointer);
 
-  for (const tower of state.towers) drawTower(ctx, tower);
+  for (const tower of state.towers) drawTower(ctx, tower, state.time);
 
   // Los terrestres van sobre el suelo; los aéreos, por encima de todo.
   for (const enemy of state.enemies) {

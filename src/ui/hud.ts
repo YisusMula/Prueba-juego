@@ -12,6 +12,7 @@ import {
   displayedWave,
   getSelectedTower,
   selectShopTower,
+  selectedTowerRepairCost,
   selectedTowerUpgradeCost,
 } from '../game/state';
 
@@ -28,6 +29,7 @@ export interface HudCallbacks {
   onQuit(): void;
   onRetry(): void;
   onUpgrade(): void;
+  onRepair(): void;
   onCloseTowerPanel(): void;
   onZoomIn(): void;
   onZoomOut(): void;
@@ -55,6 +57,8 @@ export class Hud {
   private readonly towerPanel = requireElement('tower-panel');
   private readonly towerName = requireElement('tower-panel-name');
   private readonly towerLevel = requireElement('tower-panel-level');
+  private readonly towerHpFill = requireElement('tower-panel-hp-fill');
+  private readonly towerHpText = requireElement('tower-panel-hp-text');
   private readonly towerDamage = requireElement('tower-panel-damage');
   private readonly towerRange = requireElement('tower-panel-range');
   private readonly towerRate = requireElement('tower-panel-rate');
@@ -63,6 +67,8 @@ export class Hud {
   private readonly upgradeButton = requireElement<HTMLButtonElement>('btn-upgrade');
   private readonly upgradeLabel = requireElement('upgrade-label');
   private readonly upgradePrice = requireElement('upgrade-price');
+  private readonly repairButton = requireElement<HTMLButtonElement>('btn-repair');
+  private readonly repairCostEl = requireElement('tower-panel-repair-cost');
 
   private readonly screenMenu = requireElement('screen-menu');
   private readonly screenPause = requireElement('screen-pause');
@@ -133,6 +139,7 @@ export class Hud {
     requireElement('btn-zoom-out').addEventListener('click', callbacks.onZoomOut);
     requireElement('btn-zoom-fit').addEventListener('click', callbacks.onZoomFit);
     this.upgradeButton.addEventListener('click', callbacks.onUpgrade);
+    this.repairButton.addEventListener('click', callbacks.onRepair);
   }
 
   /** Vuelca el estado actual sobre la interfaz. Se llama en cada frame. */
@@ -183,6 +190,12 @@ export class Hud {
     this.towerRate.textContent = `${stats.fireRate.toFixed(1)}/s`;
     this.towerTargets.textContent = type.canTargetAir ? 'Tierra y aire' : 'Solo tierra';
 
+    const hpRatio = stats.maxHp > 0 ? Math.max(0, tower.hp / stats.maxHp) : 0;
+    this.towerHpFill.style.width = `${Math.round(hpRatio * 100)}%`;
+    this.towerHpFill.classList.toggle('is-low', hpRatio < 0.5);
+    this.towerHpFill.classList.toggle('is-down', tower.hp <= 0);
+    this.towerHpText.textContent = `${Math.round(tower.hp)}/${stats.maxHp}${tower.hp <= 0 ? ' · fuera de servicio' : ''}`;
+
     if (cost === null) {
       this.upgradeButton.disabled = true;
       this.upgradeLabel.textContent = 'Nivel máximo';
@@ -192,6 +205,13 @@ export class Hud {
       this.upgradeLabel.textContent = 'Mejorar';
       this.upgradePrice.hidden = false;
       this.towerCost.textContent = String(cost);
+    }
+
+    const repairCost = selectedTowerRepairCost(this.state);
+    this.repairButton.hidden = repairCost === null;
+    if (repairCost !== null) {
+      this.repairButton.disabled = this.state.gold < repairCost;
+      this.repairCostEl.textContent = String(repairCost);
     }
   }
 
