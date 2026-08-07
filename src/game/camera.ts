@@ -110,3 +110,20 @@ export function fitCamera(viewport: Viewport): Camera {
     viewport,
   );
 }
+
+/**
+ * Zoom que cubre el viewport: el mapa llena la pantalla aunque sobresalga por
+ * un lado. En un móvil en vertical, encajar el mapa entero exige un zoom tan
+ * bajo que no se distingue nada; con este el escenario se ve bien y el jugador
+ * se desplaza para alcanzar el resto.
+ */
+export function coverZoomFor(viewport: Viewport): number {
+  if (viewport.width <= 0 || viewport.height <= 0) return 1;
+  return Math.max(viewport.width / MAP_WIDTH, viewport.height / MAP_HEIGHT);
+}
+
+/** Vista inicial de la partida, centrada en el punto indicado. */
+export function initialCamera(viewport: Viewport, focus: Point): Camera {
+  const zoom = clampZoom(coverZoomFor(viewport), viewport);
+  return clampCamera({ x: focus.x, y: focus.y, zoom }, viewport);
+}

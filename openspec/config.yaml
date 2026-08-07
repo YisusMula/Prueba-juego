@@ -1,5 +1,14 @@
 schema: spec-driven
 
+context: |
+  Tower Game: juego de defensa de torres por oleadas, sitio estático sin backend.
+  Stack: TypeScript estricto + Vite + Vitest. Sin motor de juego ni assets binarios;
+  el arte es procedural en Canvas 2D.
+  Regla de arquitectura: src/game/ es simulación pura (sin DOM ni canvas) para que
+  toda la lógica sea probable en Node; src/render/ y src/ui/ solo consumen el estado.
+  Los tests de tests/ se corresponden uno a uno con los escenarios de las specs.
+  Documentación y comentarios en español.
+
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.

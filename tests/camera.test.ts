@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_ZOOM,
   clampCamera,
+  coverZoomFor,
+  initialCamera,
   clampZoom,
   createCamera,
   fitCamera,
@@ -54,6 +56,34 @@ describe('viewport-navigation: límites de zoom', () => {
     const min = minZoomFor(desktop);
     expect(clampZoom(0.0001, desktop)).toBeCloseTo(min, 10);
     expect(clampZoom(999, desktop)).toBe(MAX_ZOOM);
+  });
+
+  it('la vista inicial cubre la pantalla en vez de dejar franjas vacías', () => {
+    const focus = { x: 32, y: 160 };
+
+    for (const viewport of [phone, desktop, { width: 360, height: 500 }]) {
+      const camera = initialCamera(viewport, focus);
+      // Al menos una dimensión del mapa llena el viewport por completo.
+      const coversWidth = MAP_WIDTH * camera.zoom >= viewport.width - 1e-6;
+      const coversHeight = MAP_HEIGHT * camera.zoom >= viewport.height - 1e-6;
+      expect(coversWidth || coversHeight).toBe(true);
+
+      // Y sigue respetando los límites: nunca se ve fuera del mapa.
+      const halfWidth = viewport.width / camera.zoom / 2;
+      expect(camera.x - halfWidth).toBeGreaterThanOrEqual(-1e-6);
+      expect(camera.x + halfWidth).toBeLessThanOrEqual(MAP_WIDTH + 1e-6);
+    }
+  });
+
+  it('el zoom inicial respeta el máximo salvo que el mínimo lo obligue', () => {
+    // En una pantalla normal, el tope manda.
+    expect(initialCamera(desktop, { x: 0, y: 0 }).zoom).toBeLessThanOrEqual(MAX_ZOOM);
+
+    // En una pantalla enorme, ver el mapa completo exige pasarse del tope:
+    // el mínimo tiene prioridad, porque la cámara nunca debe salirse del mapa.
+    const huge = { width: 3000, height: 3000 };
+    expect(initialCamera(huge, { x: 0, y: 0 }).zoom).toBeCloseTo(minZoomFor(huge), 10);
+    expect(coverZoomFor(phone)).toBeGreaterThan(minZoomFor(phone));
   });
 
   it('fitCamera encuadra el mapa completo y centrado', () => {
