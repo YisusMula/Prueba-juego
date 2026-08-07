@@ -2,41 +2,119 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Pong</title>
-    <link rel="stylesheet" href="./style.css" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#2f4f2a" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23569a3c'/%3E%3Cpath d='M6 26h20v-3H6z' fill='%23c39a63'/%3E%3Cpath d='M11 23V12h10v11z' fill='%23ddcaa6'/%3E%3Cpath d='M11 12V9h2.5v2h1.7V9h1.6v2h1.7V9H21v3z' fill='%23c2ad86'/%3E%3Cpath d='M16 4l6 5H10z' fill='%234b8f57'/%3E%3C/svg%3E"
+    />
+    <meta
+      name="description"
+      content="Tower Game: defiende el prado de las oleadas de criaturas colocando y mejorando torres."
+    />
+    <title>Tower Game</title>
   </head>
   <body>
-    <main class="app">
-      <h1>Pong</h1>
-      <section class="panel">
-        <label>
-          Modo de juego:
-          <select id="mode">
-            <option value="cpu">1 jugador vs máquina</option>
-            <option value="pvp">2 jugadores</option>
-          </select>
-        </label>
-        <label id="difficulty-wrapper">
-          Dificultad IA:
-          <select id="difficulty">
-            <option value="easy">Fácil</option>
-            <option value="medium" selected>Media</option>
-            <option value="hard">Difícil</option>
-          </select>
-        </label>
-        <button id="restart" type="button">Reiniciar partida</button>
+    <div id="app">
+      <div id="stage">
+        <canvas id="scene" aria-label="Campo de batalla"></canvas>
+      </div>
+
+      <header id="hud" class="panel-top">
+        <div class="stats">
+          <div class="stat stat-lives" title="Vidas restantes">
+            <span class="stat-icon" aria-hidden="true">❤️</span>
+            <span class="stat-value" id="stat-lives">20</span>
+          </div>
+          <div class="stat stat-gold" title="Oro disponible">
+            <span class="stat-icon" aria-hidden="true">🪙</span>
+            <span class="stat-value" id="stat-gold">0</span>
+          </div>
+          <div class="stat stat-wave" title="Oleada">
+            <span class="stat-label">Oleada</span>
+            <span class="stat-value" id="stat-wave">1</span>
+          </div>
+        </div>
+        <div class="hud-actions">
+          <span id="wave-hint" class="wave-hint"></span>
+          <button id="btn-menu" class="btn btn-icon" type="button" aria-label="Menú">
+            <span aria-hidden="true">☰</span> Menú
+          </button>
+        </div>
+      </header>
+
+      <div id="zoom-controls" class="zoom-controls">
+        <button id="btn-zoom-in" class="btn btn-round" type="button" aria-label="Acercar">+</button>
+        <button id="btn-zoom-out" class="btn btn-round" type="button" aria-label="Alejar">−</button>
+        <button id="btn-zoom-fit" class="btn btn-round" type="button" aria-label="Ver todo el mapa">
+          ⤢
+        </button>
+      </div>
+
+      <aside id="tower-panel" class="tower-panel" hidden>
+        <div class="tower-panel-head">
+          <h2 id="tower-panel-name">Torre</h2>
+          <button id="btn-close-panel" class="btn btn-ghost" type="button" aria-label="Cerrar">
+            ✕
+          </button>
+        </div>
+        <p id="tower-panel-level" class="tower-panel-level">Nivel 1</p>
+        <dl class="tower-panel-stats">
+          <div><dt>Daño</dt><dd id="tower-panel-damage">0</dd></div>
+          <div><dt>Alcance</dt><dd id="tower-panel-range">0</dd></div>
+          <div><dt>Cadencia</dt><dd id="tower-panel-rate">0/s</dd></div>
+          <div><dt>Objetivos</dt><dd id="tower-panel-targets">Tierra</dd></div>
+        </dl>
+        <button id="btn-upgrade" class="btn btn-primary btn-block" type="button">
+          <span id="upgrade-label">Mejorar</span>
+          <span id="upgrade-price"> · <span id="tower-panel-cost">0</span> 🪙</span>
+        </button>
+      </aside>
+
+      <footer id="shop" class="panel-bottom">
+        <div id="shop-items" class="shop-items"></div>
+      </footer>
+
+      <section id="screen-menu" class="overlay overlay-menu">
+        <div class="overlay-content">
+          <p class="overlay-kicker">Defiende el prado</p>
+          <h1 class="game-title">Tower<span>Game</span></h1>
+          <p class="overlay-text">
+            Las criaturas avanzan por el camino hasta tu castillo. Levanta torres en el prado,
+            súbelas de nivel y no dejes pasar a ninguna.
+          </p>
+          <button id="btn-start" class="btn btn-primary btn-large" type="button">Comenzar</button>
+          <ul class="overlay-tips">
+            <li>Arrastra para mover la vista · pellizca o rueda para el zoom</li>
+            <li>Elige una torre abajo y pulsa en el prado para colocarla</li>
+            <li>Pulsa una torre colocada para subirla de nivel</li>
+          </ul>
+        </div>
       </section>
-      <section class="scoreboard">
-        <div>Jugador 1: <span id="left-score">0</span></div>
-        <div id="right-label">Máquina: <span id="right-score">0</span></div>
+
+      <section id="screen-pause" class="overlay" hidden>
+        <div class="overlay-content overlay-card">
+          <h2 class="overlay-heading">Juego en pausa</h2>
+          <p class="overlay-text">La partida está detenida.</p>
+          <button id="btn-resume" class="btn btn-primary btn-block" type="button">Reanudar</button>
+          <button id="btn-quit" class="btn btn-ghost btn-block" type="button">
+            Salir al menú principal
+          </button>
+        </div>
       </section>
-      <canvas id="game" width="800" height="500" aria-label="Juego de Pong"></canvas>
-      <p class="hint">
-        Controles: Jugador 1 (W/S). Jugador 2 (↑/↓) en modo 2 jugadores.
-      </p>
-      <p id="winner" class="winner"></p>
-    </main>
-    <script src="./script.js"></script>
+
+      <section id="screen-defeat" class="overlay overlay-defeat" hidden>
+        <div class="overlay-content overlay-card">
+          <h2 class="overlay-heading defeat-heading">Has perdido</h2>
+          <p id="defeat-summary" class="overlay-text">Las criaturas han tomado el castillo.</p>
+          <button id="btn-retry" class="btn btn-primary btn-block" type="button">Reintentar</button>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
