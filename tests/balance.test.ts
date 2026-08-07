@@ -9,12 +9,13 @@ import {
   createGameState,
   displayedWave,
   placeTower,
+  repairSelectedTower,
   startGame,
   upgradeSelectedTower,
 } from '../src/game/state';
 import { FIXED_DT, step } from '../src/game/step';
 import { PATH_CELLS, isBuildableTerrain } from '../src/game/map';
-import { TOWER_TYPE_LIST } from '../src/game/towers';
+import { TOWER_TYPE_LIST, effectiveDps } from '../src/game/towers';
 
 /** Celdas de prado pegadas al camino, en orden de recorrido. */
 function spotsAlongPath(): { col: number; row: number }[] {
@@ -64,8 +65,22 @@ function autoPlay(options: { maxTowers: number; stopAtWave: number }): Outcome {
     ticks += 1;
     if (ticks % 30 !== 0) continue;
 
+    // Un jugador atento repara una torre inutilizada antes que cualquier otra cosa.
+    const disabled = state.towers.find((tower) => tower.hp <= 0);
+    if (disabled) {
+      state.selectedTowerId = disabled.id;
+      repairSelectedTower(state);
+      state.selectedTowerId = null;
+      continue;
+    }
+
+    // Entre las que puede pagar, la de mayor daño por segundo: nadie abre la
+    // partida gastando todo el oro en la torre de hielo por ser "la más cara".
     const affordable = TOWER_TYPE_LIST.filter((type) => state.gold >= type.cost);
-    const best = affordable[affordable.length - 1];
+    const best = affordable.reduce<(typeof affordable)[number] | undefined>(
+      (top, type) => (!top || effectiveDps(type) > effectiveDps(top) ? type : top),
+      undefined,
+    );
     if (best && spotIndex < spots.length && state.towers.length < options.maxTowers) {
       state.shopSelection = best.id;
       const spot = spots[spotIndex] as { col: number; row: number };

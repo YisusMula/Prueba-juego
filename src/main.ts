@@ -15,6 +15,7 @@ import {
   exitToMenu,
   handleWorldTap,
   pauseGame,
+  repairSelectedTower,
   resumeGame,
   startGame,
   upgradeSelectedTower,
@@ -81,6 +82,10 @@ const hud = new Hud(state, {
   },
   onUpgrade: () => {
     upgradeSelectedTower(state);
+    hud.sync();
+  },
+  onRepair: () => {
+    repairSelectedTower(state);
     hud.sync();
   },
   onCloseTowerPanel: () => {

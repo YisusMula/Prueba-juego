@@ -8,6 +8,7 @@
 import { type Domain, type EnemyTypeId, enemyType } from './enemies';
 import {
   CELL,
+  PATH_LENGTH,
   cellCenter,
   isBuildableTerrain,
   positionAtDistance,
@@ -16,6 +17,8 @@ import {
 import {
   type ProjectileKind,
   type TowerTypeId,
+  repairCost,
+  statsAtLevel,
   towerType,
   upgradeCost,
 } from './towers';
@@ -46,6 +49,23 @@ export interface Enemy {
   y: number;
   /** Fase de animación propia, para que no se muevan todos al unísono. */
   phase: number;
+  /** Distancia de recorrido a la que este enemigo abandona el camino, si puede hacerlo. Infinito si no. */
+  breakawayDistance: number;
+  /** Si ya ha abandonado el camino y avanza en línea recta hacia la meta. */
+  offPath: boolean;
+  offPathStart: { x: number; y: number };
+  /** Distancia en línea recta desde offPathStart hasta la meta. */
+  offPathTotal: number;
+  /** Distancia recorrida en línea recta desde offPathStart. */
+  offPathProgress: number;
+  /** Torre a la que este enemigo está golpeando, si está en ello. */
+  meleeTargetId: number | null;
+  /** Segundos restantes del golpe actual contra una torre. */
+  meleeTimer: number;
+  /** Tras un golpe, segundos en los que no puede volver a engancharse a nada. */
+  meleeCooldown: number;
+  /** Segundos restantes del efecto de congelación de la torre de hielo. */
+  slowTimer: number;
 }
 
 export interface Tower {
@@ -61,6 +81,10 @@ export interface Tower {
   angle: number;
   /** Contador de retroceso visual del cañón. */
   recoil: number;
+  /** Estructura actual. Con 0 la torre no dispara hasta repararse. */
+  hp: number;
+  /** Ids de enemigos que esta torre mantiene congelados (solo relevante en la torre de hielo). */
+  frozenTargets: number[];
 }
 
 export interface Projectile {
@@ -77,6 +101,10 @@ export interface Projectile {
   canHitGround: boolean;
   canHitAir: boolean;
   angle: number;
+  /** Torre que disparó el proyectil; permite atribuirle el efecto de congelación. */
+  towerId: number;
+  /** Si impacta, aplica el efecto de congelación de la torre de hielo. */
+  applyFreeze: boolean;
 }
 
 export type EffectKind = 'explosion' | 'hit' | 'gold' | 'leak';
@@ -269,6 +297,7 @@ export function placeTower(state: GameState, col: number, row: number): boolean 
   if (!spendGold(state, type.cost)) return false;
 
   const center = cellCenter(col, row);
+  const maxHp = statsAtLevel(type, 1).maxHp;
   const tower: Tower = {
     id: state.nextId++,
     typeId,
@@ -280,6 +309,8 @@ export function placeTower(state: GameState, col: number, row: number): boolean 
     cooldown: 0,
     angle: 0,
     recoil: 0,
+    hp: maxHp,
+    frozenTargets: [],
   };
   state.towers.push(tower);
   state.selectedTowerId = tower.id;
@@ -330,30 +361,88 @@ export function upgradeSelectedTower(state: GameState): boolean {
   if (cost === null) return false;
   if (!spendGold(state, cost)) return false;
 
+  // La mejora no repara: conserva la misma proporción de daño acumulado,
+  // solo aplicada sobre el nuevo máximo de estructura de ese nivel.
+  const oldMaxHp = statsAtLevel(type, tower.level).maxHp;
+  const ratio = oldMaxHp > 0 ? tower.hp / oldMaxHp : 1;
   tower.level += 1;
+  tower.hp = Math.round(statsAtLevel(type, tower.level).maxHp * ratio);
+
+  syncShopAffordability(state);
+  return true;
+}
+
+/**
+ * Coste de reparar la torre seleccionada hasta su estructura máxima. Null si
+ * no hay torre seleccionada o si ya está a máxima estructura.
+ */
+export function selectedTowerRepairCost(state: GameState): number | null {
+  const tower = getSelectedTower(state);
+  if (!tower) return null;
+  const type = towerType(tower.typeId);
+  const maxHp = statsAtLevel(type, tower.level).maxHp;
+  if (tower.hp >= maxHp) return null;
+  return repairCost(type, tower.hp, maxHp);
+}
+
+/** Repara la torre seleccionada a su estructura máxima. Falla sin efecto si falta oro. */
+export function repairSelectedTower(state: GameState): boolean {
+  if (state.screen !== 'playing') return false;
+  const tower = getSelectedTower(state);
+  if (!tower) return false;
+
+  const type = towerType(tower.typeId);
+  const maxHp = statsAtLevel(type, tower.level).maxHp;
+  if (tower.hp >= maxHp) return false;
+
+  const cost = repairCost(type, tower.hp, maxHp);
+  if (!spendGold(state, cost)) return false;
+
+  tower.hp = maxHp;
   syncShopAffordability(state);
   return true;
 }
 
 // --- Ayudas de simulación ---------------------------------------------------
 
-export function spawnEnemy(state: GameState, typeId: EnemyTypeId, hpMultiplier: number): Enemy {
+export function spawnEnemy(
+  state: GameState,
+  typeId: EnemyTypeId,
+  hpMultiplier: number,
+  speedMultiplier = 1,
+): Enemy {
   const type = enemyType(typeId);
   const hp = Math.round(type.hp * hpMultiplier);
   const start = positionAtDistance(0);
+  const id = state.nextId++;
+  // Punto de fuga determinista a partir del id: variedad entre enemigos sin
+  // perder la reproducibilidad de la simulación (nada de aleatoriedad real).
+  const breakawayDistance = type.canSkipPath
+    ? PATH_LENGTH * (0.2 + (id % 7) / 7 * 0.4)
+    : Infinity;
+
   const enemy: Enemy = {
-    id: state.nextId++,
+    id,
     typeId,
     domain: type.domain,
     hp,
     maxHp: hp,
-    speed: type.speed,
+    speed: type.speed * speedMultiplier,
     reward: type.reward,
     radius: type.radius,
     distance: 0,
     x: start.x,
     y: start.y,
-    phase: (state.nextId * 0.7) % (Math.PI * 2),
+    phase: (id * 0.7) % (Math.PI * 2),
+    breakawayDistance,
+    offPath: false,
+    offPathStart: { x: start.x, y: start.y },
+    offPathTotal: 0,
+    offPathProgress: 0,
+    meleeTargetId: null,
+    meleeTimer: 0,
+    meleeCooldown: 0,
+    slowTimer: 0,
   };
   state.enemies.push(enemy);
   return enemy;
