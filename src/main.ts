@@ -125,6 +125,13 @@ attachPointerControls(canvas, {
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', resize);
 
+// El hueco del escenario también cambia sin que haya `resize`: al aplicarse
+// una media query, al cargar una fuente o al aparecer la barra del navegador.
+const stage = document.getElementById('stage');
+if (stage && typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(resize).observe(stage);
+}
+
 // Pausa automática al perder el foco: nadie quiere volver y encontrarse sin vidas.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {

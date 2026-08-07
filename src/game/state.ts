@@ -300,12 +300,16 @@ export function handleWorldTap(state: GameState, worldX: number, worldY: number)
   if (state.screen !== 'playing') return;
   const { col, row } = worldToCell(worldX, worldY);
 
+  const existing = towerAt(state, col, row);
+
   if (state.shopSelection !== null) {
-    placeTower(state, col, row);
+    if (placeTower(state, col, row)) return;
+    // La colocación no era válida. Si el jugador ha pulsado sobre una torre
+    // suya, lo natural es que quiera verla, no que no pase nada.
+    if (existing) state.selectedTowerId = existing.id;
     return;
   }
 
-  const existing = towerAt(state, col, row);
   state.selectedTowerId = existing ? existing.id : null;
 }
 

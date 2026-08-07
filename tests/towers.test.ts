@@ -163,6 +163,22 @@ describe('tower-system: colocación y mejora', () => {
     expect(tower.level).toBe(TOWER_TYPES.archer.maxLevel);
   });
 
+  it('pulsar una torre existente con una compra activa la selecciona sin cobrar', () => {
+    const state = createGameState();
+    startGame(state);
+    const tower = placeAt(state, 'cannon', 1, 0);
+    state.selectedTowerId = null;
+    state.gold = 500;
+    state.shopSelection = 'archer';
+
+    const center = cellCenter(1, 0);
+    handleWorldTap(state, center.x, center.y);
+
+    expect(getSelectedTower(state)?.id).toBe(tower.id);
+    expect(state.towers).toHaveLength(1);
+    expect(state.gold).toBe(500);
+  });
+
   it('pulsar prado vacío sin torre de compra deselecciona', () => {
     const state = createGameState();
     startGame(state);

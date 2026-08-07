@@ -108,9 +108,14 @@ describe('balance de la partida', () => {
     expect(outcome.lives).toBeGreaterThan(10);
   });
 
-  it('el juego termina cayendo aunque se llene el mapa de torres', () => {
-    const outcome = autoPlay({ maxTowers: 999, stopAtWave: 45 });
-    expect(outcome.screen).toBe('defeat');
-    expect(outcome.wave).toBeGreaterThan(20);
-  });
+  // Simula cerca de 40 minutos de partida: necesita más margen que el resto.
+  it(
+    'el juego termina cayendo aunque se llene el mapa de torres',
+    () => {
+      const outcome = autoPlay({ maxTowers: 999, stopAtWave: 45 });
+      expect(outcome.screen).toBe('defeat');
+      expect(outcome.wave).toBeGreaterThan(20);
+    },
+    30_000,
+  );
 });
