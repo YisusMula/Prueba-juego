@@ -1,0 +1,20 @@
+{
+  "name": "tower-game",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Tower Game - juego de defensa de torres por oleadas, jugable en móvil y escritorio",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}
