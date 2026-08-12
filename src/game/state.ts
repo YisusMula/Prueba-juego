@@ -22,6 +22,13 @@ import {
 } from './scenarios';
 import { MAX_QUEUED_SOUNDS, type SoundId } from './sounds';
 import {
+  SPECIALISATION_LEVEL,
+  type Specialisation,
+  type SpecialisationId,
+  specialisation,
+  specialisationsFor,
+} from './specialisations';
+import {
   type ProjectileKind,
   type TargetPriority,
   type TowerTypeId,
@@ -79,6 +86,12 @@ export interface Enemy {
   meleeCooldown: number;
   /** Segundos restantes del efecto de congelación de la torre de hielo. */
   slowTimer: number;
+  /**
+   * Multiplicador de daño mientras dure la congelación, que deja la torre de
+   * hielo con la rama de fragilidad. Vive en el enemigo y no en la torre porque
+   * quien aplica el daño extra es la torre que dispara después.
+   */
+  vulnerability: number;
   /** Segundos restantes del destello blanco al recibir daño. */
   flash: number;
   /** Daño que resta a cada impacto recibido desde una torre. */
@@ -114,6 +127,8 @@ export interface Tower {
   priority: TargetPriority;
   /** Oro total invertido en esta torre: su compra más todas sus mejoras. */
   invested: number;
+  /** Rama de mejora elegida, o null si aún no se ha especializado. */
+  specialisation: SpecialisationId | null;
 }
 
 export interface Projectile {
@@ -134,6 +149,12 @@ export interface Projectile {
   towerId: number;
   /** Si impacta, aplica el efecto de congelación de la torre de hielo. */
   applyFreeze: boolean;
+  /** Ignora la armadura del enemigo (rama perforante). */
+  piercing: boolean;
+  /** Saltos adicionales del disparo; 0 = sin cadena. */
+  chainTargets: number;
+  /** Daño que conserva cada salto respecto al anterior. */
+  chainFalloff: number;
 }
 
 export type EffectKind =
@@ -423,6 +444,7 @@ export function placeTower(state: GameState, col: number, row: number): boolean 
   const maxHp = statsAtLevel(type, 1).maxHp;
   const tower: Tower = {
     id: state.nextId++,
+    specialisation: null,
     typeId,
     col,
     row,
@@ -496,14 +518,59 @@ export function upgradeSelectedTower(state: GameState): boolean {
 
   // La mejora no repara: conserva la misma proporción de daño acumulado,
   // solo aplicada sobre el nuevo máximo de estructura de ese nivel.
-  const oldMaxHp = statsAtLevel(type, tower.level).maxHp;
+  const oldMaxHp = statsAtLevel(type, tower.level, tower.specialisation).maxHp;
   const ratio = oldMaxHp > 0 ? tower.hp / oldMaxHp : 1;
   tower.level += 1;
-  tower.hp = Math.round(statsAtLevel(type, tower.level).maxHp * ratio);
+  tower.hp = Math.round(statsAtLevel(type, tower.level, tower.specialisation).maxHp * ratio);
   tower.invested += cost;
 
   emitSound(state, 'upgrade');
   syncShopAffordability(state);
+  return true;
+}
+
+// --- Especializaciones -------------------------------------------------------
+
+/**
+ * Las dos ramas que puede elegir la torre seleccionada, o una lista vacía si
+ * todavía no le toca o ya eligió. La interfaz consulta esto para saber si debe
+ * ofrecer la elección.
+ */
+export function selectedTowerBranches(state: GameState): readonly Specialisation[] {
+  const tower = getSelectedTower(state);
+  if (!tower) return [];
+  if (tower.specialisation !== null) return [];
+  if (tower.level < SPECIALISATION_LEVEL) return [];
+  return specialisationsFor(tower.typeId);
+}
+
+/** Especialización ya elegida por la torre seleccionada, si la hay. */
+export function selectedTowerSpecialisation(state: GameState): Specialisation | null {
+  const tower = getSelectedTower(state);
+  if (!tower || tower.specialisation === null) return null;
+  return specialisation(tower.specialisation);
+}
+
+/**
+ * Especializa la torre seleccionada.
+ *
+ * Se rechaza si la torre no ha llegado al nivel, si ya está especializada o si
+ * la rama es de otro tipo de torre. La irreversibilidad es lo que convierte
+ * esto en una decisión: con vuelta atrás, lo óptimo sería cambiar de rama según
+ * la oleada que viene, que es mantenimiento y no elección.
+ */
+export function specialiseSelectedTower(state: GameState, id: SpecialisationId): boolean {
+  if (state.screen !== 'playing') return false;
+  const tower = getSelectedTower(state);
+  if (!tower) return false;
+  if (tower.specialisation !== null) return false;
+  if (tower.level < SPECIALISATION_LEVEL) return false;
+
+  const branch = specialisation(id);
+  if (!branch || branch.towerId !== tower.typeId) return false;
+
+  tower.specialisation = id;
+  emitSound(state, 'upgrade');
   return true;
 }
 
@@ -544,7 +611,7 @@ export function selectedTowerRepairCost(state: GameState): number | null {
   const tower = getSelectedTower(state);
   if (!tower) return null;
   const type = towerType(tower.typeId);
-  const maxHp = statsAtLevel(type, tower.level).maxHp;
+  const maxHp = statsAtLevel(type, tower.level, tower.specialisation).maxHp;
   if (tower.hp >= maxHp) return null;
   return repairCost(type, tower.hp, maxHp);
 }
@@ -556,7 +623,7 @@ export function repairSelectedTower(state: GameState): boolean {
   if (!tower) return false;
 
   const type = towerType(tower.typeId);
-  const maxHp = statsAtLevel(type, tower.level).maxHp;
+  const maxHp = statsAtLevel(type, tower.level, tower.specialisation).maxHp;
   if (tower.hp >= maxHp) return false;
 
   const cost = repairCost(type, tower.hp, maxHp);
@@ -720,6 +787,7 @@ export function spawnEnemy(
     meleeTimer: 0,
     meleeCooldown: 0,
     slowTimer: 0,
+    vulnerability: 1,
     flash: 0,
     armor: type.armor,
     healRadius: type.healRadius,
@@ -769,6 +837,18 @@ export function damageAfterArmor(enemy: Enemy, amount: number): number {
 }
 
 /**
+ * Daño final sobre un enemigo: primero la fragilidad, después la armadura.
+ *
+ * El orden importa. Al revés, un acorazado vería su daño recortado y luego
+ * multiplicado, y la fragilidad valdría mucho más contra armadura que contra
+ * el resto: un acoplamiento entre dos mecánicas que no se pretende.
+ */
+export function effectiveDamage(enemy: Enemy, amount: number, ignoreArmor: boolean): number {
+  const amplified = amount * (enemy.slowTimer > 0 ? enemy.vulnerability : 1);
+  return ignoreArmor ? amplified : damageAfterArmor(enemy, amplified);
+}
+
+/**
  * Aplica daño a un enemigo y, si muere, otorga su recompensa de oro.
  *
  * Vive aquí y no en `step` porque también lo usan las habilidades del
@@ -786,7 +866,7 @@ export function damageEnemy(
   ignoreArmor = false,
 ): void {
   if (enemy.hp <= 0) return;
-  const applied = ignoreArmor ? amount : damageAfterArmor(enemy, amount);
+  const applied = effectiveDamage(enemy, amount, ignoreArmor);
   enemy.hp -= applied;
   addEffect(state, 'damage', enemy.x, enemy.y - enemy.radius, {
     life: 0.7,

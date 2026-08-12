@@ -42,7 +42,10 @@ export const DIFFICULTIES: Readonly<Record<DifficultyId, Difficulty>> = {
     blurb: 'Sin margen de error',
     startingLives: 12,
     startingGold: 120,
-    hpMultiplier: 1.2,
+    // Subido de 1,2 a 1,5 al añadir las especializaciones: con una rama
+    // elegida, la misma defensa rendía lo bastante más como para que Difícil
+    // rozara la victoria y dejara de significar nada.
+    hpMultiplier: 1.5,
   },
 };
 

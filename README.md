@@ -22,14 +22,15 @@ paran de crecer.
   | --- | --- | --- | --- |
   | Fácil | 30 | 220 | ×0,65 |
   | Normal | 20 | 150 | ×1 |
-  | Difícil | 12 | 120 | ×1,2 |
+  | Difícil | 12 | 120 | ×1,5 |
 
 - Elige una torre en la barra inferior y **pulsa sobre el prado** para colocarla.
   Las torres no se pueden poner sobre el camino. Si no te llega el oro, la torre
   aparece deshabilitada y no se puede seleccionar.
 - **Pulsa una torre colocada** para ver sus estadísticas, subirla de nivel
-  (hasta el 8, cada nivel más caro que el anterior), **elegir a quién dispara**
-  o **venderla** por parte de lo invertido.
+  (hasta el 8, cada nivel más caro que el anterior), **especializarla** a partir
+  del nivel 4, **elegir a quién dispara** o **venderla** por parte de lo
+  invertido.
 - Cada criatura eliminada da oro; la cantidad depende de su tipo.
 - Cada criatura que llega al castillo **resta una vida y no da oro**.
 - A partir de cierta oleada, algunas criaturas **abandonan el camino** y cruzan
@@ -57,6 +58,32 @@ Antes de cada oleada, un aviso muestra **qué viene** (tipos, cantidad y si trae
 voladores, atacantes de torres, criaturas que se salen del camino, acorazadas,
 sanadoras o divisoras) y un botón para **llamarla antes de tiempo**. Cuanto antes
 la llames, más oro de bonus.
+
+### Especializaciones
+
+Al llegar al **nivel 4**, cada torre elige una de **dos ramas**. La elección es
+permanente durante la partida —vender la torre es la única vuelta atrás— y no
+hace falta elegir para seguir subiendo de nivel.
+
+| Torre | Rama A | Rama B |
+| --- | --- | --- |
+| Arqueras | **Ráfaga**: mucha más cadencia, menos daño por flecha | **Aguja**: perfora armadura |
+| Cañón | **Metralla**: estrena daño en área | **Perforante**: perfora armadura y pega más fuerte |
+| Mortero | **Asedio**: más radio y más alcance | **Demoledora**: perfora armadura, mucho más daño, menos radio |
+| Torre de Hielo | **Ventisca**: congela a muchos más a la vez | **Fragilidad**: lo que congela recibe más daño de todas tus torres |
+| Ballesta | **Vigía**: alcance enorme | **Virote de acero**: perfora armadura |
+| Torre Mágica | **Cadena**: el rayo salta a dos enemigos más | **Sobrecarga**: golpe demoledor, más lento |
+
+Tres efectos que no son solo números:
+
+- **Perforación** ignora la armadura por completo. Es la respuesta a los gólems
+  sin tener que cambiar de tipo de torre.
+- **Cadena** salta al enemigo válido más cercano que ese disparo no haya tocado,
+  respetando el dominio de la torre y sin repetir objetivo.
+- **Fragilidad** convierte la torre de hielo en una torre de **apoyo**: por sí
+  sola casi no mata, pero todo lo que congela recibe más daño de las demás.
+
+Una torre especializada luce un estandarte dorado en el escenario.
 
 ### Prioridad de objetivo
 

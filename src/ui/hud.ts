@@ -23,12 +23,15 @@ import {
   displayedWave,
   getSelectedTower,
   selectShopTower,
+  selectedTowerBranches,
   selectedTowerRepairCost,
+  selectedTowerSpecialisation,
   selectedTowerSellValue,
   selectedTowerUpgradeCost,
 } from '../game/state';
 import { describeWave, waveEnemyCount } from '../game/waves';
 import { SCENARIO_LIST, type ScenarioId } from '../game/scenarios';
+import type { Specialisation, SpecialisationId } from '../game/specialisations';
 import { getTerrainCanvas } from '../render/terrain';
 import { type Records, bestRecordFor, recordFor } from '../storage/records';
 
@@ -57,6 +60,7 @@ export interface HudCallbacks {
   onRepair(): void;
   onSell(): void;
   onSetPriority(priority: TargetPriority): void;
+  onSpecialise(id: SpecialisationId): void;
   onCloseTowerPanel(): void;
   onZoomIn(): void;
   onZoomOut(): void;
@@ -138,6 +142,9 @@ export class Hud {
   private readonly difficultyButtons: { id: DifficultyId; button: HTMLButtonElement }[] = [];
   private readonly menuRecordEl = requireElement('menu-record');
 
+  private readonly branchPicker = requireElement('branch-picker');
+  private readonly branchButtonsEl = requireElement('branch-buttons');
+  private readonly branchLabel = requireElement('tower-panel-branch');
   private readonly screenMenu = requireElement('screen-menu');
   private readonly screenScenarios = requireElement('screen-scenarios');
   private readonly scenarioListEl = requireElement('scenario-list');
@@ -151,12 +158,24 @@ export class Hud {
 
   private readonly scenarioCards: { id: ScenarioId; recordEl: HTMLElement }[] = [];
 
+  /**
+   * Qué ramas hay pintadas ahora mismo. `sync()` corre en cada frame, y
+   * reconstruir los botones cada vez los destruye entre el `pointerdown` y el
+   * `pointerup`: en táctil el toque nunca llega a completarse. Con esta clave
+   * solo se reconstruyen cuando cambian de verdad.
+   */
+  private branchKey = '';
+
   /** Estado de presentación que no vive en la simulación. */
   private view: HudView;
+
+  /** Se guardan porque los botones de rama se crean al sincronizar, no al montar. */
+  private readonly callbacks: HudCallbacks;
 
   constructor(state: GameState, view: HudView, callbacks: HudCallbacks) {
     this.state = state;
     this.view = view;
+    this.callbacks = callbacks;
     this.buildShop();
     this.buildPriorityButtons(callbacks);
     this.buildAbilityBar(callbacks);
@@ -466,7 +485,7 @@ export class Hud {
     }
 
     const type = towerType(tower.typeId);
-    const stats = statsAtLevel(type, tower.level);
+    const stats = statsAtLevel(type, tower.level, tower.specialisation);
     const cost = selectedTowerUpgradeCost(this.state);
 
     this.towerPanel.hidden = false;
@@ -495,6 +514,8 @@ export class Hud {
       this.towerCost.textContent = String(cost);
     }
 
+    this.syncBranches();
+
     const repairCost = selectedTowerRepairCost(this.state);
     this.repairButton.hidden = repairCost === null;
     if (repairCost !== null) {
@@ -508,6 +529,47 @@ export class Hud {
     for (const entry of this.priorityButtons) {
       entry.button.classList.toggle('is-active', entry.id === tower.priority);
     }
+  }
+
+  /** Elección de rama, o la etiqueta de la ya elegida. */
+  private syncBranches(): void {
+    const chosen = selectedTowerSpecialisation(this.state);
+    if (chosen) {
+      this.branchLabel.hidden = false;
+      this.branchLabel.textContent = `✦ ${chosen.name} · ${chosen.blurb}`;
+      this.branchPicker.hidden = true;
+      this.renderBranchButtons([]);
+      return;
+    }
+
+    this.branchLabel.hidden = true;
+    const branches = selectedTowerBranches(this.state);
+    this.branchPicker.hidden = branches.length === 0;
+    this.renderBranchButtons(branches);
+  }
+
+  /** Reconstruye los botones de rama solo si han cambiado. */
+  private renderBranchButtons(branches: readonly Specialisation[]): void {
+    const key = branches.map((branch) => branch.id).join('|');
+    if (key === this.branchKey) return;
+    this.branchKey = key;
+
+    this.branchButtonsEl.replaceChildren(
+      ...branches.map((branch) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn-branch';
+
+        const name = document.createElement('strong');
+        name.textContent = branch.name;
+        const blurb = document.createElement('small');
+        blurb.textContent = branch.blurb;
+        button.append(name, blurb);
+
+        button.addEventListener('click', () => this.callbacks.onSpecialise(branch.id));
+        return button;
+      }),
+    );
   }
 
   private syncScreens(): void {

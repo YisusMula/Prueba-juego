@@ -354,7 +354,37 @@ export function drawTower(ctx: CanvasRenderingContext2D, tower: Tower, time = 0)
       drawFrostTower(ctx, tower, tower.level);
       break;
   }
-  drawTowerDamage(ctx, tower, statsAtLevel(type, tower.level).maxHp);
+  drawSpecialisationMark(ctx, tower);
+  drawTowerDamage(ctx, tower, statsAtLevel(type, tower.level, tower.specialisation).maxHp);
+}
+
+/**
+ * Estandarte dorado sobre una torre especializada.
+ *
+ * Es una marca de rol, no de rama: dos torres del mismo tipo con ramas
+ * distintas no se distinguen entre sí, pero sí de una sin especializar. Con un
+ * icono por rama habría doce símbolos que memorizar; lo que el jugador necesita
+ * de un vistazo es "a este puesto ya le di su papel".
+ */
+function drawSpecialisationMark(ctx: CanvasRenderingContext2D, tower: Tower): void {
+  if (tower.specialisation === null) return;
+  const { x, y } = tower;
+  const top = y - CELL * 0.52;
+
+  ctx.strokeStyle = '#6b5a2a';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(x + CELL * 0.28, top + CELL * 0.16);
+  ctx.lineTo(x + CELL * 0.28, top - CELL * 0.06);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffd75e';
+  ctx.beginPath();
+  ctx.moveTo(x + CELL * 0.28, top - CELL * 0.05);
+  ctx.lineTo(x + CELL * 0.46, top + CELL * 0.01);
+  ctx.lineTo(x + CELL * 0.28, top + CELL * 0.07);
+  ctx.closePath();
+  ctx.fill();
 }
 
 /** Silueta simplificada para la previsualización y los iconos de la tienda. */
@@ -379,6 +409,7 @@ export function drawTowerGhost(
     frozenTargets: [],
     priority: 'first',
     invested: 0,
+    specialisation: null,
   };
   drawTower(ctx, ghost);
 }

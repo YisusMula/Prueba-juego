@@ -17,9 +17,11 @@ import {
   isAbilityReady,
   placeTower,
   repairSelectedTower,
+  specialiseSelectedTower,
   startGame,
   upgradeSelectedTower,
 } from '../src/game/state';
+import { SPECIALISATION_LEVEL, specialisationsFor } from '../src/game/specialisations';
 import { FIXED_DT, step } from '../src/game/step';
 import {
   DEFAULT_SCENARIO,
@@ -142,6 +144,23 @@ function autoPlay(options: PlayOptions = {}): Outcome {
       const spot = spots[spotIndex] as { col: number; row: number };
       if (placeTower(state, spot.col, spot.row)) spotIndex += 1;
       state.shopSelection = null;
+      continue;
+    }
+
+    // Una torre que ya puede especializarse lo hace antes de seguir subiendo:
+    // dejar la rama sin elegir es desperdiciar la mitad de la mejora.
+    const unspecialised = state.towers.find(
+      (tower) => tower.specialisation === null && tower.level >= SPECIALISATION_LEVEL,
+    );
+    if (unspecialised) {
+      state.selectedTowerId = unspecialised.id;
+      const [first, second] = specialisationsFor(unspecialised.typeId);
+      // Alterna entre las dos ramas por identificador de torre, sin azar: así
+      // el simulador mide una defensa mixta y no la mejor rama repetida, que
+      // es lo que haría un jugador que solo sabe una receta.
+      const pick = unspecialised.id % 2 === 0 ? first : second;
+      if (pick) specialiseSelectedTower(state, pick.id);
+      state.selectedTowerId = null;
       continue;
     }
 

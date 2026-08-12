@@ -7,6 +7,8 @@
  * sobre todo el catálogo.
  */
 
+import { type SpecialisationId, modifiersOf } from './specialisations';
+
 export type TowerTypeId = 'archer' | 'cannon' | 'mortar' | 'ballista' | 'magic' | 'frost';
 
 /** A cuál de los enemigos válidos dispara una torre. */
@@ -178,6 +180,14 @@ export interface TowerStats {
   fireRate: number;
   splashRadius: number;
   maxHp: number;
+  /** Los disparos ignoran la armadura del enemigo. */
+  piercing: boolean;
+  /** Saltos adicionales del disparo; 0 = sin cadena. */
+  chainTargets: number;
+  /** Daño que conserva cada salto respecto al anterior. */
+  chainFalloff: number;
+  /** Multiplicador de daño que reciben los enemigos que esta torre congela. */
+  vulnerability: number;
 }
 
 const DAMAGE_PER_LEVEL = 1.32;
@@ -188,15 +198,39 @@ const HP_PER_LEVEL = 0.18;
 const UPGRADE_COST_BASE = 0.75;
 const UPGRADE_COST_GROWTH = 1.5;
 
-/** Estadísticas de una torre en un nivel dado (nivel 1 = las base). */
-export function statsAtLevel(type: TowerType, level: number): TowerStats {
+/**
+ * Estadísticas de una torre en un nivel dado (nivel 1 = las base).
+ *
+ * Los modificadores de la especialización se aplican **después** de la escalada
+ * por nivel, de modo que subir de nivel siga mejorando lo mismo en una torre
+ * especializada que en una que no lo está. Sin especialización, los
+ * modificadores son la identidad y el resultado es idéntico al de antes de que
+ * existieran las ramas.
+ */
+export function statsAtLevel(
+  type: TowerType,
+  level: number,
+  specialisationId: SpecialisationId | null = null,
+): TowerStats {
   const steps = Math.max(0, level - 1);
+  const mod = modifiersOf(specialisationId);
+  const splashByLevel = Math.round(type.splashRadius * (1 + SPLASH_PER_LEVEL * steps));
+  // El bono fijo estrena el área en ramas cuyo tipo base no la tiene, así que
+  // se suma antes de escalar por la rama y no se pierde con un factor sobre 0.
+  const splashRadius = Math.round((splashByLevel + mod.splashBonus) * mod.splashFactor);
+
   return {
-    damage: Math.round(type.damage * DAMAGE_PER_LEVEL ** steps),
-    range: Math.round(type.range * (1 + RANGE_PER_LEVEL * steps)),
-    fireRate: type.fireRate * (1 + FIRE_RATE_PER_LEVEL * steps),
-    splashRadius: Math.round(type.splashRadius * (1 + SPLASH_PER_LEVEL * steps)),
+    damage: Math.max(1, Math.round(type.damage * DAMAGE_PER_LEVEL ** steps * mod.damageFactor)),
+    range: Math.round(type.range * (1 + RANGE_PER_LEVEL * steps) * mod.rangeFactor),
+    fireRate: type.fireRate * (1 + FIRE_RATE_PER_LEVEL * steps) * mod.fireRateFactor,
+    splashRadius,
+    // La estructura no la toca ninguna rama: repararla debe costar lo mismo
+    // sea cual sea la especialización.
     maxHp: Math.round(type.baseHp * (1 + HP_PER_LEVEL * steps)),
+    piercing: mod.piercing,
+    chainTargets: mod.chainTargets,
+    chainFalloff: mod.chainFalloff,
+    vulnerability: mod.vulnerability,
   };
 }
 
@@ -253,8 +287,10 @@ const FROST_CAPACITY_LEVEL_3 = 8;
  * un nivel dado. En sus primeros niveles solo uno; a partir de niveles altos,
  * más de uno.
  */
-export function frostFreezeCapacity(level: number): number {
-  if (level >= FROST_CAPACITY_LEVEL_3) return 3;
-  if (level >= FROST_CAPACITY_LEVEL_2) return 2;
-  return 1;
+export function frostFreezeCapacity(
+  level: number,
+  specialisationId: SpecialisationId | null = null,
+): number {
+  const base = level >= FROST_CAPACITY_LEVEL_3 ? 3 : level >= FROST_CAPACITY_LEVEL_2 ? 2 : 1;
+  return base + modifiersOf(specialisationId).freezeBonus;
 }

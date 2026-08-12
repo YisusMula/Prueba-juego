@@ -14,6 +14,7 @@ import {
 } from './game/camera';
 import { DEFAULT_DIFFICULTY, type DifficultyId } from './game/difficulty';
 import { DEFAULT_SCENARIO, type ScenarioId } from './game/scenarios';
+import type { SpecialisationId } from './game/specialisations';
 import { cellCenter } from './game/map';
 import {
   callNextWave,
@@ -31,6 +32,7 @@ import {
   selectAbility,
   sellSelectedTower,
   setSelectedTowerPriority,
+  specialiseSelectedTower,
   startGame,
   upgradeSelectedTower,
 } from './game/state';
@@ -174,6 +176,10 @@ const hud = new Hud(state, view, {
   },
   onSetPriority: (priority: TargetPriority) => {
     setSelectedTowerPriority(state, priority);
+    hud.sync();
+  },
+  onSpecialise: (id: SpecialisationId) => {
+    specialiseSelectedTower(state, id);
     hud.sync();
   },
   onCloseTowerPanel: () => {

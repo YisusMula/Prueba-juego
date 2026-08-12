@@ -162,11 +162,18 @@ function tryFreeze(state: GameState, towerId: number, enemy: Enemy): void {
 
   const alreadyFrozen = tower.frozenTargets.includes(enemy.id);
   if (!alreadyFrozen) {
-    const capacity = frostFreezeCapacity(tower.level);
+    const capacity = frostFreezeCapacity(tower.level, tower.specialisation);
     if (tower.frozenTargets.length >= capacity) return;
     tower.frozenTargets.push(enemy.id);
   }
   enemy.slowTimer = FREEZE_DURATION;
+  // La fragilidad viaja con el enemigo, no con la torre: quien aprovecha el
+  // daño extra es la torre que dispare después, sea cual sea.
+  enemy.vulnerability = statsAtLevel(
+    towerType(tower.typeId),
+    tower.level,
+    tower.specialisation,
+  ).vulnerability;
 }
 
 function updateWaves(state: GameState, dt: number): void {
@@ -215,7 +222,12 @@ function updateEnemies(state: GameState, dt: number): void {
     const route = enemyRoute(state, enemy);
     if (enemy.hp <= 0) continue;
 
-    if (enemy.slowTimer > 0) enemy.slowTimer = Math.max(0, enemy.slowTimer - dt);
+    if (enemy.slowTimer > 0) {
+      enemy.slowTimer = Math.max(0, enemy.slowTimer - dt);
+      // Al descongelarse pierde la fragilidad: si no, un valor viejo se
+      // aplicaría al volver a congelarlo una torre de hielo sin esa rama.
+      if (enemy.slowTimer === 0) enemy.vulnerability = 1;
+    }
     if (enemy.flash > 0) enemy.flash = Math.max(0, enemy.flash - dt);
     if (enemy.meleeCooldown > 0) enemy.meleeCooldown = Math.max(0, enemy.meleeCooldown - dt);
 
@@ -284,7 +296,7 @@ function updateEnemies(state: GameState, dt: number): void {
 
 function fire(state: GameState, tower: Tower, target: Enemy): void {
   const type = towerType(tower.typeId);
-  const stats = statsAtLevel(type, tower.level);
+  const stats = statsAtLevel(type, tower.level, tower.specialisation);
   const angle = Math.atan2(target.y - tower.y, target.x - tower.x);
 
   state.projectiles.push({
@@ -303,6 +315,9 @@ function fire(state: GameState, tower: Tower, target: Enemy): void {
     angle,
     towerId: tower.id,
     applyFreeze: type.id === 'frost',
+    piercing: stats.piercing,
+    chainTargets: stats.chainTargets,
+    chainFalloff: stats.chainFalloff,
   });
 
   emitSound(state, SHOT_SOUNDS[type.id]);
@@ -328,7 +343,7 @@ function updateTowers(state: GameState, dt: number): void {
     // Sin estructura, la torre no adquiere objetivo ni dispara hasta repararse.
     if (tower.hp <= 0) continue;
 
-    const stats = statsAtLevel(towerType(tower.typeId), tower.level);
+    const stats = statsAtLevel(towerType(tower.typeId), tower.level, tower.specialisation);
     const target = findTarget(state, tower, stats.range);
     if (!target) continue;
 
@@ -383,14 +398,62 @@ function impact(state: GameState, projectile: Projectile, target: Enemy | null):
       if (!hittable) continue;
       const dx = enemy.x - projectile.targetX;
       const dy = enemy.y - projectile.targetY;
-      if (dx * dx + dy * dy <= radiusSq) damageEnemy(state, enemy, projectile.damage);
+      if (dx * dx + dy * dy <= radiusSq) {
+        damageEnemy(state, enemy, projectile.damage, projectile.piercing);
+      }
     }
     return;
   }
 
   if (target) {
-    damageEnemy(state, target, projectile.damage);
+    damageEnemy(state, target, projectile.damage, projectile.piercing);
     if (projectile.applyFreeze && target.hp > 0) tryFreeze(state, projectile.towerId, target);
+    chainFrom(state, projectile, target);
+  }
+}
+
+/** Alcance de un salto de cadena, en píxeles de mundo. */
+const CHAIN_RANGE = 130;
+
+/**
+ * Propaga un disparo encadenado.
+ *
+ * Cada salto va al enemigo válido más cercano que **este disparo** todavía no
+ * ha tocado. Sin ese registro, dos enemigos juntos se rebotarían el rayo entre
+ * ellos hasta agotar los saltos: mucho más daño del previsto y además se ve
+ * mal. El dominio se respeta igual que en la adquisición de objetivo, así que
+ * una torre que no ataca al aire tampoco encadena hacia un aéreo.
+ */
+function chainFrom(state: GameState, projectile: Projectile, first: Enemy): void {
+  if (projectile.chainTargets <= 0) return;
+
+  const hit = new Set<number>([first.id]);
+  let from = first;
+  let damage = projectile.damage;
+
+  for (let jump = 0; jump < projectile.chainTargets; jump += 1) {
+    damage *= projectile.chainFalloff;
+    if (damage < 1) return;
+
+    let next: Enemy | null = null;
+    let bestDistSq = CHAIN_RANGE * CHAIN_RANGE;
+    for (const enemy of state.enemies) {
+      if (enemy.hp <= 0 || hit.has(enemy.id)) continue;
+      const hittable = enemy.domain === 'air' ? projectile.canHitAir : projectile.canHitGround;
+      if (!hittable) continue;
+      const dx = enemy.x - from.x;
+      const dy = enemy.y - from.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > bestDistSq) continue;
+      next = enemy;
+      bestDistSq = distSq;
+    }
+    if (!next) return;
+
+    addEffect(state, 'hit', next.x, next.y, { life: 0.16, radius: next.radius });
+    damageEnemy(state, next, damage, projectile.piercing);
+    hit.add(next.id);
+    from = next;
   }
 }
 

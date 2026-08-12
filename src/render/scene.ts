@@ -111,7 +111,7 @@ function drawSelectionHighlight(ctx: CanvasRenderingContext2D, state: GameState)
   const tower = getSelectedTower(state);
   if (!tower) return;
 
-  const stats = statsAtLevel(towerType(tower.typeId), tower.level);
+  const stats = statsAtLevel(towerType(tower.typeId), tower.level, tower.specialisation);
   drawRangeCircle(ctx, tower.x, tower.y, stats.range, true);
 
   ctx.strokeStyle = '#ffd75e';

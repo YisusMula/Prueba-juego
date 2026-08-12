@@ -1244,3 +1244,76 @@ body {
   .scenario-lanes { grid-area: meta; justify-self: start; }
   .scenario-record { grid-area: meta; justify-self: end; }
 }
+
+/* --- Especialización de torre -------------------------------------------- */
+
+.tower-panel-branch {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 215, 94, 0.12);
+  border: 1px solid rgba(255, 215, 94, 0.35);
+  color: var(--gold);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.branch-picker {
+  margin-top: 10px;
+}
+
+.branch-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+}
+
+.branch-buttons {
+  display: grid;
+  gap: 6px;
+}
+
+.btn-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+  background: linear-gradient(180deg, #5c4a7a, #3d3054);
+  border: 2px solid #241a38;
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  min-height: 44px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s ease, filter 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-branch:hover {
+  filter: brightness(1.15);
+  border-color: var(--gold);
+}
+
+.btn-branch:active {
+  transform: translateY(1px);
+}
+
+.btn-branch:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.btn-branch strong {
+  font-size: 14px;
+}
+
+.btn-branch small {
+  font-size: 11px;
+  color: var(--ink-dim);
+  line-height: 1.3;
+}
