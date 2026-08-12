@@ -30,6 +30,7 @@ import {
   selectedTowerUpgradeCost,
 } from '../game/state';
 import { describeWave, waveEnemyCount } from '../game/waves';
+import { currentTutorialStep, tutorialStepCount, tutorialStepNumber } from '../game/tutorial';
 import { SCENARIO_LIST, type ScenarioId } from '../game/scenarios';
 import {
   MAX_STARS_PER_SCENARIO,
@@ -85,6 +86,8 @@ export interface HudCallbacks {
   onSelectAbility(id: AbilityId): void;
   onSelectDifficulty(id: DifficultyId): void;
   onContinueEndless(): void;
+  onSkipTutorial(): void;
+  onReplayTutorial(): void;
 }
 
 export interface HudView {
@@ -96,6 +99,8 @@ export interface HudView {
   starsEarned: number;
   /** Escenario que la última victoria acaba de abrir, si abrió alguno. */
   unlockedByWin: { name: string } | null;
+  /** La guía de primeros pasos está activa en esta partida. */
+  tutorial: boolean;
 }
 
 interface ShopCard {
@@ -164,6 +169,9 @@ export class Hud {
   private readonly branchPicker = requireElement('branch-picker');
   private readonly branchButtonsEl = requireElement('branch-buttons');
   private readonly branchLabel = requireElement('tower-panel-branch');
+  private readonly tutorialHint = requireElement('tutorial-hint');
+  private readonly tutorialStepEl = requireElement('tutorial-step');
+  private readonly tutorialTextEl = requireElement('tutorial-text');
   private readonly screenMenu = requireElement('screen-menu');
   private readonly screenScenarios = requireElement('screen-scenarios');
   private readonly scenarioListEl = requireElement('scenario-list');
@@ -375,6 +383,8 @@ export class Hud {
   private wire(callbacks: HudCallbacks): void {
     requireElement('btn-start').addEventListener('click', callbacks.onStart);
     requireElement('btn-scenarios-back').addEventListener('click', callbacks.onBackToMenu);
+    requireElement('btn-skip-tutorial').addEventListener('click', callbacks.onSkipTutorial);
+    requireElement('btn-replay-tutorial').addEventListener('click', callbacks.onReplayTutorial);
     requireElement('btn-menu').addEventListener('click', callbacks.onPause);
     requireElement('btn-resume').addEventListener('click', callbacks.onResume);
     requireElement('btn-quit').addEventListener('click', callbacks.onQuit);
@@ -420,6 +430,7 @@ export class Hud {
     this.syncSpeedAndSound();
     this.syncWaveBanner();
     this.syncAbilities();
+    this.syncTutorial();
     this.syncTowerPanel();
     this.syncScreens();
   }
@@ -505,6 +516,21 @@ export class Hud {
       entry.cooldownEl.style.height = `${Math.round(ratio * 100)}%`;
       entry.textEl.textContent = ready ? '' : String(Math.ceil(remaining));
     }
+  }
+
+  /** Pista del paso actual, si la guía está activa y queda algún paso. */
+  private syncTutorial(): void {
+    const step =
+      this.view.tutorial && this.state.screen === 'playing'
+        ? currentTutorialStep(this.state)
+        : null;
+
+    this.tutorialHint.hidden = step === null;
+    if (!step) return;
+
+    this.tutorialStepEl.textContent =
+      `Paso ${tutorialStepNumber(this.state)} de ${tutorialStepCount()}`;
+    this.tutorialTextEl.textContent = step.text;
   }
 
   private syncTowerPanel(): void {

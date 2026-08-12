@@ -70,6 +70,16 @@
         <span id="wave-progress-text">0 / 0</span>
       </div>
 
+      <div id="tutorial-hint" class="tutorial-hint" hidden>
+        <div class="tutorial-hint-head">
+          <span id="tutorial-step" class="tutorial-step">Paso 1 de 5</span>
+          <button id="btn-skip-tutorial" class="btn btn-ghost btn-skip" type="button">
+            Saltar guía
+          </button>
+        </div>
+        <p id="tutorial-text" class="tutorial-text"></p>
+      </div>
+
       <div id="ability-bar" class="ability-bar"></div>
 
       <div id="zoom-controls" class="zoom-controls">
@@ -139,6 +149,9 @@
           <p id="menu-stars" class="menu-stars"></p>
           <p id="menu-record" class="menu-record"></p>
           <button id="btn-start" class="btn btn-primary btn-large" type="button">Comenzar</button>
+          <button id="btn-replay-tutorial" class="btn btn-ghost btn-tutorial" type="button">
+            Ver la guía de primeros pasos
+          </button>
           <ul class="overlay-tips">
             <li>Sobrevive a 30 oleadas para ganar la partida</li>
             <li>Arrastra para mover la vista · pellizca o rueda para el zoom</li>

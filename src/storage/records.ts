@@ -19,6 +19,7 @@ import { SCENARIO_LIST, type ScenarioId } from '../game/scenarios';
  */
 const RECORDS_KEY = 'tower-game:records:v3';
 const MUTED_KEY = 'tower-game:muted:v1';
+const TUTORIAL_KEY = 'tower-game:tutorial-seen:v1';
 
 export interface RunRecord {
   bestWave: number;
@@ -166,4 +167,19 @@ export function loadMuted(): boolean {
 
 export function saveMuted(muted: boolean): void {
   writeRaw(MUTED_KEY, muted ? '1' : '0');
+}
+
+/**
+ * Si el jugador ya ha visto la guía de primeros pasos.
+ *
+ * Sin almacenamiento devuelve falso, así que la guía sale cada vez: es peor que
+ * salir una sola vez, pero mejor que romperse, y quien esté en ese caso puede
+ * saltarla en cada partida.
+ */
+export function loadTutorialSeen(): boolean {
+  return readRaw(TUTORIAL_KEY) === '1';
+}
+
+export function saveTutorialSeen(seen: boolean): void {
+  writeRaw(TUTORIAL_KEY, seen ? '1' : '0');
 }

@@ -9,6 +9,14 @@ Hay una **campaña de tres escenarios**, cada uno con su propio problema: uno de
 carril único, uno donde el camino se bifurca y vuelve a juntarse, y uno con dos
 entradas opuestas. Se abren en orden y cada uno se puntúa con estrellas.
 
+## Primeros pasos
+
+La primera partida lleva una **guía**: una pista en pantalla que va indicando
+qué hacer —elegir torre, colocarla, mejorarla y especializarla— y que **avanza
+sola** cuando lo haces. No bloquea nada ni te obliga a pulsar donde te dice: si
+ya sabes jugar, la ignoras o la saltas con su botón. Desde el menú principal se
+puede volver a activar.
+
 ## Cómo se juega
 
 La partida se gana **superando la oleada 30**; se pierde cuando las vidas llegan

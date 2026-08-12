@@ -1371,3 +1371,76 @@ body {
   color: #b8f09a;
   font-size: 14px;
 }
+
+/* --- Guía de primeros pasos ---------------------------------------------- */
+
+/*
+ * Va abajo, sobre el escenario pero fuera del aviso de oleada, que ocupa la
+ * parte de arriba. Arranca a la derecha de la barra de habilidades y termina
+ * antes de los controles de zoom: pegada al borde izquierdo tapaba los botones
+ * de habilidad y dejaba las dos cosas ilegibles. No es un modal: el jugador
+ * puede ignorarla y seguir jugando.
+ */
+.tutorial-hint {
+  position: absolute;
+  left: 74px;
+  bottom: calc(var(--shop-actual) + 12px);
+  z-index: 9;
+  width: min(320px, calc(100vw - 148px));
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(52, 37, 24, 0.97), rgba(33, 23, 14, 0.97));
+  border: 2px solid var(--gold);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.tutorial-hint-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.tutorial-step {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.btn-skip {
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.tutorial-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.btn-tutorial {
+  margin-top: 10px;
+  font-size: 14px;
+  min-height: 40px;
+}
+
+/*
+ * En apaisado la barra de habilidades se pone horizontal y ocupa la esquina
+ * inferior izquierda, así que la pista arranca a su derecha. Los controles de
+ * zoom ocupan la derecha, de ahí el margen que se le resta al ancho.
+ */
+@media (max-height: 480px) {
+  .tutorial-hint {
+    left: 140px;
+    width: min(300px, calc(100vw - 210px));
+    padding: 6px 10px;
+  }
+
+  .tutorial-text {
+    font-size: 13px;
+  }
+}

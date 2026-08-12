@@ -15,6 +15,7 @@ import {
 import { DEFAULT_DIFFICULTY, type DifficultyId } from './game/difficulty';
 import { DEFAULT_SCENARIO, type ScenarioId } from './game/scenarios';
 import type { SpecialisationId } from './game/specialisations';
+import { currentTutorialStep } from './game/tutorial';
 import { isScenarioUnlocked, newlyUnlocked, starsFor } from './game/campaign';
 import { cellCenter } from './game/map';
 import {
@@ -40,7 +41,15 @@ import {
 import { FIXED_DT, MAX_STEPS_PER_FRAME, step } from './game/step';
 import type { TargetPriority } from './game/towers';
 import { renderScene } from './render/scene';
-import { loadMuted, loadRecords, recordRun, saveMuted, saveRecords } from './storage/records';
+import {
+  loadMuted,
+  loadRecords,
+  loadTutorialSeen,
+  recordRun,
+  saveMuted,
+  saveRecords,
+  saveTutorialSeen,
+} from './storage/records';
 import { Hud, type HudView } from './ui/hud';
 import { attachPointerControls } from './ui/pointer';
 
@@ -65,7 +74,14 @@ const view: HudView = {
   records: loadRecords(),
   starsEarned: 0,
   unlockedByWin: null,
+  tutorial: false,
 };
+
+/**
+ * Si la próxima partida debe llevar la guía. Arranca a cierto la primera vez
+ * que se juega y se reactiva desde el menú.
+ */
+let tutorialPending = !loadTutorialSeen();
 
 /** Último escenario jugado: lo que se reintenta al perder. */
 let lastScenarioId: ScenarioId = DEFAULT_SCENARIO;
@@ -131,6 +147,7 @@ function beginRun(difficultyId: DifficultyId, scenarioId: ScenarioId): void {
     return;
   }
   lastScenarioId = scenarioId;
+  view.tutorial = tutorialPending;
   camera = openingCamera();
   lastLives = state.lives;
   lastScreen = state.screen;
@@ -239,6 +256,21 @@ const hud = new Hud(state, view, {
   },
   onContinueEndless: () => {
     continueEndless(state);
+    hud.sync();
+  },
+  onSkipTutorial: () => {
+    // Saltarla cuenta como haberla visto: quien la salta ha decidido que no la
+    // necesita, y volver a ofrecérsela sería insistir.
+    view.tutorial = false;
+    tutorialPending = false;
+    saveTutorialSeen(true);
+    hud.setView(view);
+    hud.sync();
+  },
+  onReplayTutorial: () => {
+    tutorialPending = true;
+    saveTutorialSeen(false);
+    hud.setView(view);
     hud.sync();
   },
 });
@@ -363,6 +395,22 @@ function reactToRunEnd(): void {
   lastScreen = state.screen;
 }
 
+/**
+ * Completar la guía cuenta como haberla visto. Se comprueba en el bucle porque
+ * el último paso se cumple al especializar una torre, y no hay un evento de
+ * "guía terminada" que escuchar: el paso actual es una consulta sobre el
+ * estado, así que su desaparición también lo es.
+ */
+function reactToTutorial(): void {
+  if (!view.tutorial) return;
+  if (currentTutorialStep(state) !== null) return;
+
+  view.tutorial = false;
+  tutorialPending = false;
+  saveTutorialSeen(true);
+  hud.setView(view);
+}
+
 let previousTime = performance.now();
 let accumulator = 0;
 
@@ -389,6 +437,7 @@ function frame(now: number): void {
   playQueuedSounds();
   reactToLifeLoss();
   reactToRunEnd();
+  reactToTutorial();
 
   canvas!.classList.toggle('is-placing', state.shopSelection !== null);
   canvas!.classList.toggle('is-aiming', state.aimingAbility !== null);
