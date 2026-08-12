@@ -245,6 +245,11 @@ export function scenario(id: ScenarioId): Scenario {
   return BY_ID.get(id) ?? (BY_ID.get(DEFAULT_SCENARIO) as Scenario);
 }
 
+/** Nombre legible de un escenario, para textos de interfaz. */
+export function SCENARIOS_BY_NAME(id: ScenarioId): string {
+  return scenario(id).name;
+}
+
 export function isScenarioId(value: unknown): value is ScenarioId {
   return typeof value === 'string' && BY_ID.has(value as ScenarioId);
 }

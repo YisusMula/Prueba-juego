@@ -9,6 +9,20 @@ Hay una **campaña de tres escenarios**, cada uno con su propio problema: uno de
 carril único, uno donde el camino se bifurca y vuelve a juntarse, y uno con dos
 entradas opuestas. Se abren en orden y cada uno se puntúa con estrellas.
 
+## Continuar donde lo dejaste
+
+La partida en curso **se guarda sola** cada pocos segundos y, sobre todo, al
+ocultarse la pestaña: en un móvil ese es el último aviso antes de que el sistema
+la recicle. Al volver, el menú ofrece **Continuar**, diciendo en qué escenario y
+oleada te quedaste.
+
+Se restaura la partida entera —enemigos con su recorrido, torres con su nivel y
+su daño, proyectiles en vuelo, recargas de habilidades— y entra **en pausa**,
+para que puedas reconocer el tablero antes de que la oleada siga.
+
+El guardado se descarta al ganar, al perder, al salir al menú y al empezar otra
+partida.
+
 ## Primeros pasos
 
 La primera partida lleva una **guía**: una pista en pantalla que va indicando

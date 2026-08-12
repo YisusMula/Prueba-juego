@@ -43,6 +43,8 @@ import {
 import type { Specialisation, SpecialisationId } from '../game/specialisations';
 import { getTerrainCanvas } from '../render/terrain';
 import { type Records, bestRecordFor, recordFor } from '../storage/records';
+import type { SavedRunSummary } from '../storage/savegame';
+import { SCENARIOS_BY_NAME } from '../game/scenarios';
 
 /** Estrellas conseguidas sobre el máximo, como fila de símbolos. */
 function starRow(stars: number): string {
@@ -88,6 +90,7 @@ export interface HudCallbacks {
   onContinueEndless(): void;
   onSkipTutorial(): void;
   onReplayTutorial(): void;
+  onContinueRun(): void;
 }
 
 export interface HudView {
@@ -101,6 +104,8 @@ export interface HudView {
   unlockedByWin: { name: string } | null;
   /** La guía de primeros pasos está activa en esta partida. */
   tutorial: boolean;
+  /** Partida guardada que se puede reanudar, si la hay. */
+  savedRun: SavedRunSummary | null;
 }
 
 interface ShopCard {
@@ -165,6 +170,8 @@ export class Hud {
   private readonly difficultyButtons: { id: DifficultyId; button: HTMLButtonElement }[] = [];
   private readonly menuRecordEl = requireElement('menu-record');
   private readonly menuStarsEl = requireElement('menu-stars');
+  private readonly continueButton = requireElement<HTMLButtonElement>('btn-continue');
+  private readonly continueDetail = requireElement('continue-detail');
 
   private readonly branchPicker = requireElement('branch-picker');
   private readonly branchButtonsEl = requireElement('branch-buttons');
@@ -384,6 +391,7 @@ export class Hud {
     requireElement('btn-start').addEventListener('click', callbacks.onStart);
     requireElement('btn-scenarios-back').addEventListener('click', callbacks.onBackToMenu);
     requireElement('btn-skip-tutorial').addEventListener('click', callbacks.onSkipTutorial);
+    requireElement('btn-continue').addEventListener('click', callbacks.onContinueRun);
     requireElement('btn-replay-tutorial').addEventListener('click', callbacks.onReplayTutorial);
     requireElement('btn-menu').addEventListener('click', callbacks.onPause);
     requireElement('btn-resume').addEventListener('click', callbacks.onResume);
@@ -700,6 +708,13 @@ export class Hud {
 
     this.menuStarsEl.textContent =
       `⭐ ${totalStars(this.view.records)} de ${maxStars()} estrellas`;
+
+    const saved = this.view.savedRun;
+    this.continueButton.hidden = saved === null;
+    if (saved) {
+      const scene = SCENARIOS_BY_NAME(saved.scenarioId);
+      this.continueDetail.textContent = ` · ${scene} · oleada ${saved.wave}`;
+    }
 
     const record = bestRecordFor(this.view.records, this.view.menuDifficulty);
     this.menuRecordEl.textContent =

@@ -16,6 +16,7 @@ import { DEFAULT_DIFFICULTY, type DifficultyId } from './game/difficulty';
 import { DEFAULT_SCENARIO, type ScenarioId } from './game/scenarios';
 import type { SpecialisationId } from './game/specialisations';
 import { currentTutorialStep } from './game/tutorial';
+import { clearRun, loadRun, loadRunSummary, saveRun } from './storage/savegame';
 import { isScenarioUnlocked, newlyUnlocked, starsFor } from './game/campaign';
 import { cellCenter } from './game/map';
 import {
@@ -34,6 +35,7 @@ import {
   selectAbility,
   sellSelectedTower,
   setSelectedTowerPriority,
+  restoreRun,
   specialiseSelectedTower,
   startGame,
   upgradeSelectedTower,
@@ -75,6 +77,7 @@ const view: HudView = {
   starsEarned: 0,
   unlockedByWin: null,
   tutorial: false,
+  savedRun: loadRunSummary(),
 };
 
 /**
@@ -140,6 +143,19 @@ function unlockAudio(): void {
   audio.unlock();
 }
 
+/** Guarda la partida y refresca lo que el menú enseñará al volver. */
+function persistRun(): void {
+  saveRun(state);
+  view.savedRun = loadRunSummary();
+}
+
+/** Descarta la partida guardada: ya no hay nada que reanudar. */
+function forgetRun(): void {
+  clearRun();
+  view.savedRun = null;
+  hud.setView(view);
+}
+
 function beginRun(difficultyId: DifficultyId, scenarioId: ScenarioId): void {
   // Un escenario bloqueado no arranca partida: la comprobación va aquí, donde
   // se conocen los récords, y no dentro de la simulación.
@@ -148,6 +164,9 @@ function beginRun(difficultyId: DifficultyId, scenarioId: ScenarioId): void {
   }
   lastScenarioId = scenarioId;
   view.tutorial = tutorialPending;
+  // La partida nueva sustituye a la guardada desde el primer instante: si el
+  // jugador cierra ahora, lo que reanude debe ser esta, no la anterior.
+  persistRun();
   camera = openingCamera();
   lastLives = state.lives;
   lastScreen = state.screen;
@@ -170,6 +189,26 @@ const hud = new Hud(state, view, {
     exitToMenu(state);
     hud.sync();
   },
+  onContinueRun: () => {
+    unlockAudio();
+    const saved = loadRun();
+    if (!saved) return;
+
+    restoreRun(state, saved);
+    // Se reanuda **en pausa**. Volver una hora después y encontrarse la oleada
+    // 22 ya en marcha no da tiempo a reconocer el tablero; el jugador ve dónde
+    // estaba y arranca cuando quiere.
+    pauseGame(state);
+    lastScenarioId = state.scenarioId;
+    // Reanudar no activa la guía: en una partida a medias sus primeros pasos
+    // ya están cumplidos y solo enseñaría el último fuera de contexto.
+    view.tutorial = false;
+    camera = openingCamera();
+    lastLives = state.lives;
+    lastScreen = state.screen;
+    hud.setView(view);
+    hud.sync();
+  },
   onPause: () => {
     pauseGame(state);
     hud.sync();
@@ -179,7 +218,10 @@ const hud = new Hud(state, view, {
     hud.sync();
   },
   onQuit: () => {
+    // Salir al menú descarta: es una decisión explícita de abandonar, y
+    // conservarlo haría reaparecer Continuar justo después de irse.
     exitToMenu(state);
+    forgetRun();
     hud.sync();
   },
   onRetry: () => {
@@ -310,9 +352,13 @@ if (typeof ResizeObserver !== 'undefined') {
 }
 
 // Pausa automática al perder el foco: nadie quiere volver y encontrarse sin vidas.
+// Pausar y **guardar** al ocultarse la pestaña. En un móvil este es el último
+// aviso antes de que el sistema pueda reciclarla, así que es el guardado que
+// de verdad importa.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     pauseGame(state);
+    persistRun();
     hud.sync();
   }
 });
@@ -386,6 +432,8 @@ function reactToRunEnd(): void {
       state.screen === 'victory',
     );
     view.records = records;
+    // La partida ha terminado: ya no hay nada que reanudar.
+    forgetRun();
     view.starsEarned = starsFor(records, state.scenarioId);
     view.unlockedByWin = newlyUnlocked(before, records);
     saveRecords(records);
@@ -411,8 +459,25 @@ function reactToTutorial(): void {
   hud.setView(view);
 }
 
+/**
+ * Cada cuánto se guarda la partida en curso. No se guarda en cada paso: sesenta
+ * escrituras síncronas por segundo a `localStorage` se notarían en los
+ * fotogramas y no compran nada frente a hacerlo cada pocos segundos, porque el
+ * guardado que de verdad salva la partida es el de `visibilitychange`.
+ */
+const AUTOSAVE_SECONDS = 4;
+
 let previousTime = performance.now();
 let accumulator = 0;
+let sinceSave = 0;
+
+function autosave(elapsed: number): void {
+  if (state.screen !== 'playing') return;
+  sinceSave += elapsed;
+  if (sinceSave < AUTOSAVE_SECONDS) return;
+  sinceSave = 0;
+  persistRun();
+}
 
 function frame(now: number): void {
   const elapsed = Math.min((now - previousTime) / 1000, 0.5);
@@ -438,6 +503,7 @@ function frame(now: number): void {
   reactToLifeLoss();
   reactToRunEnd();
   reactToTutorial();
+  autosave(elapsed);
 
   canvas!.classList.toggle('is-placing', state.shopSelection !== null);
   canvas!.classList.toggle('is-aiming', state.aimingAbility !== null);

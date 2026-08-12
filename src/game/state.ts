@@ -294,6 +294,25 @@ export function startGame(
   return true;
 }
 
+/**
+ * Vuelca una partida guardada sobre el estado vivo.
+ *
+ * Se copia campo a campo en el objeto existente en vez de sustituirlo porque
+ * el HUD, el render y los controles guardan la misma referencia: reemplazarla
+ * dejaría a todos ellos apuntando a la partida anterior.
+ */
+export function restoreRun(state: GameState, saved: GameState): void {
+  Object.assign(state, saved);
+  // La presentación no se restaura: son efectos y sonidos de un instante ya
+  // pasado. Se rehacen vacíos aunque el guardado los trajera.
+  state.effects = [];
+  state.soundQueue = [];
+  // Apuntar una habilidad o tener una torre elegida en la tienda son
+  // intenciones a medias del jugador de hace media hora, no estado de partida.
+  state.aimingAbility = null;
+  state.shopSelection = null;
+}
+
 /** Abre la pantalla de selección de escenario desde el menú principal. */
 export function openScenarioPicker(state: GameState, difficultyId?: DifficultyId): void {
   if (difficultyId) state.difficultyId = difficultyId;
@@ -350,7 +369,7 @@ export function continueEndless(state: GameState): void {
 }
 
 export function pauseGame(state: GameState): void {
-  if (state.screen === 'playing') state.screen = 'paused';
+  if (state.screen === 'playing' || state.screen === 'paused') state.screen = 'paused';
 }
 
 export function resumeGame(state: GameState): void {
