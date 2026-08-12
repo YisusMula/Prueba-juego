@@ -128,6 +128,18 @@ describe('battlefield-map: reparto de enemigos entre rutas', () => {
     expect(enemy.routeIndex).toBe(route);
   });
 
+  it('el reparto funciona con más de dos rutas', () => {
+    const wide = SCENARIO_LIST.find((scene) => scene.routes.length >= 3);
+    expect(wide).toBeDefined();
+
+    const state = createGameState('normal', wide!.id);
+    startGame(state);
+    for (let i = 0; i < wide!.routes.length * 4; i += 1) spawnEnemy(state, 'rat', 1);
+
+    const used = new Set(state.enemies.map((enemy) => enemy.routeIndex));
+    expect(used.size).toBe(wide!.routes.length);
+  });
+
   it('un escenario de una sola ruta manda a todos por ella', () => {
     const meadow = scenario('meadow');
     for (let id = 0; id < 10; id += 1) {

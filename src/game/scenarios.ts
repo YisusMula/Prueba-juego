@@ -26,7 +26,7 @@ import {
   inBounds,
 } from './map';
 
-export type ScenarioId = 'meadow' | 'crossroads' | 'gates';
+export type ScenarioId = 'meadow' | 'crossroads' | 'gates' | 'lighthouse' | 'threepaths';
 
 /** Una ruta ya expandida, con todo lo necesario para mover enemigos por ella. */
 export interface Route {
@@ -158,6 +158,90 @@ const DEFINITIONS: readonly ScenarioDef[] = [
         { col: 11, row: 11 },
         { col: 11, row: 8 },
         { col: 16, row: 8 },
+        { col: 16, row: 7 },
+        { col: 19, row: 7 },
+      ],
+    ],
+  },
+  {
+    id: 'lighthouse',
+    name: 'Sendero del Faro',
+    blurb: 'Un carril larguísimo. Aquí compensa concentrar el oro en pocos puestos.',
+    routes: [
+      // Serpentea de lado a lado con pasillos de dos filas entre tramos: una
+      // torre bien puesta cubre dos carriles a la vez, y cada enemigo pasa
+      // mucho más tiempo bajo fuego que en el resto del catálogo.
+      [
+        { col: 0, row: 1 },
+        { col: 17, row: 1 },
+        { col: 17, row: 4 },
+        { col: 2, row: 4 },
+        { col: 2, row: 7 },
+        { col: 17, row: 7 },
+        { col: 17, row: 10 },
+        { col: 2, row: 10 },
+        { col: 2, row: 12 },
+        { col: 19, row: 12 },
+      ],
+    ],
+  },
+  {
+    id: 'threepaths',
+    name: 'Tres Senderos',
+    blurb: 'Se parte en tres. Desatender un ramal cuesta un tercio de cada oleada.',
+    routes: [
+      // Las tres ramas miden lo mismo, igual que en el cruce: una más corta
+      // sería siempre la mejor y repartir dejaría de ser una decisión.
+      //
+      // El tramo común de entrada es largo a propósito. Con tres ramas y una
+      // cabecera corta no hay ningún sitio donde cubrirlas a la vez, y el mapa
+      // deja de ser una decisión de reparto para ser sencillamente injusto.
+      // Rama norte.
+      [
+        { col: 0, row: 2 },
+        { col: 4, row: 2 },
+        { col: 4, row: 5 },
+        { col: 1, row: 5 },
+        { col: 1, row: 10 },
+        { col: 4, row: 10 },
+        { col: 4, row: 7 },
+        { col: 6, row: 7 },
+        { col: 6, row: 1 },
+        { col: 16, row: 1 },
+        { col: 16, row: 7 },
+        { col: 19, row: 7 },
+      ],
+      // Rama central, que zigzaguea por el hueco entre las otras dos.
+      [
+        { col: 0, row: 2 },
+        { col: 4, row: 2 },
+        { col: 4, row: 5 },
+        { col: 1, row: 5 },
+        { col: 1, row: 10 },
+        { col: 4, row: 10 },
+        { col: 4, row: 7 },
+        { col: 6, row: 7 },
+        { col: 9, row: 7 },
+        { col: 9, row: 4 },
+        { col: 12, row: 4 },
+        { col: 12, row: 10 },
+        { col: 15, row: 10 },
+        { col: 15, row: 7 },
+        { col: 16, row: 7 },
+        { col: 19, row: 7 },
+      ],
+      // Rama sur.
+      [
+        { col: 0, row: 2 },
+        { col: 4, row: 2 },
+        { col: 4, row: 5 },
+        { col: 1, row: 5 },
+        { col: 1, row: 10 },
+        { col: 4, row: 10 },
+        { col: 4, row: 7 },
+        { col: 6, row: 7 },
+        { col: 6, row: 13 },
+        { col: 16, row: 13 },
         { col: 16, row: 7 },
         { col: 19, row: 7 },
       ],

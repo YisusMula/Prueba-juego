@@ -5,9 +5,9 @@ el ordenador. Las criaturas entran por la cueva y recorren un camino sinuoso a
 través del prado hasta tu castillo; tú levantas torres en la hierba y las subes
 de nivel para que ninguna llegue.
 
-Hay una **campaña de tres escenarios**, cada uno con su propio problema: uno de
-carril único, uno donde el camino se bifurca y vuelve a juntarse, y uno con dos
-entradas opuestas. Se abren en orden y cada uno se puntúa con estrellas.
+Hay una **campaña de cinco escenarios**, cada uno con su propio problema: desde
+un carril único hasta un camino que se parte en tres. Se abren en orden y cada
+uno se puntúa con estrellas.
 
 ## Instalable y sin conexión
 
@@ -85,6 +85,8 @@ paran de crecer.
 | Prado del Molino | 1 carril | Muchas curvas y un solo flujo. El sitio donde aprender. |
 | Cruce de los Cuervos | 2 ramales | El camino se parte y se vuelve a juntar; las dos ramas miden lo mismo, así que cubrir una sola no basta. |
 | Los Dos Portones | 2 entradas | Dos flujos opuestos hacia la misma meta: hay que montar dos defensas con el mismo oro. |
+| Sendero del Faro | 1 carril | Un recorrido larguísimo, con pasillos de dos filas: cada enemigo pasa mucho tiempo bajo fuego y compensa concentrar el oro en pocos puestos. |
+| Tres Senderos | 3 ramales | Se parte en tres tras una cabecera larga. Desatender un ramal cuesta un tercio de cada oleada. |
 
 Los enemigos se reparten entre las rutas de forma alterna y determinista, y cada
 uno recorre la suya de principio a fin. Cada escenario guarda **su propio
@@ -97,7 +99,8 @@ conseguir **al menos una estrella** en el anterior; los bloqueados siguen en la
 lista, atenuados y diciendo qué hace falta para abrirlos.
 
 Las estrellas de un escenario salen de la **dificultad más alta en la que hayas
-ganado** en él: ⭐ en Fácil, ⭐⭐ en Normal, ⭐⭐⭐ en Difícil. No se suman entre
+ganado** en él: ⭐ en Fácil, ⭐⭐ en Normal, ⭐⭐⭐ en Difícil. Con cinco
+escenarios, el total son 15. No se suman entre
 dificultades, así que ganar en Difícil concede las tres directamente y no deja
 tareas pendientes que no enseñan nada.
 

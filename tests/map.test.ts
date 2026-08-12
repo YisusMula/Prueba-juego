@@ -88,12 +88,43 @@ describe('battlefield-map: catálogo de escenarios', () => {
     expect(twoGates).toBeDefined();
   });
 
-  it('las ramas de la bifurcación miden lo mismo', () => {
-    const fork = scenario('crossroads');
-    const lengths = fork.routes.map((route) => route.length);
+  it('todas las ramas de una bifurcación miden lo mismo', () => {
     // Una rama más corta sería siempre la mejor y la bifurcación dejaría de
-    // ser una decisión.
-    expect(Math.abs((lengths[0] as number) - (lengths[1] as number))).toBeLessThan(1);
+    // ser una decisión. Vale para dos ramas y para tres.
+    const forks = SCENARIO_LIST.filter(
+      (scene) =>
+        scene.routes.length > 1 && scene.spawnCells.length === 1 && scene.goalCells.length === 1,
+    );
+    expect(forks.length).toBeGreaterThan(0);
+
+    for (const fork of forks) {
+      const lengths = fork.routes.map((route) => route.length);
+      const spread = Math.max(...lengths) - Math.min(...lengths);
+      expect(spread, `${fork.name}: ramas desiguales`).toBeLessThan(1);
+    }
+  });
+
+  it('el catálogo tiene al menos cinco escenarios con nombres distintos', () => {
+    expect(SCENARIO_LIST.length).toBeGreaterThanOrEqual(5);
+    expect(new Set(SCENARIO_LIST.map((scene) => scene.name)).size).toBe(SCENARIO_LIST.length);
+    expect(new Set(SCENARIO_LIST.map((scene) => scene.blurb)).size).toBe(SCENARIO_LIST.length);
+  });
+
+  it('hay un escenario claramente más largo que el resto', () => {
+    const lengths = SCENARIO_LIST.map((scene) => routeOf(scene, 0).length).sort((a, b) => a - b);
+    const median = lengths[Math.floor(lengths.length / 2)] as number;
+    const longest = lengths[lengths.length - 1] as number;
+
+    // Un mapa largo cambia la estrategia: compensa concentrar el oro en pocos
+    // puestos porque cada enemigo pasa mucho más tiempo bajo fuego.
+    expect(longest).toBeGreaterThan(median * 1.33);
+  });
+
+  it('hay una bifurcación de tres o más ramas', () => {
+    const wide = SCENARIO_LIST.find((scene) => scene.routes.length >= 3);
+    expect(wide).toBeDefined();
+    expect(wide!.spawnCells).toHaveLength(1);
+    expect(wide!.goalCells).toHaveLength(1);
   });
 });
 
