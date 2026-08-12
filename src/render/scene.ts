@@ -6,6 +6,7 @@ import { CELL, MAP_HEIGHT, MAP_WIDTH, cellCenter, worldToCell } from '../game/ma
 import { statsAtLevel, towerType } from '../game/towers';
 import { type GameState, canPlaceTower, getSelectedTower } from '../game/state';
 import { getTerrainCanvas } from './terrain';
+import { currentScenario } from '../game/state';
 import { AIR_ALTITUDE, drawEnemy, drawProjectile, drawTower, drawTowerGhost } from './sprites';
 
 export interface SceneInput {
@@ -302,7 +303,7 @@ export function renderScene(
   ctx.scale(camera.zoom, camera.zoom);
   ctx.translate(-camera.x, -camera.y);
 
-  ctx.drawImage(getTerrainCanvas(), 0, 0, MAP_WIDTH, MAP_HEIGHT);
+  ctx.drawImage(getTerrainCanvas(currentScenario(state)), 0, 0, MAP_WIDTH, MAP_HEIGHT);
 
   drawSelectionHighlight(ctx, state);
   drawPlacementPreview(ctx, state, camera, viewport, input.pointer);

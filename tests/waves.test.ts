@@ -12,7 +12,8 @@ import {
 } from '../src/game/waves';
 import { ENEMY_TYPES, ENEMY_TYPE_LIST } from '../src/game/enemies';
 import { WAVE_REST, createGameState, placeTower, spawnEnemy, startGame } from '../src/game/state';
-import { PATH_LENGTH } from '../src/game/map';
+import { routeOf } from '../src/game/scenarios';
+import { defaultScenario } from './helpers';
 import { damageEnemy, findTarget } from '../src/game/step';
 import { grassBesidePath, run, quietRun } from './helpers';
 import { TOWER_TYPES } from '../src/game/towers';
@@ -172,7 +173,9 @@ describe('wave-system: muerte y meta', () => {
       state.gold = 0;
 
       const enemy = spawnEnemy(state, type.id, 3);
-      damageEnemy(state, enemy, enemy.hp);
+      // Con margen para la armadura: un acorazado no muere con un golpe
+      // exactamente igual a su vida, porque parte se queda en la coraza.
+      damageEnemy(state, enemy, enemy.hp + enemy.armor);
 
       // La recompensa es la del tipo, no escala con la vida de la oleada.
       expect(state.gold).toBe(type.reward);
@@ -199,7 +202,7 @@ describe('wave-system: muerte y meta', () => {
     state.gold = 50;
 
     const enemy = spawnEnemy(state, 'dog', 1);
-    enemy.distance = PATH_LENGTH - 1;
+    enemy.distance = routeOf(defaultScenario(), 0).length - 1;
     run(state, 0.5);
 
     expect(state.gold).toBe(50);

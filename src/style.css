@@ -1122,3 +1122,125 @@ body {
     padding: 6px 8px;
   }
 }
+
+/* --- Selección de escenario ---------------------------------------------- */
+
+.overlay-scenarios {
+  background: rgba(18, 34, 14, 0.92);
+  overflow-y: auto;
+}
+
+/* Las tarjetas piden más ancho que una tarjeta de texto. */
+.overlay-wide {
+  max-width: 880px;
+}
+
+.scenario-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.scenario-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 10px;
+  background: linear-gradient(180deg, var(--wood-light), var(--wood));
+  border: 2px solid var(--wood-edge);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s ease, border-color 0.15s ease, filter 0.15s ease;
+}
+
+.scenario-card:hover {
+  filter: brightness(1.12);
+  border-color: var(--gold);
+}
+
+.scenario-card:active {
+  transform: translateY(1px);
+}
+
+.scenario-card:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/*
+ * La miniatura conserva la proporción de la rejilla (20x14). El canvas se
+ * estira al ancho disponible, así que la tarjeta se adapta sin recortarlo.
+ */
+.scenario-thumb {
+  aspect-ratio: 20 / 14;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #2f4f2a;
+  border: 1px solid var(--wood-edge);
+}
+
+.scenario-thumb canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scenario-name {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.scenario-blurb {
+  font-size: 12px;
+  color: var(--ink-dim);
+  line-height: 1.35;
+}
+
+.scenario-lanes {
+  align-self: flex-start;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--ink-dim);
+}
+
+.scenario-record {
+  font-size: 12px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 560px) {
+  .scenario-list {
+    grid-template-columns: 1fr;
+  }
+
+  /* En vertical, la miniatura a ancho completo se come la pantalla. */
+  .scenario-card {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    grid-template-areas:
+      'thumb name'
+      'thumb blurb'
+      'thumb meta';
+    column-gap: 10px;
+    align-items: start;
+  }
+
+  .scenario-thumb { grid-area: thumb; align-self: center; }
+  .scenario-name { grid-area: name; }
+  .scenario-blurb { grid-area: blurb; }
+  .scenario-lanes { grid-area: meta; justify-self: start; }
+  .scenario-record { grid-area: meta; justify-self: end; }
+}

@@ -13,15 +13,18 @@ import {
   zoomCameraAt,
 } from './game/camera';
 import { DEFAULT_DIFFICULTY, type DifficultyId } from './game/difficulty';
-import { SPAWN_CELL, cellCenter } from './game/map';
+import { DEFAULT_SCENARIO, type ScenarioId } from './game/scenarios';
+import { cellCenter } from './game/map';
 import {
   callNextWave,
   continueEndless,
   createGameState,
+  currentScenario,
   displayedWave,
   drainSounds,
   exitToMenu,
   handleWorldTap,
+  openScenarioPicker,
   pauseGame,
   repairSelectedTower,
   resumeGame,
@@ -59,6 +62,9 @@ const view: HudView = {
   records: loadRecords(),
 };
 
+/** Último escenario jugado: lo que se reintenta al perder. */
+let lastScenarioId: ScenarioId = DEFAULT_SCENARIO;
+
 let viewport: Viewport = { width: 1, height: 1 };
 let camera: Camera = fitCamera(viewport);
 let pointer: { x: number; y: number } | null = null;
@@ -70,7 +76,12 @@ let lastScreen = state.screen;
 
 /** Vista de arranque de una partida: la entrada del camino, bien visible. */
 function openingCamera(): Camera {
-  return initialCamera(viewport, cellCenter(SPAWN_CELL.col, SPAWN_CELL.row));
+  // La primera entrada del escenario. Con dos portones da igual cuál: el
+  // jugador va a desplazarse igualmente, y encuadrar una es más legible que
+  // encuadrar el punto medio entre las dos, que no es nada en particular.
+  const spawn = currentScenario(state).spawnCells[0];
+  if (!spawn) return fitCamera(viewport);
+  return initialCamera(viewport, cellCenter(spawn.col, spawn.row));
 }
 
 /**
@@ -108,8 +119,9 @@ function unlockAudio(): void {
   audio.unlock();
 }
 
-function beginRun(difficultyId: DifficultyId): void {
-  startGame(state, difficultyId);
+function beginRun(difficultyId: DifficultyId, scenarioId: ScenarioId): void {
+  lastScenarioId = scenarioId;
+  startGame(state, difficultyId, scenarioId);
   camera = openingCamera();
   lastLives = state.lives;
   lastScreen = state.screen;
@@ -121,7 +133,16 @@ function beginRun(difficultyId: DifficultyId): void {
 const hud = new Hud(state, view, {
   onStart: () => {
     unlockAudio();
-    beginRun(view.menuDifficulty);
+    openScenarioPicker(state, view.menuDifficulty);
+    hud.sync();
+  },
+  onPickScenario: (scenarioId: ScenarioId) => {
+    unlockAudio();
+    beginRun(view.menuDifficulty, scenarioId);
+  },
+  onBackToMenu: () => {
+    exitToMenu(state);
+    hud.sync();
   },
   onPause: () => {
     pauseGame(state);
@@ -137,7 +158,7 @@ const hud = new Hud(state, view, {
   },
   onRetry: () => {
     unlockAudio();
-    beginRun(state.difficultyId);
+    beginRun(state.difficultyId, lastScenarioId);
   },
   onUpgrade: () => {
     upgradeSelectedTower(state);
@@ -312,6 +333,7 @@ function reactToRunEnd(): void {
   if (justEnded) {
     const { records } = recordRun(
       view.records,
+      state.scenarioId,
       state.difficultyId,
       displayedWave(state),
       state.stats.kills,

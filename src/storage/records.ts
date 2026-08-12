@@ -9,23 +9,34 @@
  */
 
 import { DIFFICULTY_ORDER, type DifficultyId } from '../game/difficulty';
+import { SCENARIO_LIST, type ScenarioId } from '../game/scenarios';
 
-const RECORDS_KEY = 'tower-game:records:v1';
+/**
+ * La versión sube al pasar de "un récord por dificultad" a "uno por escenario
+ * y dificultad". Con la clave anterior, un formato viejo se leería como nuevo
+ * y sus marcas se atribuirían a un escenario que nunca se jugó.
+ */
+const RECORDS_KEY = 'tower-game:records:v2';
 const MUTED_KEY = 'tower-game:muted:v1';
 
-export interface DifficultyRecord {
+export interface RunRecord {
   bestWave: number;
   bestKills: number;
 }
 
-export type Records = Record<DifficultyId, DifficultyRecord>;
+/** Récords indexados por escenario y, dentro de cada uno, por dificultad. */
+export type Records = Record<ScenarioId, Record<DifficultyId, RunRecord>>;
 
-function emptyRecords(): Records {
-  return {
-    easy: { bestWave: 0, bestKills: 0 },
-    normal: { bestWave: 0, bestKills: 0 },
-    hard: { bestWave: 0, bestKills: 0 },
-  };
+const EMPTY: RunRecord = { bestWave: 0, bestKills: 0 };
+
+export function emptyRecords(): Records {
+  const records = {} as Records;
+  for (const scene of SCENARIO_LIST) {
+    const byDifficulty = {} as Record<DifficultyId, RunRecord>;
+    for (const id of DIFFICULTY_ORDER) byDifficulty[id] = { ...EMPTY };
+    records[scene.id] = byDifficulty;
+  }
+  return records;
 }
 
 function readRaw(key: string): string | null {
@@ -48,6 +59,15 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function toRecord(entry: unknown): RunRecord {
+  if (typeof entry !== 'object' || entry === null) return { ...EMPTY };
+  const { bestWave, bestKills } = entry as Record<string, unknown>;
+  return {
+    bestWave: isFiniteNumber(bestWave) ? Math.max(0, Math.floor(bestWave)) : 0,
+    bestKills: isFiniteNumber(bestKills) ? Math.max(0, Math.floor(bestKills)) : 0,
+  };
+}
+
 export function loadRecords(): Records {
   const records = emptyRecords();
   const raw = readRaw(RECORDS_KEY);
@@ -57,14 +77,12 @@ export function loadRecords(): Records {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return records;
 
-    for (const id of DIFFICULTY_ORDER) {
-      const entry: unknown = (parsed as Record<string, unknown>)[id];
-      if (typeof entry !== 'object' || entry === null) continue;
-      const { bestWave, bestKills } = entry as Record<string, unknown>;
-      records[id] = {
-        bestWave: isFiniteNumber(bestWave) ? Math.max(0, Math.floor(bestWave)) : 0,
-        bestKills: isFiniteNumber(bestKills) ? Math.max(0, Math.floor(bestKills)) : 0,
-      };
+    for (const scene of SCENARIO_LIST) {
+      const byScenario: unknown = (parsed as Record<string, unknown>)[scene.id];
+      if (typeof byScenario !== 'object' || byScenario === null) continue;
+      for (const id of DIFFICULTY_ORDER) {
+        records[scene.id][id] = toRecord((byScenario as Record<string, unknown>)[id]);
+      }
     }
   } catch {
     return emptyRecords();
@@ -77,25 +95,51 @@ export function saveRecords(records: Records): void {
   writeRaw(RECORDS_KEY, JSON.stringify(records));
 }
 
+/** Récord de un escenario y una dificultad concretos. */
+export function recordFor(
+  records: Records,
+  scenarioId: ScenarioId,
+  difficultyId: DifficultyId,
+): RunRecord {
+  return records[scenarioId]?.[difficultyId] ?? { ...EMPTY };
+}
+
+/**
+ * Mejor marca de una dificultad entre todos los escenarios. Es lo que enseña el
+ * menú principal, donde todavía no se ha elegido mapa.
+ */
+export function bestRecordFor(records: Records, difficultyId: DifficultyId): RunRecord {
+  let best: RunRecord = { ...EMPTY };
+  for (const scene of SCENARIO_LIST) {
+    const entry = recordFor(records, scene.id, difficultyId);
+    if (entry.bestWave > best.bestWave) best = entry;
+  }
+  return best;
+}
+
 /**
  * Registra el resultado de una partida. Solo mejora los récords, nunca los
- * empeora, y solo toca la dificultad jugada. Devuelve los récords ya
- * actualizados y si alguno ha batido su marca.
+ * empeora, y solo toca el escenario y la dificultad jugados. Devuelve los
+ * récords ya actualizados y si se ha batido la marca.
  */
 export function recordRun(
   records: Records,
+  scenarioId: ScenarioId,
   difficultyId: DifficultyId,
   wave: number,
   kills: number,
 ): { records: Records; beatenWave: boolean } {
-  const previous = records[difficultyId];
+  const previous = recordFor(records, scenarioId, difficultyId);
   const beatenWave = wave > previous.bestWave;
 
   const updated: Records = {
     ...records,
-    [difficultyId]: {
-      bestWave: Math.max(previous.bestWave, Math.max(0, Math.floor(wave))),
-      bestKills: Math.max(previous.bestKills, Math.max(0, Math.floor(kills))),
+    [scenarioId]: {
+      ...records[scenarioId],
+      [difficultyId]: {
+        bestWave: Math.max(previous.bestWave, Math.max(0, Math.floor(wave))),
+        bestKills: Math.max(previous.bestKills, Math.max(0, Math.floor(kills))),
+      },
     },
   };
 

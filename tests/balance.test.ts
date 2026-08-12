@@ -21,32 +21,56 @@ import {
   upgradeSelectedTower,
 } from '../src/game/state';
 import { FIXED_DT, step } from '../src/game/step';
-import { PATH_CELLS, isBuildableTerrain } from '../src/game/map';
+import {
+  DEFAULT_SCENARIO,
+  SCENARIO_LIST,
+  type Scenario,
+  type ScenarioId,
+  isBuildableTerrain,
+  scenario,
+} from '../src/game/scenarios';
 import { TOWER_MAX_LEVEL, TOWER_TYPE_LIST, effectiveDps } from '../src/game/towers';
 import { type DifficultyId, FINAL_WAVE } from '../src/game/difficulty';
 
-/** Celdas de prado pegadas al camino, en orden de recorrido. */
-function spotsAlongPath(): { col: number; row: number }[] {
-  const spots: { col: number; row: number }[] = [];
+/**
+ * Celdas de prado pegadas al camino, en orden de recorrido.
+ *
+ * Con varias rutas se **intercalan**: un jugador real que ve el camino
+ * partirse reparte sus torres entre las ramas en vez de vaciar una y empezar
+ * la otra. Recorrer las rutas en serie dejaría un ramal indefenso y mediría el
+ * despiste del robot, no el balance del escenario.
+ */
+function spotsAlongPath(scene: Scenario): { col: number; row: number }[] {
   const seen = new Set<string>();
+  const perRoute = scene.routes.map((route) => {
+    const spots: { col: number; row: number }[] = [];
+    for (let i = 2; i < route.cells.length; i += 1) {
+      const cell = route.cells[i] as { col: number; row: number };
+      const around = [
+        { col: cell.col, row: cell.row - 1 },
+        { col: cell.col, row: cell.row + 1 },
+        { col: cell.col - 1, row: cell.row },
+        { col: cell.col + 1, row: cell.row },
+      ];
+      for (const candidate of around) {
+        const key = `${candidate.col},${candidate.row}`;
+        if (seen.has(key) || !isBuildableTerrain(scene, candidate.col, candidate.row)) continue;
+        seen.add(key);
+        spots.push(candidate);
+      }
+    }
+    return spots;
+  });
 
-  for (let i = 2; i < PATH_CELLS.length; i += 1) {
-    const cell = PATH_CELLS[i] as { col: number; row: number };
-    const around = [
-      { col: cell.col, row: cell.row - 1 },
-      { col: cell.col, row: cell.row + 1 },
-      { col: cell.col - 1, row: cell.row },
-      { col: cell.col + 1, row: cell.row },
-    ];
-    for (const candidate of around) {
-      const key = `${candidate.col},${candidate.row}`;
-      if (seen.has(key) || !isBuildableTerrain(candidate.col, candidate.row)) continue;
-      seen.add(key);
-      spots.push(candidate);
+  const interleaved: { col: number; row: number }[] = [];
+  const longest = Math.max(0, ...perRoute.map((spots) => spots.length));
+  for (let i = 0; i < longest; i += 1) {
+    for (const spots of perRoute) {
+      const spot = spots[i];
+      if (spot) interleaved.push(spot);
     }
   }
-
-  return spots;
+  return interleaved;
 }
 
 interface Outcome {
@@ -61,16 +85,22 @@ interface Outcome {
 
 interface PlayOptions {
   difficultyId?: DifficultyId;
+  scenarioId?: ScenarioId;
   maxTowers?: number;
   stopAtWave?: number;
 }
 
 function autoPlay(options: PlayOptions = {}): Outcome {
-  const { difficultyId = 'normal', maxTowers = 999, stopAtWave = FINAL_WAVE } = options;
+  const {
+    difficultyId = 'normal',
+    scenarioId = DEFAULT_SCENARIO,
+    maxTowers = 999,
+    stopAtWave = FINAL_WAVE,
+  } = options;
 
-  const state = createGameState(difficultyId);
+  const state = createGameState(difficultyId, scenarioId);
   startGame(state);
-  const spots = spotsAlongPath();
+  const spots = spotsAlongPath(scenario(scenarioId));
 
   let spotIndex = 0;
   let ticks = 0;
@@ -190,12 +220,26 @@ describe('balance de la partida', () => {
   );
 
   it(
+    'cada escenario se puede ganar en Normal',
+    () => {
+      for (const scene of SCENARIO_LIST) {
+        // El tope de torres se reparte por ruta: cubrir dos carriles exige
+        // más puestos que cubrir uno, y con el mismo tope el robot dejaría
+        // media defensa por ramal midiendo el tope, no el escenario.
+        const outcome = autoPlay({ scenarioId: scene.id, maxTowers: 20 * scene.routes.length });
+        expect(outcome.screen, `${scene.name} no se puede ganar`).toBe('victory');
+      }
+    },
+    180_000,
+  );
+
+  it(
     'el oro no se desborda: siempre queda dónde gastarlo',
     () => {
       // El problema que motivó esta iteración era acumular oro sin uso en
       // oleadas avanzadas. Con la reparación y los 8 niveles de mejora, una
       // partida bien jugada debe terminar sin un excedente desmedido.
-      const outcome = autoPlay({ difficultyId: 'normal', maxTowers: 20 });
+      const outcome = autoPlay({ difficultyId: 'normal' });
       expect(outcome.gold).toBeLessThan(5000);
       expect(outcome.peakGold).toBeLessThan(8000);
     },

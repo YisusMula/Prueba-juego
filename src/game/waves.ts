@@ -13,13 +13,18 @@ import { ENEMY_TYPES, type EnemyTypeId } from './enemies';
 
 /** Primera oleada de cada tipo, en el orden en que se introducen. */
 export const FIRST_FOX_WAVE = 2;
+export const FIRST_SPIDER_WAVE = 3;
 export const FIRST_AIR_WAVE = 4;
+export const FIRST_BEETLE_WAVE = 5;
 export const FIRST_DOG_WAVE = 6;
 export const FIRST_BOAR_WAVE = 7;
+export const FIRST_SLIME_WAVE = 8;
 export const FIRST_EAGLE_WAVE = 9;
 export const FIRST_GOBLIN_WAVE = 11;
 export const FIRST_VULTURE_WAVE = 13;
+export const FIRST_SHAMAN_WAVE = 14;
 export const FIRST_ORC_WAVE = 16;
+export const FIRST_GOLEM_WAVE = 18;
 /** Cada cuántas oleadas aparece un jefe. */
 export const BOSS_EVERY = 10;
 
@@ -58,14 +63,23 @@ export function getWave(index: number): Wave {
   if (n >= FIRST_FOX_WAVE) {
     groups.push({ typeId: 'fox', count: 2 + positiveCount((n - FIRST_FOX_WAVE + 1) * 0.6) });
   }
+  if (n >= FIRST_SPIDER_WAVE) {
+    groups.push({ typeId: 'spider', count: 2 + positiveCount((n - FIRST_SPIDER_WAVE) * 0.5) });
+  }
   if (n >= FIRST_AIR_WAVE) {
     groups.push({ typeId: 'bat', count: 1 + positiveCount((n - FIRST_AIR_WAVE) * 0.6) });
+  }
+  if (n >= FIRST_BEETLE_WAVE) {
+    groups.push({ typeId: 'beetle', count: 1 + positiveCount((n - FIRST_BEETLE_WAVE) * 0.5) });
   }
   if (n >= FIRST_DOG_WAVE) {
     groups.push({ typeId: 'dog', count: 1 + positiveCount((n - FIRST_DOG_WAVE) * 0.5) });
   }
   if (n >= FIRST_BOAR_WAVE) {
     groups.push({ typeId: 'boar', count: 1 + positiveCount((n - FIRST_BOAR_WAVE) * 0.4) });
+  }
+  if (n >= FIRST_SLIME_WAVE) {
+    groups.push({ typeId: 'slime', count: 1 + positiveCount((n - FIRST_SLIME_WAVE) * 0.35) });
   }
   if (n >= FIRST_EAGLE_WAVE) {
     groups.push({ typeId: 'eagle', count: 1 + positiveCount((n - FIRST_EAGLE_WAVE) * 0.4) });
@@ -76,8 +90,16 @@ export function getWave(index: number): Wave {
   if (n >= FIRST_VULTURE_WAVE) {
     groups.push({ typeId: 'vulture', count: 1 + positiveCount((n - FIRST_VULTURE_WAVE) * 0.35) });
   }
+  if (n >= FIRST_SHAMAN_WAVE) {
+    // Pocos y espaciados: el sanador es un problema de prioridades, no de
+    // volumen. Con muchos a la vez el jugador no podría reaccionar.
+    groups.push({ typeId: 'shaman', count: 1 + positiveCount((n - FIRST_SHAMAN_WAVE) * 0.2) });
+  }
   if (n >= FIRST_ORC_WAVE) {
     groups.push({ typeId: 'orc', count: 1 + positiveCount((n - FIRST_ORC_WAVE) * 0.3) });
+  }
+  if (n >= FIRST_GOLEM_WAVE) {
+    groups.push({ typeId: 'golem', count: 1 + positiveCount((n - FIRST_GOLEM_WAVE) * 0.3) });
   }
   // Los jefes son acumulativos: una vez aparecen, se quedan. Si solo salieran
   // en los múltiplos exactos, la oleada siguiente sería más fácil que la
@@ -108,6 +130,12 @@ export interface WaveDescription {
   hasTowerAttackers: boolean;
   /** La oleada trae criaturas capaces de abandonar el camino. */
   hasPathSkippers: boolean;
+  /** La oleada trae criaturas con armadura. */
+  hasArmored: boolean;
+  /** La oleada trae criaturas que curan a las demás. */
+  hasHealers: boolean;
+  /** La oleada trae criaturas que se dividen al morir. */
+  hasSplitters: boolean;
 }
 
 /**
@@ -132,6 +160,9 @@ export function describeWave(index: number): WaveDescription {
       (group) => ENEMY_TYPES[group.typeId].canDamageTowers,
     ),
     hasPathSkippers: wave.groups.some((group) => ENEMY_TYPES[group.typeId].canSkipPath),
+    hasArmored: wave.groups.some((group) => ENEMY_TYPES[group.typeId].armor > 0),
+    hasHealers: wave.groups.some((group) => ENEMY_TYPES[group.typeId].healRadius > 0),
+    hasSplitters: wave.groups.some((group) => ENEMY_TYPES[group.typeId].splitsInto !== null),
   };
 }
 

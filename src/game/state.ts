@@ -8,14 +8,18 @@
 import { type AbilityId, ABILITY_ORDER, ability } from './abilities';
 import { DEFAULT_DIFFICULTY, type DifficultyId, difficulty } from './difficulty';
 import { type Domain, type EnemyTypeId, enemyType } from './enemies';
+import { CELL, cellCenter, worldToCell } from './map';
 import {
-  CELL,
-  PATH_LENGTH,
-  cellCenter,
+  DEFAULT_SCENARIO,
+  type Route,
+  type Scenario,
+  type ScenarioId,
   isBuildableTerrain,
   positionAtDistance,
-  worldToCell,
-} from './map';
+  routeIndexFor,
+  routeOf,
+  scenario,
+} from './scenarios';
 import { MAX_QUEUED_SOUNDS, type SoundId } from './sounds';
 import {
   type ProjectileKind,
@@ -38,7 +42,7 @@ export const WAVE_REST = 7;
 /** Oro de bonus por cada segundo de preparación al que el jugador renuncia. */
 export const CALL_WAVE_GOLD_PER_SECOND = 6;
 
-export type Screen = 'menu' | 'playing' | 'paused' | 'defeat' | 'victory';
+export type Screen = 'menu' | 'scenarios' | 'playing' | 'paused' | 'defeat' | 'victory';
 export type WavePhase = 'preparing' | 'spawning' | 'clearing';
 
 export interface Enemy {
@@ -50,7 +54,9 @@ export interface Enemy {
   speed: number;
   reward: number;
   radius: number;
-  /** Distancia recorrida sobre la polilínea del camino. */
+  /** Ruta del escenario por la que avanza. No cambia una vez asignada. */
+  routeIndex: number;
+  /** Distancia recorrida sobre la polilínea de su ruta. */
   distance: number;
   x: number;
   y: number;
@@ -75,6 +81,16 @@ export interface Enemy {
   slowTimer: number;
   /** Segundos restantes del destello blanco al recibir daño. */
   flash: number;
+  /** Daño que resta a cada impacto recibido desde una torre. */
+  armor: number;
+  /** Radio del aura de sanación. 0 si no cura. */
+  healRadius: number;
+  /** Vida por segundo que restaura a los enemigos de su aura. */
+  healPerSecond: number;
+  /** Tipo de las crías que deja al morir, o null si no se divide. */
+  splitsInto: EnemyTypeId | null;
+  /** Cuántas crías deja al morir. */
+  splitCount: number;
 }
 
 export interface Tower {
@@ -168,6 +184,8 @@ export interface GameState {
   selectedTowerId: number | null;
   /** Dificultad de la partida en curso. */
   difficultyId: DifficultyId;
+  /** Escenario de la partida en curso. Fijo desde que empieza hasta que acaba. */
+  scenarioId: ScenarioId;
   /** Tras ganar, la partida continúa sin condición de victoria. */
   endless: boolean;
   /** Recarga de cada habilidad del comandante. */
@@ -190,7 +208,20 @@ function freshAbilities(): AbilitySlot[] {
   return ABILITY_ORDER.map((id) => ({ id, cooldown: 0 }));
 }
 
-export function createGameState(difficultyId: DifficultyId = DEFAULT_DIFFICULTY): GameState {
+/** Escenario sobre el que transcurre la partida. */
+export function currentScenario(state: GameState): Scenario {
+  return scenario(state.scenarioId);
+}
+
+/** Ruta por la que avanza un enemigo. */
+export function enemyRoute(state: GameState, enemy: Enemy): Route {
+  return routeOf(currentScenario(state), enemy.routeIndex);
+}
+
+export function createGameState(
+  difficultyId: DifficultyId = DEFAULT_DIFFICULTY,
+  scenarioId: ScenarioId = DEFAULT_SCENARIO,
+): GameState {
   const setup = difficulty(difficultyId);
   return {
     screen: 'menu',
@@ -209,6 +240,7 @@ export function createGameState(difficultyId: DifficultyId = DEFAULT_DIFFICULTY)
     shopSelection: null,
     selectedTowerId: null,
     difficultyId,
+    scenarioId,
     endless: false,
     abilities: freshAbilities(),
     aimingAbility: null,
@@ -220,10 +252,22 @@ export function createGameState(difficultyId: DifficultyId = DEFAULT_DIFFICULTY)
 }
 
 /** Reinicia la partida a su estado inicial y la pone en marcha. */
-export function startGame(state: GameState, difficultyId?: DifficultyId): void {
+export function startGame(
+  state: GameState,
+  difficultyId?: DifficultyId,
+  scenarioId?: ScenarioId,
+): void {
   if (difficultyId) state.difficultyId = difficultyId;
+  if (scenarioId) state.scenarioId = scenarioId;
   resetRun(state);
   state.screen = 'playing';
+}
+
+/** Abre la pantalla de selección de escenario desde el menú principal. */
+export function openScenarioPicker(state: GameState, difficultyId?: DifficultyId): void {
+  if (difficultyId) state.difficultyId = difficultyId;
+  resetRun(state);
+  state.screen = 'scenarios';
 }
 
 function resetRun(state: GameState): void {
@@ -358,7 +402,7 @@ export function towerAt(state: GameState, col: number, row: number): Tower | nul
 
 /** ¿Se puede construir en esta celda? Terreno de prado, en el mapa y libre. */
 export function canPlaceTower(state: GameState, col: number, row: number): boolean {
-  if (!isBuildableTerrain(col, row)) return false;
+  if (!isBuildableTerrain(currentScenario(state), col, row)) return false;
   return towerAt(state, col, row) === null;
 }
 
@@ -587,7 +631,7 @@ export function castAbility(
       const dx = enemy.x - worldX;
       const dy = enemy.y - worldY;
       if (dx * dx + dy * dy > radiusSq) continue;
-      damageEnemy(state, enemy, spec.damage);
+      damageEnemy(state, enemy, spec.damage, true);
       if (spec.freezeDuration > 0) enemy.slowTimer = spec.freezeDuration;
     }
     return true;
@@ -597,7 +641,7 @@ export function castAbility(
   emitSound(state, 'ability-blizzard');
   for (const enemy of [...state.enemies]) {
     if (enemy.hp <= 0) continue;
-    if (spec.damage > 0) damageEnemy(state, enemy, spec.damage);
+    if (spec.damage > 0) damageEnemy(state, enemy, spec.damage, true);
     if (spec.freezeDuration > 0) enemy.slowTimer = spec.freezeDuration;
   }
   return true;
@@ -632,6 +676,8 @@ export function spawnEnemy(
   typeId: EnemyTypeId,
   hpMultiplier: number,
   speedMultiplier = 1,
+  /** Sitúa al enemigo en una ruta y una distancia concretas (crías de un divisor). */
+  at?: { routeIndex: number; distance: number },
 ): Enemy {
   const type = enemyType(typeId);
   // La dificultad escala la vida sobre el escalado que ya aplica la oleada.
@@ -639,12 +685,16 @@ export function spawnEnemy(
     1,
     Math.round(type.hp * hpMultiplier * difficulty(state.difficultyId).hpMultiplier),
   );
-  const start = positionAtDistance(0);
   const id = state.nextId++;
+  const scene = currentScenario(state);
+  const routeIndex = at ? at.routeIndex : routeIndexFor(scene, id);
+  const route = routeOf(scene, routeIndex);
+  const distance = at ? at.distance : 0;
+  const start = positionAtDistance(route, distance);
   // Punto de fuga determinista a partir del id: variedad entre enemigos sin
   // perder la reproducibilidad de la simulación (nada de aleatoriedad real).
   const breakawayDistance = type.canSkipPath
-    ? PATH_LENGTH * (0.2 + (id % 7) / 7 * 0.4)
+    ? route.length * (0.2 + (id % 7) / 7 * 0.4)
     : Infinity;
 
   const enemy: Enemy = {
@@ -656,7 +706,8 @@ export function spawnEnemy(
     speed: type.speed * speedMultiplier,
     reward: type.reward,
     radius: type.radius,
-    distance: 0,
+    routeIndex,
+    distance,
     x: start.x,
     y: start.y,
     phase: (id * 0.7) % (Math.PI * 2),
@@ -670,6 +721,11 @@ export function spawnEnemy(
     meleeCooldown: 0,
     slowTimer: 0,
     flash: 0,
+    armor: type.armor,
+    healRadius: type.healRadius,
+    healPerSecond: type.healPerSecond,
+    splitsInto: type.splitsInto,
+    splitCount: type.splitCount,
   };
   state.enemies.push(enemy);
   return enemy;
@@ -695,19 +751,46 @@ export function addEffect(
   });
 }
 
+/** Daño mínimo que atraviesa cualquier armadura. */
+export const MIN_DAMAGE_THROUGH_ARMOR = 1;
+
+/**
+ * Daño que llega de verdad al enemigo tras su armadura.
+ *
+ * La resta es fija, no un porcentaje: así una arquera de 9 de daño nota la
+ * armadura muchísimo más que una ballesta de 55, que es justo la decisión que
+ * se le quiere plantear al jugador. El mínimo garantiza que ninguna torre
+ * quede incapaz de matar, porque un enemigo inmune es una derrota que el
+ * jugador no puede leer.
+ */
+export function damageAfterArmor(enemy: Enemy, amount: number): number {
+  if (enemy.armor <= 0) return amount;
+  return Math.max(MIN_DAMAGE_THROUGH_ARMOR, amount - enemy.armor);
+}
+
 /**
  * Aplica daño a un enemigo y, si muere, otorga su recompensa de oro.
  *
  * Vive aquí y no en `step` porque también lo usan las habilidades del
  * comandante, que se lanzan desde las acciones del jugador. Tenerlo en un
  * solo sitio evita que `state` y `step` se importen mutuamente.
+ *
+ * `ignoreArmor` es lo que distingue a una habilidad de una torre: las
+ * habilidades están limitadas por recarga, y su valor está precisamente en
+ * resolver la situación que las torres construidas no pueden.
  */
-export function damageEnemy(state: GameState, enemy: Enemy, amount: number): void {
+export function damageEnemy(
+  state: GameState,
+  enemy: Enemy,
+  amount: number,
+  ignoreArmor = false,
+): void {
   if (enemy.hp <= 0) return;
-  enemy.hp -= amount;
+  const applied = ignoreArmor ? amount : damageAfterArmor(enemy, amount);
+  enemy.hp -= applied;
   addEffect(state, 'damage', enemy.x, enemy.y - enemy.radius, {
     life: 0.7,
-    text: String(Math.round(amount)),
+    text: String(Math.round(applied)),
   });
 
   if (enemy.hp > 0) {
@@ -722,6 +805,55 @@ export function damageEnemy(state: GameState, enemy: Enemy, amount: number): voi
   addGold(state, enemy.reward);
   addEffect(state, 'gold', enemy.x, enemy.y, { life: 0.8, text: `+${enemy.reward}` });
   emitSound(state, 'kill');
+  splitEnemy(state, enemy);
+}
+
+/**
+ * Deja las crías de un enemigo divisor donde murió.
+ *
+ * Las crías son de un tipo distinto y ese tipo no se divide, así que la
+ * recursión queda cortada por construcción y no por un contador de generación
+ * que haya que acordarse de propagar.
+ */
+function splitEnemy(state: GameState, parent: Enemy): void {
+  if (!parent.splitsInto || parent.splitCount <= 0) return;
+
+  const scale = parent.maxHp / Math.max(1, enemyType(parent.typeId).hp);
+  for (let i = 0; i < parent.splitCount; i += 1) {
+    const child = spawnEnemy(state, parent.splitsInto, scale, 1, {
+      routeIndex: parent.routeIndex,
+      distance: parent.distance,
+    });
+    // La cría hereda también el estado fuera del camino: si el padre había
+    // abandonado la ruta, devolverla al camino la teletransportaría.
+    child.offPath = parent.offPath;
+    child.offPathStart = { x: parent.offPathStart.x, y: parent.offPathStart.y };
+    child.offPathTotal = parent.offPathTotal;
+    child.offPathProgress = parent.offPathProgress;
+    child.x = parent.x;
+    child.y = parent.y;
+  }
+}
+
+/**
+ * Cura de las auras de sanación. Solo afecta a enemigos vivos y nunca sube por
+ * encima de la vida máxima, así que un sanador no puede revivir a nadie.
+ */
+export function applyHealing(state: GameState, dt: number): void {
+  const healers = state.enemies.filter((enemy) => enemy.hp > 0 && enemy.healRadius > 0);
+  if (healers.length === 0) return;
+
+  for (const healer of healers) {
+    const radiusSq = healer.healRadius * healer.healRadius;
+    const amount = healer.healPerSecond * dt;
+    for (const enemy of state.enemies) {
+      if (enemy.hp <= 0 || enemy.hp >= enemy.maxHp) continue;
+      const dx = enemy.x - healer.x;
+      const dy = enemy.y - healer.y;
+      if (dx * dx + dy * dy > radiusSq) continue;
+      enemy.hp = Math.min(enemy.maxHp, enemy.hp + amount);
+    }
+  }
 }
 
 /** Carga la siguiente oleada en la cola de aparición. */

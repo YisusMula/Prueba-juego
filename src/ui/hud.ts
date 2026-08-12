@@ -28,7 +28,16 @@ import {
   selectedTowerUpgradeCost,
 } from '../game/state';
 import { describeWave, waveEnemyCount } from '../game/waves';
-import type { Records } from '../storage/records';
+import { SCENARIO_LIST, type ScenarioId } from '../game/scenarios';
+import { getTerrainCanvas } from '../render/terrain';
+import { type Records, bestRecordFor, recordFor } from '../storage/records';
+
+/** Etiqueta legible de la forma del escenario, a partir de sus rutas. */
+function describeRoutes(routes: number, entrances: number): string {
+  if (routes <= 1) return '1 carril';
+  if (entrances > 1) return `${entrances} entradas`;
+  return `${routes} ramales`;
+}
 
 function requireElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -38,6 +47,8 @@ function requireElement<T extends HTMLElement>(id: string): T {
 
 export interface HudCallbacks {
   onStart(): void;
+  onPickScenario(id: ScenarioId): void;
+  onBackToMenu(): void;
   onPause(): void;
   onResume(): void;
   onQuit(): void;
@@ -128,6 +139,8 @@ export class Hud {
   private readonly menuRecordEl = requireElement('menu-record');
 
   private readonly screenMenu = requireElement('screen-menu');
+  private readonly screenScenarios = requireElement('screen-scenarios');
+  private readonly scenarioListEl = requireElement('scenario-list');
   private readonly screenPause = requireElement('screen-pause');
   private readonly screenDefeat = requireElement('screen-defeat');
   private readonly defeatSummary = requireElement('defeat-summary');
@@ -135,6 +148,8 @@ export class Hud {
   private readonly screenVictory = requireElement('screen-victory');
   private readonly victorySummary = requireElement('victory-summary');
   private readonly victoryRecord = requireElement('victory-record');
+
+  private readonly scenarioCards: { id: ScenarioId; recordEl: HTMLElement }[] = [];
 
   /** Estado de presentación que no vive en la simulación. */
   private view: HudView;
@@ -146,6 +161,7 @@ export class Hud {
     this.buildPriorityButtons(callbacks);
     this.buildAbilityBar(callbacks);
     this.buildDifficultyPicker(callbacks);
+    this.buildScenarioCards(callbacks);
     this.collectSpeedButtons(callbacks);
     this.wire(callbacks);
   }
@@ -186,6 +202,50 @@ export class Hud {
 
       this.abilityBarEl.append(button);
       this.abilityButtons.push({ id: spec.id, button, cooldownEl, textEl });
+    }
+  }
+
+  /**
+   * Tarjetas de la pantalla de selección. La miniatura se dibuja con el mismo
+   * código que pinta el terreno de la partida, a menor escala: así el jugador
+   * ve exactamente el mapa al que va a entrar, sin un dibujo aparte que se
+   * quede desincronizado al retocar un trazado.
+   */
+  private buildScenarioCards(callbacks: HudCallbacks): void {
+    for (const scene of SCENARIO_LIST) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'scenario-card';
+      card.setAttribute('aria-label', `${scene.name}: ${scene.blurb}`);
+
+      const thumb = document.createElement('div');
+      thumb.className = 'scenario-thumb';
+      try {
+        thumb.append(getTerrainCanvas(scene, 0.2));
+      } catch {
+        // Sin canvas (entornos sin DOM completo) la tarjeta sigue siendo útil.
+      }
+
+      const name = document.createElement('strong');
+      name.className = 'scenario-name';
+      name.textContent = scene.name;
+
+      const blurb = document.createElement('small');
+      blurb.className = 'scenario-blurb';
+      blurb.textContent = scene.blurb;
+
+      const lanes = document.createElement('span');
+      lanes.className = 'scenario-lanes';
+      lanes.textContent = describeRoutes(scene.routes.length, scene.spawnCells.length);
+
+      const recordEl = document.createElement('span');
+      recordEl.className = 'scenario-record';
+
+      card.append(thumb, name, blurb, lanes, recordEl);
+      card.addEventListener('click', () => callbacks.onPickScenario(scene.id));
+
+      this.scenarioListEl.append(card);
+      this.scenarioCards.push({ id: scene.id, recordEl });
     }
   }
 
@@ -265,6 +325,7 @@ export class Hud {
 
   private wire(callbacks: HudCallbacks): void {
     requireElement('btn-start').addEventListener('click', callbacks.onStart);
+    requireElement('btn-scenarios-back').addEventListener('click', callbacks.onBackToMenu);
     requireElement('btn-menu').addEventListener('click', callbacks.onPause);
     requireElement('btn-resume').addEventListener('click', callbacks.onResume);
     requireElement('btn-quit').addEventListener('click', callbacks.onQuit);
@@ -350,6 +411,9 @@ export class Hud {
       if (next.hasAir) warnings.push('✈ Vienen criaturas voladoras');
       if (next.hasTowerAttackers) warnings.push('⚔ Atacan a tus torres');
       if (next.hasPathSkippers) warnings.push('⚠ Se salen del camino');
+      if (next.hasArmored) warnings.push('🛡 Acorazadas: prefieren golpes fuertes');
+      if (next.hasHealers) warnings.push('✚ Sanadoras: mátalas primero');
+      if (next.hasSplitters) warnings.push('◑ Se dividen al morir');
       this.waveWarningsEl.replaceChildren(
         ...warnings.map((text) => {
           const chip = document.createElement('span');
@@ -449,11 +513,13 @@ export class Hud {
   private syncScreens(): void {
     const screen = this.state.screen;
     this.screenMenu.hidden = screen !== 'menu';
+    this.screenScenarios.hidden = screen !== 'scenarios';
     this.screenPause.hidden = screen !== 'paused';
     this.screenDefeat.hidden = screen !== 'defeat';
     this.screenVictory.hidden = screen !== 'victory';
 
     if (screen === 'menu') this.syncMenu();
+    if (screen === 'scenarios') this.syncScenarioPicker();
 
     if (screen === 'defeat') {
       const { kills, leaked } = this.state.stats;
@@ -472,11 +538,20 @@ export class Hud {
     }
   }
 
-  /** Línea de récord de la dificultad que se acaba de jugar. */
+  /** Línea de récord del escenario y la dificultad que se acaban de jugar. */
   private recordLine(): string {
-    const record = this.view.records[this.state.difficultyId];
-    if (!record || record.bestWave <= 0) return '';
-    return `Tu mejor marca en esta dificultad: oleada ${record.bestWave}`;
+    const record = recordFor(this.view.records, this.state.scenarioId, this.state.difficultyId);
+    if (record.bestWave <= 0) return '';
+    return `Tu mejor marca aquí: oleada ${record.bestWave}`;
+  }
+
+  /** Refresca los récords de las tarjetas de escenario. */
+  private syncScenarioPicker(): void {
+    for (const entry of this.scenarioCards) {
+      const record = recordFor(this.view.records, entry.id, this.view.menuDifficulty);
+      entry.recordEl.textContent =
+        record.bestWave > 0 ? `🏅 Oleada ${record.bestWave}` : 'Sin jugar';
+    }
   }
 
   private syncMenu(): void {
@@ -484,9 +559,9 @@ export class Hud {
       entry.button.classList.toggle('is-active', entry.id === this.view.menuDifficulty);
     }
 
-    const record = this.view.records[this.view.menuDifficulty];
+    const record = bestRecordFor(this.view.records, this.view.menuDifficulty);
     this.menuRecordEl.textContent =
-      record && record.bestWave > 0
+      record.bestWave > 0
         ? `🏅 Mejor marca: oleada ${record.bestWave} · ${record.bestKills} criaturas`
         : 'Sin marca todavía. ¡A por las 30 oleadas!';
   }

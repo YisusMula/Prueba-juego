@@ -13,7 +13,8 @@ import {
   syncShopAffordability,
   upgradeSelectedTower,
 } from '../src/game/state';
-import { PATH_LENGTH } from '../src/game/map';
+import { routeOf } from '../src/game/scenarios';
+import { defaultScenario } from './helpers';
 import { spawnEnemy } from '../src/game/state';
 import { TOWER_TYPES } from '../src/game/towers';
 import { run, quietRun } from './helpers';
@@ -33,7 +34,7 @@ describe('economy: vidas', () => {
 
     for (let i = 0; i < 3; i += 1) {
       const enemy = spawnEnemy(state, 'rat', 1);
-      enemy.distance = PATH_LENGTH - 1;
+      enemy.distance = routeOf(defaultScenario(), 0).length - 1;
     }
     run(state, 0.5);
 
@@ -49,7 +50,7 @@ describe('economy: vidas', () => {
 
     for (let i = 0; i < 2; i += 1) {
       const enemy = spawnEnemy(state, 'rat', 1);
-      enemy.distance = PATH_LENGTH - 1;
+      enemy.distance = routeOf(defaultScenario(), 0).length - 1;
     }
     run(state, 0.5);
 
@@ -85,7 +86,7 @@ describe('economy: oro', () => {
     state.gold = 100;
 
     const enemy = spawnEnemy(state, 'dog', 1);
-    enemy.distance = PATH_LENGTH - 1;
+    enemy.distance = routeOf(defaultScenario(), 0).length - 1;
     run(state, 0.5);
 
     expect(state.gold).toBe(100);

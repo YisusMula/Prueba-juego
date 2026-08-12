@@ -2,16 +2,18 @@
  * Simulación del juego: un paso de tiempo fijo, sin dependencias de navegador.
  */
 
-import { PATH_LENGTH, positionAtDistance } from './map';
+import { positionAtDistance } from './scenarios';
 import { enemyType } from './enemies';
 import { FINAL_WAVE } from './difficulty';
 import { frostFreezeCapacity, statsAtLevel, towerType } from './towers';
 import { WAVE_REST } from './state';
 import type { Enemy, GameState, Projectile, Tower } from './state';
 import {
+  applyHealing,
   addEffect,
   beginNextWave,
   damageEnemy,
+  enemyRoute,
   emitSound,
   spawnEnemy,
   loseLife,
@@ -50,9 +52,20 @@ function canTarget(tower: Tower, enemy: Enemy): boolean {
  * avance sumando la distancia de fuga y lo recorrido en línea recta desde
  * entonces; ambas magnitudes están en la misma escala de píxeles de mundo.
  */
-function effectiveProgress(enemy: Enemy): number {
-  if (!enemy.offPath) return enemy.distance;
-  return enemy.breakawayDistance + enemy.offPathProgress;
+/**
+ * Cuánto ha avanzado un enemigo, como fracción de su ruta.
+ *
+ * Se normaliza porque en un escenario con varias rutas éstas pueden no medir
+ * lo mismo: comparar distancias en bruto haría que "primero" y "último"
+ * favorecieran sistemáticamente a la ruta más larga.
+ */
+function effectiveProgress(state: GameState, enemy: Enemy): number {
+  const total = enemyRoute(state, enemy).length;
+  if (total <= 0) return 0;
+  const travelled = enemy.offPath
+    ? enemy.breakawayDistance + enemy.offPathProgress
+    : enemy.distance;
+  return travelled / total;
 }
 
 /**
@@ -62,6 +75,7 @@ function effectiveProgress(enemy: Enemy): number {
  * su tipo no puede atacar.
  */
 function isBetterTarget(
+  state: GameState,
   tower: Tower,
   candidate: Enemy,
   best: Enemy,
@@ -70,14 +84,14 @@ function isBetterTarget(
 ): boolean {
   switch (tower.priority) {
     case 'last':
-      return effectiveProgress(candidate) < effectiveProgress(best);
+      return effectiveProgress(state, candidate) < effectiveProgress(state, best);
     case 'strongest':
       return candidate.hp > best.hp;
     case 'closest':
       return candidateDistSq < bestDistSq;
     case 'first':
     default:
-      return effectiveProgress(candidate) > effectiveProgress(best);
+      return effectiveProgress(state, candidate) > effectiveProgress(state, best);
   }
 }
 
@@ -94,7 +108,7 @@ export function findTarget(state: GameState, tower: Tower, range: number): Enemy
     const distSq = dx * dx + dy * dy;
     if (distSq > range * range) continue;
 
-    if (best === null || isBetterTarget(tower, enemy, best, distSq, bestDistSq)) {
+    if (best === null || isBetterTarget(state, tower, enemy, best, distSq, bestDistSq)) {
       best = enemy;
       bestDistSq = distSq;
     }
@@ -198,6 +212,7 @@ function updateEnemies(state: GameState, dt: number): void {
   const survivors: Enemy[] = [];
 
   for (const enemy of state.enemies) {
+    const route = enemyRoute(state, enemy);
     if (enemy.hp <= 0) continue;
 
     if (enemy.slowTimer > 0) enemy.slowTimer = Math.max(0, enemy.slowTimer - dt);
@@ -231,7 +246,7 @@ function updateEnemies(state: GameState, dt: number): void {
     if (type.canSkipPath && !enemy.offPath && enemy.distance >= enemy.breakawayDistance) {
       enemy.offPath = true;
       enemy.offPathStart = { x: enemy.x, y: enemy.y };
-      const goal = positionAtDistance(PATH_LENGTH);
+      const goal = positionAtDistance(route, route.length);
       enemy.offPathTotal = Math.hypot(goal.x - enemy.x, goal.y - enemy.y);
       enemy.offPathProgress = 0;
     }
@@ -239,12 +254,12 @@ function updateEnemies(state: GameState, dt: number): void {
     if (enemy.offPath) {
       enemy.offPathProgress += effectiveSpeed * dt;
       if (enemy.offPathProgress >= enemy.offPathTotal) {
-        const goal = positionAtDistance(PATH_LENGTH);
+        const goal = positionAtDistance(route, route.length);
         leakEnemy(state, goal.x, goal.y);
         continue;
       }
       const t = enemy.offPathTotal > 0 ? enemy.offPathProgress / enemy.offPathTotal : 1;
-      const goal = positionAtDistance(PATH_LENGTH);
+      const goal = positionAtDistance(route, route.length);
       enemy.x = enemy.offPathStart.x + (goal.x - enemy.offPathStart.x) * t;
       enemy.y = enemy.offPathStart.y + (goal.y - enemy.offPathStart.y) * t;
       survivors.push(enemy);
@@ -252,13 +267,13 @@ function updateEnemies(state: GameState, dt: number): void {
     }
 
     enemy.distance += effectiveSpeed * dt;
-    if (enemy.distance >= PATH_LENGTH) {
-      const goal = positionAtDistance(PATH_LENGTH);
+    if (enemy.distance >= route.length) {
+      const goal = positionAtDistance(route, route.length);
       leakEnemy(state, goal.x, goal.y);
       continue;
     }
 
-    const position = positionAtDistance(enemy.distance);
+    const position = positionAtDistance(route, enemy.distance);
     enemy.x = position.x;
     enemy.y = position.y;
     survivors.push(enemy);
@@ -422,6 +437,9 @@ export function step(state: GameState, dt: number): void {
   updateAbilities(state, dt);
   updateWaves(state, dt);
   updateEnemies(state, dt);
+  // Después de mover: el aura se resuelve con las posiciones de este paso, no
+  // con las del anterior.
+  applyHealing(state, dt);
   updateTowers(state, dt);
   updateProjectiles(state, dt);
   removeDeadEnemies(state);

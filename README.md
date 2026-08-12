@@ -5,14 +5,18 @@ el ordenador. Las criaturas entran por la cueva y recorren un camino sinuoso a
 través del prado hasta tu castillo; tú levantas torres en la hierba y las subes
 de nivel para que ninguna llegue.
 
+Hay **tres escenarios**, cada uno con su propio problema: uno de carril único,
+uno donde el camino se bifurca y vuelve a juntarse, y uno con dos entradas
+opuestas.
+
 ## Cómo se juega
 
 La partida se gana **superando la oleada 30**; se pierde cuando las vidas llegan
 a 0. Tras la victoria puedes seguir en **modo sin fin**, donde las oleadas no
 paran de crecer.
 
-- Elige la dificultad en el menú. Cambia las vidas y el oro de partida y la
-  dureza de los enemigos:
+- Elige la dificultad en el menú y el escenario en la pantalla siguiente. La
+  dificultad cambia las vidas y el oro de partida y la dureza de los enemigos:
 
   | Dificultad | Vidas | Oro | Vida de los enemigos |
   | --- | --- | --- | --- |
@@ -35,11 +39,24 @@ paran de crecer.
 - Cuando las vidas llegan a 0 aparece la pantalla de derrota con un botón para
   reintentar.
 
+### Escenarios
+
+| Escenario | Forma | Qué plantea |
+| --- | --- | --- |
+| Prado del Molino | 1 carril | Muchas curvas y un solo flujo. El sitio donde aprender. |
+| Cruce de los Cuervos | 2 ramales | El camino se parte y se vuelve a juntar; las dos ramas miden lo mismo, así que cubrir una sola no basta. |
+| Los Dos Portones | 2 entradas | Dos flujos opuestos hacia la misma meta: hay que montar dos defensas con el mismo oro. |
+
+Los enemigos se reparten entre las rutas de forma alterna y determinista, y cada
+uno recorre la suya de principio a fin. Cada escenario guarda **su propio
+récord** por dificultad.
+
 ### Entre oleadas
 
 Antes de cada oleada, un aviso muestra **qué viene** (tipos, cantidad y si trae
-voladores, atacantes de torres o criaturas que se salen del camino) y un botón
-para **llamarla antes de tiempo**. Cuanto antes la llames, más oro de bonus.
+voladores, atacantes de torres, criaturas que se salen del camino, acorazadas,
+sanadoras o divisoras) y un botón para **llamarla antes de tiempo**. Cuanto antes
+la llames, más oro de bonus.
 
 ### Prioridad de objetivo
 
@@ -58,8 +75,9 @@ Se recargan solas y no cuestan oro.
 
 ### Récords
 
-El juego guarda en el navegador la mejor oleada de cada dificultad y la muestra
-en el menú principal.
+El juego guarda en el navegador la mejor oleada de cada **escenario y
+dificultad**. La pantalla de selección muestra el récord de cada escenario, y el
+menú principal la mejor marca de la dificultad elegida entre todos ellos.
 
 ### Torres
 
@@ -74,11 +92,25 @@ en el menú principal.
 
 ### Criaturas
 
-Una progresión de rata → zorro → perro → jabalí en tierra, y murciélago → águila
-→ buitre en el aire, con goblins, orcos y un jefe orco como gama alta. Cada
-oleada trae más criaturas, con más vida y algo más rápidas que la anterior.
-El jabalí, el buitre, el orco y el jefe orco pueden dañar torres cercanas; el
-goblin y el jefe orco pueden abandonar el camino.
+Una progresión de rata → araña → zorro → escarabajo → perro → jabalí en tierra, y
+murciélago → águila → buitre en el aire, con limos, goblins, chamanes, orcos,
+gólems y un jefe orco como gama alta. Cada oleada trae más criaturas, con más
+vida y algo más rápidas que la anterior.
+
+Además del daño y la velocidad, hay **rasgos que exigen cambiar de herramienta**,
+no solo subir números:
+
+| Rasgo | Quién lo tiene | Cómo se contrarresta |
+| --- | --- | --- |
+| 🛡 **Armadura** | Escarabajo, Gólem | Resta una cantidad fija a **cada impacto**, con un mínimo de 1. Castiga a las torres de muchos golpes pequeños y premia a las de golpe fuerte. Las habilidades la atraviesan. |
+| ✚ **Sanación** | Chamán | Cura por área a los enemigos cercanos mientras vive. Hay que matarlo antes que al resto; la prioridad *Más fuerte* ayuda. |
+| ◑ **División** | Limo | Al morir deja dos limillos más pequeños y rápidos donde cayó. Las crías no se vuelven a dividir. |
+| ⚔ **Daño a torres** | Jabalí, Buitre, Orc, Gólem, Jefe Orco | Se paran a golpear la torre; hay que repararla desde su panel. |
+| ⚠ **Fuera del camino** | Goblin, Jefe Orco | Cruzan el prado en línea recta. |
+
+Una criatura acorazada se distingue por el marco metálico de su barra de vida, y
+el chamán dibuja el alcance de su aura. El aviso de la próxima oleada señala qué
+rasgos vienen antes de que lleguen.
 
 ### Controles
 
@@ -126,9 +158,10 @@ publica en **GitHub Pages** en cada push a `main`. Para activarlo, en
 
 ```
 src/
-  game/     Simulación pura: mapa, oleadas, torres, economía, habilidades,
-            dificultad, cámara. Sin DOM ni canvas, por lo que se puede probar
-            entera en Node. Los sonidos se encolan como eventos, no se reproducen.
+  game/     Simulación pura: rejilla, escenarios y rutas, oleadas, torres,
+            economía, habilidades, dificultad, cámara. Sin DOM ni canvas, por lo
+            que se puede probar entera en Node. Los sonidos se encolan como
+            eventos, no se reproducen.
   render/   Dibujo en canvas: terreno precocinado, entidades y avisos de borde.
   ui/       HUD, barra de compra, panel de torre y entrada de puntero.
   audio/    Síntesis con Web Audio de los eventos que encola la simulación.

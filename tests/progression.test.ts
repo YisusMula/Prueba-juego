@@ -14,7 +14,8 @@ import {
   startGame,
   upgradeSelectedTower,
 } from '../src/game/state';
-import { loadRecords, recordRun } from '../src/storage/records';
+import { bestRecordFor, loadRecords, recordFor, recordRun } from '../src/storage/records';
+import { SCENARIO_LIST } from '../src/game/scenarios';
 import { getWave } from '../src/game/waves';
 import { spawnEnemy } from '../src/game/state';
 import { quietRun, run } from './helpers';
@@ -165,36 +166,55 @@ describe('run-progression: récords', () => {
   const base = loadRecords();
 
   it('un resultado mejor actualiza el récord', () => {
-    const start = recordRun(base, 'normal', 12, 100).records;
-    const { records, beatenWave } = recordRun(start, 'normal', 18, 150);
+    const start = recordRun(base, 'meadow', 'normal', 12, 100).records;
+    const { records, beatenWave } = recordRun(start, 'meadow', 'normal', 18, 150);
 
-    expect(records.normal.bestWave).toBe(18);
+    expect(recordFor(records, 'meadow', 'normal').bestWave).toBe(18);
     expect(beatenWave).toBe(true);
   });
 
   it('un resultado peor no empeora el récord', () => {
-    const start = recordRun(base, 'normal', 18, 150).records;
-    const { records, beatenWave } = recordRun(start, 'normal', 9, 20);
+    const start = recordRun(base, 'meadow', 'normal', 18, 150).records;
+    const { records, beatenWave } = recordRun(start, 'meadow', 'normal', 9, 20);
 
-    expect(records.normal.bestWave).toBe(18);
-    expect(records.normal.bestKills).toBe(150);
+    expect(recordFor(records, 'meadow', 'normal').bestWave).toBe(18);
+    expect(recordFor(records, 'meadow', 'normal').bestKills).toBe(150);
     expect(beatenWave).toBe(false);
   });
 
   it('los récords son independientes por dificultad', () => {
-    const start = recordRun(base, 'normal', 18, 150).records;
-    const { records } = recordRun(start, 'hard', 4, 10);
+    const start = recordRun(base, 'meadow', 'normal', 18, 150).records;
+    const { records } = recordRun(start, 'meadow', 'hard', 4, 10);
 
-    expect(records.normal.bestWave).toBe(18);
-    expect(records.hard.bestWave).toBe(4);
-    expect(records.easy.bestWave).toBe(0);
+    expect(recordFor(records, 'meadow', 'normal').bestWave).toBe(18);
+    expect(recordFor(records, 'meadow', 'hard').bestWave).toBe(4);
+    expect(recordFor(records, 'meadow', 'easy').bestWave).toBe(0);
+  });
+
+  it('los récords son independientes por escenario', () => {
+    const start = recordRun(base, 'meadow', 'normal', 18, 150).records;
+    const { records } = recordRun(start, 'crossroads', 'normal', 7, 30);
+
+    expect(recordFor(records, 'meadow', 'normal').bestWave).toBe(18);
+    expect(recordFor(records, 'crossroads', 'normal').bestWave).toBe(7);
+    expect(recordFor(records, 'gates', 'normal').bestWave).toBe(0);
+  });
+
+  it('el menú muestra la mejor marca de la dificultad entre escenarios', () => {
+    let records = recordRun(base, 'meadow', 'normal', 12, 80).records;
+    records = recordRun(records, 'gates', 'normal', 21, 200).records;
+
+    expect(bestRecordFor(records, 'normal').bestWave).toBe(21);
+    expect(bestRecordFor(records, 'hard').bestWave).toBe(0);
   });
 
   it('sin almacenamiento se obtienen récords vacíos sin fallar', () => {
     // En Node no hay localStorage: loadRecords debe devolver ceros y no lanzar.
     const records = loadRecords();
-    for (const id of DIFFICULTY_ORDER) {
-      expect(records[id].bestWave).toBe(0);
+    for (const scene of SCENARIO_LIST) {
+      for (const id of DIFFICULTY_ORDER) {
+        expect(recordFor(records, scene.id, id).bestWave).toBe(0);
+      }
     }
   });
 });
