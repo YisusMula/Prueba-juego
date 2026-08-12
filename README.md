@@ -7,12 +7,25 @@ de nivel para que ninguna llegue.
 
 ## Cómo se juega
 
-- Empiezas con **20 vidas** y **150 de oro**.
+La partida se gana **superando la oleada 30**; se pierde cuando las vidas llegan
+a 0. Tras la victoria puedes seguir en **modo sin fin**, donde las oleadas no
+paran de crecer.
+
+- Elige la dificultad en el menú. Cambia las vidas y el oro de partida y la
+  dureza de los enemigos:
+
+  | Dificultad | Vidas | Oro | Vida de los enemigos |
+  | --- | --- | --- | --- |
+  | Fácil | 30 | 220 | ×0,65 |
+  | Normal | 20 | 150 | ×1 |
+  | Difícil | 12 | 120 | ×1,2 |
+
 - Elige una torre en la barra inferior y **pulsa sobre el prado** para colocarla.
   Las torres no se pueden poner sobre el camino. Si no te llega el oro, la torre
   aparece deshabilitada y no se puede seleccionar.
-- **Pulsa una torre colocada** para ver sus estadísticas y subirla de nivel. Cada
-  nivel cuesta más que el anterior, hasta el nivel 8.
+- **Pulsa una torre colocada** para ver sus estadísticas, subirla de nivel
+  (hasta el 8, cada nivel más caro que el anterior), **elegir a quién dispara**
+  o **venderla** por parte de lo invertido.
 - Cada criatura eliminada da oro; la cantidad depende de su tipo.
 - Cada criatura que llega al castillo **resta una vida y no da oro**.
 - A partir de cierta oleada, algunas criaturas **abandonan el camino** y cruzan
@@ -21,6 +34,32 @@ de nivel para que ninguna llegue.
   desde su panel, gastando oro.
 - Cuando las vidas llegan a 0 aparece la pantalla de derrota con un botón para
   reintentar.
+
+### Entre oleadas
+
+Antes de cada oleada, un aviso muestra **qué viene** (tipos, cantidad y si trae
+voladores, atacantes de torres o criaturas que se salen del camino) y un botón
+para **llamarla antes de tiempo**. Cuanto antes la llames, más oro de bonus.
+
+### Prioridad de objetivo
+
+Cada torre dispara a **Primero**, **Último**, **Más fuerte** o **Más cercano**.
+La prioridad nunca rompe el dominio de la torre: un cañón sigue sin poder
+disparar al aire aunque el objetivo prioritario sea volador.
+
+### Habilidades
+
+Se recargan solas y no cuestan oro.
+
+| Habilidad | Efecto | Recarga |
+| --- | --- | --- |
+| ☄️ Meteoro | Se apunta a un punto del prado: 320 de daño en un radio amplio | 25 s |
+| ❄️ Ventisca | Daño leve y congelación de 4 s a todo el mapa | 40 s |
+
+### Récords
+
+El juego guarda en el navegador la mejor oleada de cada dificultad y la muestra
+en el menú principal.
 
 ### Torres
 
@@ -43,13 +82,20 @@ goblin y el jefe orco pueden abandonar el camino.
 
 ### Controles
 
-| Acción | Ratón | Táctil |
+| Acción | Ratón / teclado | Táctil |
 | --- | --- | --- |
 | Mover la vista | Arrastrar | Arrastrar un dedo |
 | Zoom | Rueda o botones `+` / `−` | Pellizcar o botones `+` / `−` |
 | Ver el mapa entero | Botón `⤢` | Botón `⤢` |
 | Colocar / seleccionar | Clic | Toque |
+| Velocidad 1× / 2× / 3× | Teclas `1` `2` `3` o el selector | Selector del HUD |
+| Llamar a la oleada | `Espacio` | Botón `¡Que vengan ya!` |
+| Meteoro / Ventisca | Teclas `Q` / `W` | Botones de la barra lateral |
+| Silenciar | Botón 🔊 | Botón 🔊 |
 | Pausar | Botón `Menú` o `Esc` | Botón `Menú` |
+
+Los enemigos que quedan fuera de la vista se señalan con **flechas en el borde**
+de la pantalla, para que un mapa desplazable no te haga perder de vista una fuga.
 
 ## Ejecutar en local
 
@@ -80,10 +126,13 @@ publica en **GitHub Pages** en cada push a `main`. Para activarlo, en
 
 ```
 src/
-  game/     Simulación pura: mapa, oleadas, torres, economía, cámara.
-            Sin DOM ni canvas, por lo que se puede probar entera en Node.
-  render/   Dibujo en canvas: terreno precocinado y entidades.
+  game/     Simulación pura: mapa, oleadas, torres, economía, habilidades,
+            dificultad, cámara. Sin DOM ni canvas, por lo que se puede probar
+            entera en Node. Los sonidos se encolan como eventos, no se reproducen.
+  render/   Dibujo en canvas: terreno precocinado, entidades y avisos de borde.
   ui/       HUD, barra de compra, panel de torre y entrada de puntero.
+  audio/    Síntesis con Web Audio de los eventos que encola la simulación.
+  storage/  Récords y preferencias en localStorage, a prueba de fallos.
 tests/      Tests de Vitest, uno por capacidad de las specs.
 openspec/   Specs y propuesta de cambio (ver más abajo).
 ```

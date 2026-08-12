@@ -24,7 +24,7 @@ export const FIRST_ORC_WAVE = 16;
 export const BOSS_EVERY = 10;
 
 /** Factor de crecimiento de la vida de los enemigos por oleada. */
-export const HP_GROWTH = 1.13;
+export const HP_GROWTH = 1.085;
 /** Crecimiento de velocidad por oleada, acotado para no volverse absurdo. */
 export const SPEED_GROWTH_PER_WAVE = 0.012;
 export const MAX_SPEED_MULTIPLIER = 1.5;
@@ -95,6 +95,43 @@ export function getWave(index: number): Wave {
     // terminaría nunca.
     hpMultiplier: HP_GROWTH ** (n - 1),
     speedMultiplier: Math.min(MAX_SPEED_MULTIPLIER, 1 + SPEED_GROWTH_PER_WAVE * (n - 1)),
+  };
+}
+
+export interface WaveDescription {
+  index: number;
+  groups: { typeId: EnemyTypeId; name: string; count: number }[];
+  total: number;
+  /** La oleada trae criaturas voladoras. */
+  hasAir: boolean;
+  /** La oleada trae criaturas capaces de dañar torres. */
+  hasTowerAttackers: boolean;
+  /** La oleada trae criaturas capaces de abandonar el camino. */
+  hasPathSkippers: boolean;
+}
+
+/**
+ * Composición de una oleada sin generarla. Es una consulta pura: no toca el
+ * estado de la partida, así que la interfaz puede llamarla libremente para
+ * enseñar al jugador lo que le viene encima.
+ */
+export function describeWave(index: number): WaveDescription {
+  const wave = getWave(index);
+  const groups = wave.groups.map((group) => ({
+    typeId: group.typeId,
+    name: ENEMY_TYPES[group.typeId].name,
+    count: group.count,
+  }));
+
+  return {
+    index: wave.index,
+    groups,
+    total: waveEnemyCount(wave),
+    hasAir: wave.groups.some((group) => ENEMY_TYPES[group.typeId].domain === 'air'),
+    hasTowerAttackers: wave.groups.some(
+      (group) => ENEMY_TYPES[group.typeId].canDamageTowers,
+    ),
+    hasPathSkippers: wave.groups.some((group) => ENEMY_TYPES[group.typeId].canSkipPath),
   };
 }
 

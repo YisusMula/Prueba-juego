@@ -1,6 +1,15 @@
 :root {
   --hud-height: 56px;
   --shop-height: 108px;
+  /*
+   * Altura *real* de cada panel. Los paneles envuelven su contenido en
+   * pantallas estrechas, así que crecen por encima de su `min-height`. Todo lo
+   * que se coloca pegado a ellos usa estas variables, que el guion actualiza
+   * al medirlos; el valor de aquí es solo el punto de partida antes de la
+   * primera medida.
+   */
+  --hud-actual: calc(var(--hud-height) + var(--safe-top));
+  --shop-actual: calc(var(--shop-height) + var(--safe-bottom));
   --ink: #f4efe2;
   --ink-dim: #c9bfa8;
   --wood: #3d2b1c;
@@ -61,8 +70,8 @@ body {
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(var(--hud-height) + var(--safe-top));
-  bottom: calc(var(--shop-height) + var(--safe-bottom));
+  top: var(--hud-actual);
+  bottom: var(--shop-actual);
   overflow: hidden;
 }
 
@@ -265,7 +274,7 @@ body {
 .zoom-controls {
   position: absolute;
   right: 10px;
-  bottom: calc(var(--shop-height) + var(--safe-bottom) + 12px);
+  bottom: calc(var(--shop-actual) + 12px);
   z-index: 9;
   display: flex;
   flex-direction: column;
@@ -376,7 +385,7 @@ body {
 .tower-panel {
   position: absolute;
   right: 10px;
-  top: calc(var(--hud-height) + var(--safe-top) + 10px);
+  top: calc(var(--hud-actual) + 10px);
   z-index: 11;
   width: min(240px, calc(100vw - 20px));
   padding: 12px;
@@ -667,5 +676,449 @@ body {
 
   .shop-card {
     min-height: 66px;
+  }
+}
+
+/* --- Velocidad de juego -------------------------------------------------- */
+
+.speed-control {
+  display: flex;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 999px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.btn-speed {
+  min-height: 34px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-speed.is-active {
+  background: var(--accent);
+  color: #10240a;
+}
+
+/* --- Aviso de próxima oleada --------------------------------------------- */
+
+.wave-banner {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: calc(var(--hud-actual) + 8px);
+  z-index: 9;
+  width: min(420px, calc(100vw - 20px));
+  padding: 8px 10px;
+  background: linear-gradient(180deg, rgba(45, 32, 20, 0.95), rgba(30, 21, 13, 0.95));
+  border: 2px solid var(--wood-edge);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+}
+
+.wave-banner[hidden] {
+  display: none;
+}
+
+.wave-banner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.wave-banner-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.btn-call {
+  background: linear-gradient(180deg, #d8a13a, #a06f16);
+  border-color: #6b4a10;
+  font-weight: 700;
+  font-size: 13px;
+  min-height: 38px;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+
+.call-bonus {
+  color: #fff3c4;
+  font-variant-numeric: tabular-nums;
+}
+
+.wave-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.wave-preview-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.wave-preview-count {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--gold);
+}
+
+.wave-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.wave-warnings:empty {
+  display: none;
+}
+
+.wave-warning {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(226, 87, 76, 0.22);
+  border: 1px solid rgba(226, 87, 76, 0.5);
+  color: #ffb3ac;
+  white-space: nowrap;
+}
+
+/* --- Progreso de la oleada en curso -------------------------------------- */
+
+.wave-progress {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: calc(var(--hud-actual) + 8px);
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(320px, calc(100vw - 24px));
+  padding: 5px 10px;
+  background: rgba(24, 17, 10, 0.85);
+  border: 1px solid var(--wood-edge);
+  border-radius: 999px;
+}
+
+.wave-progress[hidden] {
+  display: none;
+}
+
+.wave-progress-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.wave-progress-bar > div {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #d8a13a, #ffd75e);
+  transition: width 0.2s linear;
+}
+
+#wave-progress-text {
+  font-size: 11px;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --- Barra de habilidades ------------------------------------------------ */
+
+.ability-bar {
+  position: absolute;
+  left: 10px;
+  bottom: calc(var(--shop-actual) + 12px);
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ability-btn {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  border: 2px solid var(--wood-edge);
+  background: linear-gradient(180deg, #4a3a63, #2b2038);
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  overflow: hidden;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s ease, border-color 0.15s ease;
+}
+
+.ability-btn:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.ability-btn:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.ability-btn.is-aiming {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(255, 215, 94, 0.4), 0 0 16px rgba(255, 215, 94, 0.35);
+  transform: translateY(-2px);
+}
+
+.ability-btn:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.6);
+}
+
+/* Máscara de recarga: se vacía de abajo arriba conforme la habilidad vuelve. */
+.ability-cooldown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(8, 6, 12, 0.72);
+  pointer-events: none;
+}
+
+.ability-cooldown-text {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Panel de torre: prioridad y venta ----------------------------------- */
+
+.priority-picker {
+  margin-bottom: 10px;
+}
+
+.priority-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+  margin-bottom: 4px;
+}
+
+.priority-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.btn-priority {
+  min-height: 32px;
+  padding: 5px 6px;
+  font-size: 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--ink-dim);
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.btn-priority.is-active {
+  background: var(--wood-light);
+  border-color: var(--gold);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.btn-priority:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+
+.btn-sell {
+  background: linear-gradient(180deg, #7a5a5a, #4d3535);
+  border-color: #3a2626;
+  font-weight: 700;
+  margin-top: 8px;
+}
+
+/* --- Menú: dificultad y récord ------------------------------------------- */
+
+.difficulty-picker {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+
+.btn-difficulty {
+  padding: 8px 16px;
+  min-height: 46px;
+  border-radius: var(--radius);
+  border: 2px solid rgba(0, 0, 0, 0.35);
+  background: rgba(255, 255, 255, 0.18);
+  color: #1f3617;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+
+.btn-difficulty small {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.btn-difficulty.is-active {
+  background: #2b4d1f;
+  border-color: #17300e;
+  color: #f4efe2;
+  transform: translateY(-2px);
+}
+
+.btn-difficulty:focus-visible {
+  outline: 3px solid #17300e;
+  outline-offset: 2px;
+}
+
+.menu-record {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #24401b;
+  min-height: 18px;
+}
+
+.overlay-record {
+  margin: -8px 0 16px;
+  font-size: 13px;
+  color: var(--gold);
+  font-weight: 700;
+  min-height: 18px;
+}
+
+/* --- Pantalla de victoria ------------------------------------------------ */
+
+.overlay-victory {
+  background: rgba(16, 40, 12, 0.82);
+}
+
+.victory-kicker {
+  color: var(--gold);
+}
+
+.victory-heading {
+  color: #ffe07a;
+  text-shadow: 0 3px 0 #6b4a10;
+}
+
+/* --- Sacudida de pantalla al perder una vida ----------------------------- */
+
+@keyframes screen-shake {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-5px, 3px); }
+  40% { transform: translate(4px, -3px); }
+  60% { transform: translate(-3px, -2px); }
+  80% { transform: translate(3px, 2px); }
+}
+
+#stage.is-shaking {
+  animation: screen-shake 0.32s ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #stage.is-shaking {
+    animation: none;
+  }
+  .wave-progress-bar > div {
+    transition: none;
+  }
+}
+
+/* --- Ajustes para pantallas pequeñas ------------------------------------- */
+
+@media (max-width: 560px) {
+  .wave-banner {
+    left: 10px;
+    right: 10px;
+    transform: none;
+    width: auto;
+  }
+
+  .wave-banner-head {
+    flex-wrap: wrap;
+  }
+
+  .btn-call {
+    flex: 1;
+    min-height: 44px;
+  }
+
+  .ability-btn {
+    width: 46px;
+    height: 46px;
+    font-size: 20px;
+  }
+
+  .speed-control {
+    padding: 2px;
+  }
+
+  /* En táctil el objetivo no puede encogerse tanto como en ratón. */
+  .btn-speed {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 3px 8px;
+    font-size: 13px;
+  }
+
+  #btn-menu {
+    padding: 8px 10px;
+  }
+}
+
+@media (max-height: 460px) and (orientation: landscape) {
+  .ability-bar {
+    flex-direction: row;
+  }
+
+  .wave-banner {
+    top: calc(var(--hud-actual) + 4px);
+    padding: 6px 8px;
   }
 }

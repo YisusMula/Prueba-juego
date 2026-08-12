@@ -377,6 +377,8 @@ export function drawTowerGhost(
     recoil: 0,
     hp: 1,
     frozenTargets: [],
+    priority: 'first',
+    invested: 0,
   };
   drawTower(ctx, ghost);
 }
@@ -429,6 +431,7 @@ function drawGroundEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
   drawGroundFeatures(ctx, enemy, x, y);
 
   if (enemy.offPath) drawTrampledGrass(ctx, enemy, x, y);
+  if (enemy.flash > 0) drawDamageFlash(ctx, x, y, enemy.radius, enemy.flash);
   if (enemy.slowTimer > 0) drawFrostOverlay(ctx, x, y, enemy.radius);
 
   drawHealthBar(ctx, enemy, enemy.y - enemy.radius * 1.9);
@@ -578,6 +581,22 @@ function drawTrampledGrass(ctx: CanvasRenderingContext2D, enemy: Enemy, x: numbe
   ctx.stroke();
 }
 
+/** Destello blanco al recibir daño: confirma el impacto de un vistazo. */
+function drawDamageFlash(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  flash: number,
+): void {
+  // 0.12 s es la duración completa del destello; se desvanece en ese tramo.
+  const alpha = Math.min(1, flash / 0.12) * 0.75;
+  ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+  ctx.beginPath();
+  ctx.ellipse(x, y, radius * 1.08, radius * 1.14, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 /** Brillo helado sobre un enemigo congelado por la torre de hielo. */
 function drawFrostOverlay(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
   ctx.fillStyle = 'rgba(180, 230, 250, 0.4)';
@@ -637,6 +656,7 @@ function drawAirEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number)
   ctx.fill();
 
   drawAirFeatures(ctx, enemy, x, y);
+  if (enemy.flash > 0) drawDamageFlash(ctx, x, y, enemy.radius, enemy.flash);
   if (enemy.slowTimer > 0) drawFrostOverlay(ctx, x, y, enemy.radius);
 
   drawHealthBar(ctx, enemy, y - enemy.radius * 1.8);

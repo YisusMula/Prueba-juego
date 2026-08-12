@@ -5,6 +5,8 @@
  * ejecutar y probar en Node.
  */
 
+import { type AbilityId, ABILITY_ORDER, ability } from './abilities';
+import { DEFAULT_DIFFICULTY, type DifficultyId, difficulty } from './difficulty';
 import { type Domain, type EnemyTypeId, enemyType } from './enemies';
 import {
   CELL,
@@ -14,10 +16,13 @@ import {
   positionAtDistance,
   worldToCell,
 } from './map';
+import { MAX_QUEUED_SOUNDS, type SoundId } from './sounds';
 import {
   type ProjectileKind,
+  type TargetPriority,
   type TowerTypeId,
   repairCost,
+  sellRefund,
   statsAtLevel,
   towerType,
   upgradeCost,
@@ -30,8 +35,10 @@ export const STARTING_GOLD = 150;
 export const FIRST_WAVE_DELAY = 5;
 /** Segundos de descanso entre oleadas. */
 export const WAVE_REST = 7;
+/** Oro de bonus por cada segundo de preparación al que el jugador renuncia. */
+export const CALL_WAVE_GOLD_PER_SECOND = 6;
 
-export type Screen = 'menu' | 'playing' | 'paused' | 'defeat';
+export type Screen = 'menu' | 'playing' | 'paused' | 'defeat' | 'victory';
 export type WavePhase = 'preparing' | 'spawning' | 'clearing';
 
 export interface Enemy {
@@ -66,6 +73,8 @@ export interface Enemy {
   meleeCooldown: number;
   /** Segundos restantes del efecto de congelación de la torre de hielo. */
   slowTimer: number;
+  /** Segundos restantes del destello blanco al recibir daño. */
+  flash: number;
 }
 
 export interface Tower {
@@ -85,6 +94,10 @@ export interface Tower {
   hp: number;
   /** Ids de enemigos que esta torre mantiene congelados (solo relevante en la torre de hielo). */
   frozenTargets: number[];
+  /** A cuál de los enemigos válidos dispara esta torre. */
+  priority: TargetPriority;
+  /** Oro total invertido en esta torre: su compra más todas sus mejoras. */
+  invested: number;
 }
 
 export interface Projectile {
@@ -107,7 +120,14 @@ export interface Projectile {
   applyFreeze: boolean;
 }
 
-export type EffectKind = 'explosion' | 'hit' | 'gold' | 'leak';
+export type EffectKind =
+  | 'explosion'
+  | 'hit'
+  | 'gold'
+  | 'leak'
+  | 'damage'
+  | 'meteor'
+  | 'blizzard';
 
 export interface Effect {
   id: number;
@@ -118,6 +138,13 @@ export interface Effect {
   maxLife: number;
   radius: number;
   text: string;
+}
+
+/** Estado de recarga de una habilidad del comandante. */
+export interface AbilitySlot {
+  id: AbilityId;
+  /** Segundos que faltan para poder volver a usarla. 0 = lista. */
+  cooldown: number;
 }
 
 export interface GameState {
@@ -139,6 +166,16 @@ export interface GameState {
   shopSelection: TowerTypeId | null;
   /** Torre ya colocada que el jugador ha seleccionado. */
   selectedTowerId: number | null;
+  /** Dificultad de la partida en curso. */
+  difficultyId: DifficultyId;
+  /** Tras ganar, la partida continúa sin condición de victoria. */
+  endless: boolean;
+  /** Recarga de cada habilidad del comandante. */
+  abilities: AbilitySlot[];
+  /** Habilidad dirigida esperando a que el jugador señale un punto. */
+  aimingAbility: AbilityId | null;
+  /** Eventos de sonido pendientes de reproducir por la capa de presentación. */
+  soundQueue: SoundId[];
   time: number;
   nextId: number;
   stats: {
@@ -149,11 +186,16 @@ export interface GameState {
   };
 }
 
-export function createGameState(): GameState {
+function freshAbilities(): AbilitySlot[] {
+  return ABILITY_ORDER.map((id) => ({ id, cooldown: 0 }));
+}
+
+export function createGameState(difficultyId: DifficultyId = DEFAULT_DIFFICULTY): GameState {
+  const setup = difficulty(difficultyId);
   return {
     screen: 'menu',
-    lives: STARTING_LIVES,
-    gold: STARTING_GOLD,
+    lives: setup.startingLives,
+    gold: setup.startingGold,
     waveIndex: 0,
     wavePhase: 'preparing',
     waveTimer: FIRST_WAVE_DELAY,
@@ -166,6 +208,11 @@ export function createGameState(): GameState {
     effects: [],
     shopSelection: null,
     selectedTowerId: null,
+    difficultyId,
+    endless: false,
+    abilities: freshAbilities(),
+    aimingAbility: null,
+    soundQueue: [],
     time: 0,
     nextId: 1,
     stats: { kills: 0, leaked: 0, goldEarned: 0, goldSpent: 0 },
@@ -173,14 +220,16 @@ export function createGameState(): GameState {
 }
 
 /** Reinicia la partida a su estado inicial y la pone en marcha. */
-export function startGame(state: GameState): void {
+export function startGame(state: GameState, difficultyId?: DifficultyId): void {
+  if (difficultyId) state.difficultyId = difficultyId;
   resetRun(state);
   state.screen = 'playing';
 }
 
 function resetRun(state: GameState): void {
-  state.lives = STARTING_LIVES;
-  state.gold = STARTING_GOLD;
+  const setup = difficulty(state.difficultyId);
+  state.lives = setup.startingLives;
+  state.gold = setup.startingGold;
   state.waveIndex = 0;
   state.wavePhase = 'preparing';
   state.waveTimer = FIRST_WAVE_DELAY;
@@ -193,9 +242,36 @@ function resetRun(state: GameState): void {
   state.effects = [];
   state.shopSelection = null;
   state.selectedTowerId = null;
+  state.endless = false;
+  state.abilities = freshAbilities();
+  state.aimingAbility = null;
+  state.soundQueue = [];
   state.time = 0;
   state.nextId = 1;
   state.stats = { kills: 0, leaked: 0, goldEarned: 0, goldSpent: 0 };
+}
+
+/** Encola un evento de sonido para que lo reproduzca la capa de presentación. */
+export function emitSound(state: GameState, id: SoundId): void {
+  state.soundQueue.push(id);
+  if (state.soundQueue.length > MAX_QUEUED_SOUNDS) {
+    state.soundQueue.splice(0, state.soundQueue.length - MAX_QUEUED_SOUNDS);
+  }
+}
+
+/** Vacía la cola de sonidos y devuelve lo que había. */
+export function drainSounds(state: GameState): SoundId[] {
+  if (state.soundQueue.length === 0) return [];
+  const drained = state.soundQueue;
+  state.soundQueue = [];
+  return drained;
+}
+
+/** Continúa la partida tras la victoria, ya sin condición de victoria. */
+export function continueEndless(state: GameState): void {
+  if (state.screen !== 'victory') return;
+  state.endless = true;
+  state.screen = 'playing';
 }
 
 export function pauseGame(state: GameState): void {
@@ -261,6 +337,9 @@ export function selectShopTower(state: GameState, typeId: TowerTypeId | null): b
   if (!canAfford(state, towerType(typeId).cost)) return false;
   state.shopSelection = typeId;
   state.selectedTowerId = null;
+  // Elegir una torre cancela el apuntado: son dos intenciones incompatibles
+  // sobre el mismo siguiente toque en el escenario.
+  state.aimingAbility = null;
   return true;
 }
 
@@ -311,9 +390,12 @@ export function placeTower(state: GameState, col: number, row: number): boolean 
     recoil: 0,
     hp: maxHp,
     frozenTargets: [],
+    priority: 'first',
+    invested: type.cost,
   };
   state.towers.push(tower);
   state.selectedTowerId = tower.id;
+  emitSound(state, 'build');
   syncShopAffordability(state);
   return true;
 }
@@ -329,8 +411,15 @@ export function getSelectedTower(state: GameState): Tower | null {
  */
 export function handleWorldTap(state: GameState, worldX: number, worldY: number): void {
   if (state.screen !== 'playing') return;
-  const { col, row } = worldToCell(worldX, worldY);
 
+  // El apuntado de una habilidad se atiende antes que nada: el jugador ya ha
+  // declarado qué quiere hacer con el siguiente toque.
+  if (state.aimingAbility !== null) {
+    castAbility(state, state.aimingAbility, worldX, worldY);
+    return;
+  }
+
+  const { col, row } = worldToCell(worldX, worldY);
   const existing = towerAt(state, col, row);
 
   if (state.shopSelection !== null) {
@@ -367,8 +456,39 @@ export function upgradeSelectedTower(state: GameState): boolean {
   const ratio = oldMaxHp > 0 ? tower.hp / oldMaxHp : 1;
   tower.level += 1;
   tower.hp = Math.round(statsAtLevel(type, tower.level).maxHp * ratio);
+  tower.invested += cost;
 
+  emitSound(state, 'upgrade');
   syncShopAffordability(state);
+  return true;
+}
+
+/** Reembolso que se obtendría al vender la torre seleccionada. */
+export function selectedTowerSellValue(state: GameState): number | null {
+  const tower = getSelectedTower(state);
+  if (!tower) return null;
+  return sellRefund(tower.invested);
+}
+
+/** Vende la torre seleccionada y devuelve parte de lo invertido en ella. */
+export function sellSelectedTower(state: GameState): boolean {
+  if (state.screen !== 'playing') return false;
+  const tower = getSelectedTower(state);
+  if (!tower) return false;
+
+  addGold(state, sellRefund(tower.invested));
+  state.towers = state.towers.filter((candidate) => candidate.id !== tower.id);
+  state.selectedTowerId = null;
+  emitSound(state, 'sell');
+  return true;
+}
+
+/** Cambia a quién dispara la torre seleccionada. */
+export function setSelectedTowerPriority(state: GameState, priority: TargetPriority): boolean {
+  if (state.screen !== 'playing') return false;
+  const tower = getSelectedTower(state);
+  if (!tower) return false;
+  tower.priority = priority;
   return true;
 }
 
@@ -399,7 +519,109 @@ export function repairSelectedTower(state: GameState): boolean {
   if (!spendGold(state, cost)) return false;
 
   tower.hp = maxHp;
+  emitSound(state, 'repair');
   syncShopAffordability(state);
+  return true;
+}
+
+// --- Habilidades del comandante ---------------------------------------------
+
+export function abilitySlot(state: GameState, id: AbilityId): AbilitySlot | null {
+  return state.abilities.find((slot) => slot.id === id) ?? null;
+}
+
+export function isAbilityReady(state: GameState, id: AbilityId): boolean {
+  const slot = abilitySlot(state, id);
+  return slot !== null && slot.cooldown <= 0;
+}
+
+/**
+ * Selecciona una habilidad. Las dirigidas entran en modo de apuntado y
+ * esperan a que el jugador señale un punto; las inmediatas se lanzan ya.
+ * Volver a seleccionar la que ya está apuntando cancela el apuntado.
+ */
+export function selectAbility(state: GameState, id: AbilityId | null): boolean {
+  if (state.screen !== 'playing') return false;
+  if (id === null || state.aimingAbility === id) {
+    state.aimingAbility = null;
+    return true;
+  }
+  if (!isAbilityReady(state, id)) return false;
+
+  if (!ability(id).targeted) return castAbility(state, id);
+
+  state.aimingAbility = id;
+  // Apuntar cancela la compra pendiente, por el mismo motivo que a la inversa.
+  state.shopSelection = null;
+  return true;
+}
+
+/**
+ * Lanza una habilidad. Las dirigidas necesitan un punto del escenario; las
+ * inmediatas lo ignoran. El efecto sobre los enemigos lo aplica `step`, que
+ * es quien conoce el daño y la congelación: aquí solo se deja el efecto
+ * registrado y se pone la habilidad en recarga.
+ */
+export function castAbility(
+  state: GameState,
+  id: AbilityId,
+  worldX = 0,
+  worldY = 0,
+): boolean {
+  if (state.screen !== 'playing') return false;
+  const slot = abilitySlot(state, id);
+  if (!slot || slot.cooldown > 0) return false;
+
+  const spec = ability(id);
+  slot.cooldown = spec.cooldown;
+  state.aimingAbility = null;
+
+  if (spec.targeted) {
+    addEffect(state, 'meteor', worldX, worldY, { life: 0.6, radius: spec.radius });
+    emitSound(state, 'ability-meteor');
+
+    const radiusSq = spec.radius * spec.radius;
+    // Copia de la lista: damageEnemy puede retirar enemigos al matarlos.
+    for (const enemy of [...state.enemies]) {
+      if (enemy.hp <= 0) continue;
+      const dx = enemy.x - worldX;
+      const dy = enemy.y - worldY;
+      if (dx * dx + dy * dy > radiusSq) continue;
+      damageEnemy(state, enemy, spec.damage);
+      if (spec.freezeDuration > 0) enemy.slowTimer = spec.freezeDuration;
+    }
+    return true;
+  }
+
+  addEffect(state, 'blizzard', 0, 0, { life: 0.8, radius: 0 });
+  emitSound(state, 'ability-blizzard');
+  for (const enemy of [...state.enemies]) {
+    if (enemy.hp <= 0) continue;
+    if (spec.damage > 0) damageEnemy(state, enemy, spec.damage);
+    if (spec.freezeDuration > 0) enemy.slowTimer = spec.freezeDuration;
+  }
+  return true;
+}
+
+// --- Control de oleadas ------------------------------------------------------
+
+/** Oro de bonus que se llevaría el jugador por llamar ya a la siguiente oleada. */
+export function callWaveBonus(state: GameState): number {
+  if (state.wavePhase !== 'preparing') return 0;
+  return Math.max(0, Math.round(state.waveTimer * CALL_WAVE_GOLD_PER_SECOND));
+}
+
+/**
+ * Llama a la siguiente oleada sin esperar al resto de la preparación, a
+ * cambio de oro proporcional al tiempo cedido.
+ */
+export function callNextWave(state: GameState): boolean {
+  if (state.screen !== 'playing') return false;
+  if (state.wavePhase !== 'preparing') return false;
+
+  addGold(state, callWaveBonus(state));
+  state.waveTimer = 0;
+  beginNextWave(state);
   return true;
 }
 
@@ -412,7 +634,11 @@ export function spawnEnemy(
   speedMultiplier = 1,
 ): Enemy {
   const type = enemyType(typeId);
-  const hp = Math.round(type.hp * hpMultiplier);
+  // La dificultad escala la vida sobre el escalado que ya aplica la oleada.
+  const hp = Math.max(
+    1,
+    Math.round(type.hp * hpMultiplier * difficulty(state.difficultyId).hpMultiplier),
+  );
   const start = positionAtDistance(0);
   const id = state.nextId++;
   // Punto de fuga determinista a partir del id: variedad entre enemigos sin
@@ -443,6 +669,7 @@ export function spawnEnemy(
     meleeTimer: 0,
     meleeCooldown: 0,
     slowTimer: 0,
+    flash: 0,
   };
   state.enemies.push(enemy);
   return enemy;
@@ -466,6 +693,35 @@ export function addEffect(
     radius: options.radius ?? CELL * 0.4,
     text: options.text ?? '',
   });
+}
+
+/**
+ * Aplica daño a un enemigo y, si muere, otorga su recompensa de oro.
+ *
+ * Vive aquí y no en `step` porque también lo usan las habilidades del
+ * comandante, que se lanzan desde las acciones del jugador. Tenerlo en un
+ * solo sitio evita que `state` y `step` se importen mutuamente.
+ */
+export function damageEnemy(state: GameState, enemy: Enemy, amount: number): void {
+  if (enemy.hp <= 0) return;
+  enemy.hp -= amount;
+  addEffect(state, 'damage', enemy.x, enemy.y - enemy.radius, {
+    life: 0.7,
+    text: String(Math.round(amount)),
+  });
+
+  if (enemy.hp > 0) {
+    enemy.flash = 0.12;
+    addEffect(state, 'hit', enemy.x, enemy.y, { life: 0.18, radius: enemy.radius });
+    emitSound(state, 'hit');
+    return;
+  }
+
+  enemy.hp = 0;
+  state.stats.kills += 1;
+  addGold(state, enemy.reward);
+  addEffect(state, 'gold', enemy.x, enemy.y, { life: 0.8, text: `+${enemy.reward}` });
+  emitSound(state, 'kill');
 }
 
 /** Carga la siguiente oleada en la cola de aparición. */

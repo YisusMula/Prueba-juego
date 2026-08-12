@@ -4,17 +4,21 @@
 
 import { PATH_LENGTH, positionAtDistance } from './map';
 import { enemyType } from './enemies';
+import { FINAL_WAVE } from './difficulty';
 import { frostFreezeCapacity, statsAtLevel, towerType } from './towers';
 import { WAVE_REST } from './state';
 import type { Enemy, GameState, Projectile, Tower } from './state';
 import {
   addEffect,
-  addGold,
   beginNextWave,
+  damageEnemy,
+  emitSound,
   spawnEnemy,
   loseLife,
   syncShopAffordability,
 } from './state';
+
+export { damageEnemy };
 
 /** Paso de simulación fijo: la lógica no depende de los FPS del dispositivo. */
 export const FIXED_DT = 1 / 60;
@@ -51,32 +55,51 @@ function effectiveProgress(enemy: Enemy): number {
   return enemy.breakawayDistance + enemy.offPathProgress;
 }
 
-/** Enemigo válido más avanzado en el recorrido dentro del alcance. */
+/**
+ * ¿Es `candidate` mejor objetivo que `best` según la prioridad de la torre?
+ * Solo decide entre candidatos que ya han pasado el filtro de validez, así
+ * que ninguna prioridad puede hacer que una torre dispare a un enemigo que
+ * su tipo no puede atacar.
+ */
+function isBetterTarget(
+  tower: Tower,
+  candidate: Enemy,
+  best: Enemy,
+  candidateDistSq: number,
+  bestDistSq: number,
+): boolean {
+  switch (tower.priority) {
+    case 'last':
+      return effectiveProgress(candidate) < effectiveProgress(best);
+    case 'strongest':
+      return candidate.hp > best.hp;
+    case 'closest':
+      return candidateDistSq < bestDistSq;
+    case 'first':
+    default:
+      return effectiveProgress(candidate) > effectiveProgress(best);
+  }
+}
+
+/** Enemigo válido elegido según la prioridad de la torre, dentro del alcance. */
 export function findTarget(state: GameState, tower: Tower, range: number): Enemy | null {
   let best: Enemy | null = null;
+  let bestDistSq = Infinity;
+
   for (const enemy of state.enemies) {
     if (enemy.hp <= 0) continue;
     if (!canTarget(tower, enemy)) continue;
     const dx = enemy.x - tower.x;
     const dy = enemy.y - tower.y;
-    if (dx * dx + dy * dy > range * range) continue;
-    if (best === null || effectiveProgress(enemy) > effectiveProgress(best)) best = enemy;
+    const distSq = dx * dx + dy * dy;
+    if (distSq > range * range) continue;
+
+    if (best === null || isBetterTarget(tower, enemy, best, distSq, bestDistSq)) {
+      best = enemy;
+      bestDistSq = distSq;
+    }
   }
   return best;
-}
-
-/** Aplica daño y, si el enemigo muere, otorga su recompensa de oro. */
-export function damageEnemy(state: GameState, enemy: Enemy, amount: number): void {
-  if (enemy.hp <= 0) return;
-  enemy.hp -= amount;
-  if (enemy.hp > 0) {
-    addEffect(state, 'hit', enemy.x, enemy.y, { life: 0.18, radius: enemy.radius });
-    return;
-  }
-  enemy.hp = 0;
-  state.stats.kills += 1;
-  addGold(state, enemy.reward);
-  addEffect(state, 'gold', enemy.x, enemy.y, { life: 0.8, text: `+${enemy.reward}` });
 }
 
 /** Torre viva más cercana dentro del alcance de golpe de un enemigo. */
@@ -136,7 +159,10 @@ function updateWaves(state: GameState, dt: number): void {
   switch (state.wavePhase) {
     case 'preparing': {
       state.waveTimer -= dt;
-      if (state.waveTimer <= 0) beginNextWave(state);
+      if (state.waveTimer <= 0) {
+        beginNextWave(state);
+        emitSound(state, 'wave-start');
+      }
       break;
     }
     case 'spawning': {
@@ -165,6 +191,7 @@ function leakEnemy(state: GameState, x: number, y: number): void {
   loseLife(state);
   state.stats.leaked += 1;
   addEffect(state, 'leak', x, y, { life: 0.9, text: '-1' });
+  emitSound(state, 'leak');
 }
 
 function updateEnemies(state: GameState, dt: number): void {
@@ -174,6 +201,7 @@ function updateEnemies(state: GameState, dt: number): void {
     if (enemy.hp <= 0) continue;
 
     if (enemy.slowTimer > 0) enemy.slowTimer = Math.max(0, enemy.slowTimer - dt);
+    if (enemy.flash > 0) enemy.flash = Math.max(0, enemy.flash - dt);
     if (enemy.meleeCooldown > 0) enemy.meleeCooldown = Math.max(0, enemy.meleeCooldown - dt);
 
     // Un enemigo que está golpeando una torre no avanza mientras dura el golpe.
@@ -262,9 +290,20 @@ function fire(state: GameState, tower: Tower, target: Enemy): void {
     applyFreeze: type.id === 'frost',
   });
 
+  emitSound(state, SHOT_SOUNDS[type.id]);
   tower.cooldown = 1 / stats.fireRate;
   tower.recoil = 1;
 }
+
+/** Cada tipo de torre suena distinto al disparar. */
+const SHOT_SOUNDS = {
+  archer: 'shoot-arrow',
+  cannon: 'shoot-cannon',
+  mortar: 'shoot-mortar',
+  ballista: 'shoot-bolt',
+  magic: 'shoot-magic',
+  frost: 'shoot-frost',
+} as const;
 
 function updateTowers(state: GameState, dt: number): void {
   for (const tower of state.towers) {
@@ -355,11 +394,32 @@ function removeDeadEnemies(state: GameState): void {
   }
 }
 
+function updateAbilities(state: GameState, dt: number): void {
+  for (const slot of state.abilities) {
+    if (slot.cooldown > 0) slot.cooldown = Math.max(0, slot.cooldown - dt);
+  }
+}
+
+/**
+ * ¿Se ha completado la oleada final? Es el mismo criterio que usa la fase de
+ * limpieza para dar una oleada por terminada: nada pendiente de aparecer y
+ * nada vivo en el escenario.
+ */
+function hasClearedFinalWave(state: GameState): boolean {
+  return (
+    !state.endless &&
+    state.waveIndex >= FINAL_WAVE &&
+    state.spawnQueue.length === 0 &&
+    state.enemies.length === 0
+  );
+}
+
 /** Avanza la simulación. No hace nada si la partida no está en curso. */
 export function step(state: GameState, dt: number): void {
   if (state.screen !== 'playing') return;
 
   state.time += dt;
+  updateAbilities(state, dt);
   updateWaves(state, dt);
   updateEnemies(state, dt);
   updateTowers(state, dt);
@@ -368,9 +428,21 @@ export function step(state: GameState, dt: number): void {
   updateEffects(state, dt);
   syncShopAffordability(state);
 
+  // La derrota manda sobre la victoria: quedarse sin vidas en la última
+  // oleada es perder, aunque ese mismo paso la deje despejada.
   if (state.lives <= 0) {
     state.screen = 'defeat';
     state.shopSelection = null;
+    state.aimingAbility = null;
+    emitSound(state, 'defeat');
+    return;
+  }
+
+  if (hasClearedFinalWave(state)) {
+    state.screen = 'victory';
+    state.shopSelection = null;
+    state.aimingAbility = null;
+    emitSound(state, 'victory');
   }
 }
 

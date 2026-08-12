@@ -9,6 +9,16 @@
 
 export type TowerTypeId = 'archer' | 'cannon' | 'mortar' | 'ballista' | 'magic' | 'frost';
 
+/** A cuál de los enemigos válidos dispara una torre. */
+export type TargetPriority = 'first' | 'last' | 'strongest' | 'closest';
+
+export const TARGET_PRIORITIES: readonly { id: TargetPriority; name: string }[] = [
+  { id: 'first', name: 'Primero' },
+  { id: 'last', name: 'Último' },
+  { id: 'strongest', name: 'Más fuerte' },
+  { id: 'closest', name: 'Más cercano' },
+];
+
 export type ProjectileKind = 'arrow' | 'cannonball' | 'shell' | 'bolt' | 'lightning' | 'frostbolt';
 
 export interface TowerType {
@@ -210,6 +220,18 @@ export function effectiveDps(type: TowerType, level = 1): number {
   const stats = statsAtLevel(type, level);
   const splashFactor = 1 + stats.splashRadius / 60;
   return stats.damage * stats.fireRate * splashFactor;
+}
+
+/**
+ * Fracción de lo invertido que devuelve vender una torre. Menor que 1 para
+ * que vender nunca sea una forma de ganar oro.
+ */
+export const SELL_REFUND_FACTOR = 0.6;
+
+/** Reembolso por vender una torre con esa inversión acumulada. */
+export function sellRefund(invested: number): number {
+  if (invested <= 0) return 0;
+  return Math.max(1, Math.floor(invested * SELL_REFUND_FACTOR));
 }
 
 /** Fracción del coste base de la torre que cuesta repararla desde 0 hasta el máximo. */

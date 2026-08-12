@@ -40,11 +40,37 @@
         </div>
         <div class="hud-actions">
           <span id="wave-hint" class="wave-hint"></span>
+          <div class="speed-control" role="group" aria-label="Velocidad de juego">
+            <button class="btn btn-speed" type="button" data-speed="1">1×</button>
+            <button class="btn btn-speed" type="button" data-speed="2">2×</button>
+            <button class="btn btn-speed" type="button" data-speed="3">3×</button>
+          </div>
+          <button id="btn-mute" class="btn btn-icon" type="button" aria-label="Silenciar sonido">
+            <span id="mute-icon" aria-hidden="true">🔊</span>
+          </button>
           <button id="btn-menu" class="btn btn-icon" type="button" aria-label="Menú">
             <span aria-hidden="true">☰</span> Menú
           </button>
         </div>
       </header>
+
+      <div id="wave-banner" class="wave-banner" hidden>
+        <div class="wave-banner-head">
+          <span class="wave-banner-title">Próxima oleada</span>
+          <button id="btn-call-wave" class="btn btn-call" type="button">
+            ¡Que vengan ya! <span id="call-wave-bonus" class="call-bonus">+0 🪙</span>
+          </button>
+        </div>
+        <div id="wave-preview" class="wave-preview"></div>
+        <div id="wave-warnings" class="wave-warnings"></div>
+      </div>
+
+      <div id="wave-progress" class="wave-progress" hidden>
+        <div class="wave-progress-bar"><div id="wave-progress-fill"></div></div>
+        <span id="wave-progress-text">0 / 0</span>
+      </div>
+
+      <div id="ability-bar" class="ability-bar"></div>
 
       <div id="zoom-controls" class="zoom-controls">
         <button id="btn-zoom-in" class="btn btn-round" type="button" aria-label="Acercar">+</button>
@@ -74,12 +100,19 @@
           <div><dt>Cadencia</dt><dd id="tower-panel-rate">0/s</dd></div>
           <div><dt>Objetivos</dt><dd id="tower-panel-targets">Tierra</dd></div>
         </dl>
+        <div class="priority-picker" role="group" aria-label="Prioridad de objetivo">
+          <span class="priority-label">Dispara a</span>
+          <div id="priority-buttons" class="priority-buttons"></div>
+        </div>
         <button id="btn-upgrade" class="btn btn-primary btn-block" type="button">
           <span id="upgrade-label">Mejorar</span>
           <span id="upgrade-price"> · <span id="tower-panel-cost">0</span> 🪙</span>
         </button>
         <button id="btn-repair" class="btn btn-repair btn-block" type="button" hidden>
           Reparar · <span id="tower-panel-repair-cost">0</span> 🪙
+        </button>
+        <button id="btn-sell" class="btn btn-sell btn-block" type="button">
+          Vender · <span id="tower-panel-sell-value">0</span> 🪙
         </button>
       </aside>
 
@@ -95,11 +128,14 @@
             Las criaturas avanzan por el camino hasta tu castillo. Levanta torres en el prado,
             súbelas de nivel y no dejes pasar a ninguna.
           </p>
+          <div id="difficulty-picker" class="difficulty-picker" role="group"
+               aria-label="Dificultad"></div>
+          <p id="menu-record" class="menu-record"></p>
           <button id="btn-start" class="btn btn-primary btn-large" type="button">Comenzar</button>
           <ul class="overlay-tips">
+            <li>Sobrevive a 30 oleadas para ganar la partida</li>
             <li>Arrastra para mover la vista · pellizca o rueda para el zoom</li>
-            <li>Elige una torre abajo y pulsa en el prado para colocarla</li>
-            <li>Pulsa una torre colocada para subirla de nivel</li>
+            <li>Llama a la oleada antes de tiempo para ganar oro extra</li>
           </ul>
         </div>
       </section>
@@ -119,7 +155,26 @@
         <div class="overlay-content overlay-card">
           <h2 class="overlay-heading defeat-heading">Has perdido</h2>
           <p id="defeat-summary" class="overlay-text">Las criaturas han tomado el castillo.</p>
+          <p id="defeat-record" class="overlay-record"></p>
           <button id="btn-retry" class="btn btn-primary btn-block" type="button">Reintentar</button>
+          <button id="btn-defeat-menu" class="btn btn-ghost btn-block" type="button">
+            Salir al menú principal
+          </button>
+        </div>
+      </section>
+
+      <section id="screen-victory" class="overlay overlay-victory" hidden>
+        <div class="overlay-content overlay-card">
+          <p class="overlay-kicker victory-kicker">El prado resiste</p>
+          <h2 class="overlay-heading victory-heading">¡Victoria!</h2>
+          <p id="victory-summary" class="overlay-text"></p>
+          <p id="victory-record" class="overlay-record"></p>
+          <button id="btn-endless" class="btn btn-primary btn-block" type="button">
+            Continuar sin fin
+          </button>
+          <button id="btn-victory-menu" class="btn btn-ghost btn-block" type="button">
+            Salir al menú principal
+          </button>
         </div>
       </section>
     </div>
