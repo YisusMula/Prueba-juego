@@ -514,6 +514,52 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
+/**
+ * Registra el service worker que hace el juego jugable sin conexión.
+ *
+ * Va después de `load` y envuelto: instalarlo compite por ancho de banda con lo
+ * que hace falta para empezar a jugar, y un juego que no arrancara porque no
+ * pudo instalarse el modo sin conexión sería mucho peor que uno que
+ * simplemente no lo tiene.
+ */
+function registerServiceWorker(): void {
+  if (!('serviceWorker' in navigator)) return;
+
+  window.addEventListener('load', () => {
+    void (async () => {
+      try {
+        await navigator.serviceWorker.register(new URL('sw.js', document.baseURI).href, {
+          scope: './',
+        });
+        const registration = await navigator.serviceWorker.ready;
+        registration.active?.postMessage({ type: 'cache-shell', urls: loadedResources() });
+      } catch {
+        // Sin modo sin conexión, pero jugable: es la situación de siempre.
+      }
+    })();
+  });
+}
+
+/**
+ * Lo que esta página ha cargado de verdad, para que el service worker lo
+ * guarde. Él no controló la primera carga, así que sin esta lista la caché se
+ * quedaría vacía y el juego no arrancaría sin red.
+ */
+function loadedResources(): string[] {
+  const urls = new Set<string>([document.baseURI, location.href]);
+  try {
+    for (const entry of performance.getEntriesByType('resource')) {
+      const url = new URL(entry.name, location.href);
+      if (url.origin === location.origin) urls.add(url.href);
+    }
+  } catch {
+    // `performance` incompleto: con el documento en la caché ya se gana algo.
+  }
+  return [...urls];
+}
+
+registerServiceWorker();
+
 resize();
 camera = openingCamera();
 hud.sync();

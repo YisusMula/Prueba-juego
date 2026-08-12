@@ -9,6 +9,22 @@ Hay una **campaña de tres escenarios**, cada uno con su propio problema: uno de
 carril único, uno donde el camino se bifurca y vuelve a juntarse, y uno con dos
 entradas opuestas. Se abren en orden y cada uno se puntúa con estrellas.
 
+## Instalable y sin conexión
+
+El juego es una **aplicación web instalable**: desde el navegador del móvil se
+puede añadir a la pantalla de inicio, con su icono, y se abre a pantalla
+completa sin barra de direcciones.
+
+Y una vez abierto la primera vez, **funciona sin conexión**. No hay truco: la
+página no hace ni una sola petición externa —todo el código, los gráficos y el
+sonido se generan en el cliente— así que basta con que el navegador se quede con
+lo que ya descargó. Los récords y la partida guardada viven en el propio
+dispositivo.
+
+El *service worker* sirve de la caché los recursos cuyo nombre lleva un hash
+(que por definición no pueden estar desfasados) y pide a la red el documento,
+para que una versión nueva llegue a quien ya lo tenía instalado.
+
 ## Continuar donde lo dejaste
 
 La partida en curso **se guarda sola** cada pocos segundos y, sobre todo, al
@@ -231,6 +247,7 @@ src/
   ui/       HUD, barra de compra, panel de torre y entrada de puntero.
   audio/    Síntesis con Web Audio de los eventos que encola la simulación.
   storage/  Récords y preferencias en localStorage, a prueba de fallos.
+public/     Manifiesto, iconos y service worker: instalación y modo sin conexión.
 tests/      Tests de Vitest, uno por capacidad de las specs.
 openspec/   Specs y propuesta de cambio (ver más abajo).
 ```
