@@ -1317,3 +1317,57 @@ body {
   color: var(--ink-dim);
   line-height: 1.3;
 }
+
+/* --- Campaña: estrellas y bloqueo ---------------------------------------- */
+
+.menu-stars,
+.scenario-total {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.scenario-stars {
+  font-size: 15px;
+  letter-spacing: 2px;
+  color: var(--gold);
+  line-height: 1.1;
+}
+
+/*
+ * Una tarjeta bloqueada sigue en la lista: ocultarla escondería que hay más
+ * juego, que es justo lo contrario de lo que pretende una campaña.
+ */
+.scenario-card.is-locked {
+  cursor: not-allowed;
+  filter: grayscale(0.85);
+  opacity: 0.6;
+}
+
+.scenario-card.is-locked:hover {
+  filter: grayscale(0.85);
+  border-color: var(--wood-edge);
+}
+
+.scenario-card.is-locked .scenario-stars {
+  color: var(--ink-dim);
+  letter-spacing: normal;
+}
+
+.victory-stars {
+  margin: 6px 0 0;
+  font-size: 22px;
+  letter-spacing: 4px;
+  color: var(--gold);
+}
+
+.victory-unlock {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(111, 191, 74, 0.16);
+  border: 1px solid rgba(111, 191, 74, 0.4);
+  color: #b8f09a;
+  font-size: 14px;
+}

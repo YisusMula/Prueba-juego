@@ -5,9 +5,9 @@ el ordenador. Las criaturas entran por la cueva y recorren un camino sinuoso a
 través del prado hasta tu castillo; tú levantas torres en la hierba y las subes
 de nivel para que ninguna llegue.
 
-Hay **tres escenarios**, cada uno con su propio problema: uno de carril único,
-uno donde el camino se bifurca y vuelve a juntarse, y uno con dos entradas
-opuestas.
+Hay una **campaña de tres escenarios**, cada uno con su propio problema: uno de
+carril único, uno donde el camino se bifurca y vuelve a juntarse, y uno con dos
+entradas opuestas. Se abren en orden y cada uno se puntúa con estrellas.
 
 ## Cómo se juega
 
@@ -51,6 +51,20 @@ paran de crecer.
 Los enemigos se reparten entre las rutas de forma alterna y determinista, y cada
 uno recorre la suya de principio a fin. Cada escenario guarda **su propio
 récord** por dificultad.
+
+#### Campaña
+
+El primer escenario está siempre abierto. Cada uno de los demás se desbloquea al
+conseguir **al menos una estrella** en el anterior; los bloqueados siguen en la
+lista, atenuados y diciendo qué hace falta para abrirlos.
+
+Las estrellas de un escenario salen de la **dificultad más alta en la que hayas
+ganado** en él: ⭐ en Fácil, ⭐⭐ en Normal, ⭐⭐⭐ en Difícil. No se suman entre
+dificultades, así que ganar en Difícil concede las tres directamente y no deja
+tareas pendientes que no enseñan nada.
+
+Solo cuenta **ganar**: llegar a la oleada 30 y morir en ella no da estrellas. El
+menú principal y la pantalla de selección muestran tu total sobre el máximo.
 
 ### Entre oleadas
 
@@ -103,8 +117,9 @@ Se recargan solas y no cuestan oro.
 ### Récords
 
 El juego guarda en el navegador la mejor oleada de cada **escenario y
-dificultad**. La pantalla de selección muestra el récord de cada escenario, y el
-menú principal la mejor marca de la dificultad elegida entre todos ellos.
+dificultad**, y si llegaste a ganar. La pantalla de selección muestra el récord y
+las estrellas de cada escenario; el menú principal, la mejor marca de la
+dificultad elegida entre todos ellos y tu total de estrellas.
 
 ### Torres
 
@@ -185,8 +200,9 @@ publica en **GitHub Pages** en cada push a `main`. Para activarlo, en
 
 ```
 src/
-  game/     Simulación pura: rejilla, escenarios y rutas, oleadas, torres,
-            economía, habilidades, dificultad, cámara. Sin DOM ni canvas, por lo
+  game/     Simulación pura: rejilla, escenarios y rutas, oleadas, torres y sus
+            especializaciones, economía, habilidades, dificultad, campaña,
+            cámara. Sin DOM ni canvas, por lo
             que se puede probar entera en Node. Los sonidos se encolan como
             eventos, no se reproducen.
   render/   Dibujo en canvas: terreno precocinado, entidades y avisos de borde.

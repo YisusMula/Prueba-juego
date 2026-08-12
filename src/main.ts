@@ -15,6 +15,7 @@ import {
 import { DEFAULT_DIFFICULTY, type DifficultyId } from './game/difficulty';
 import { DEFAULT_SCENARIO, type ScenarioId } from './game/scenarios';
 import type { SpecialisationId } from './game/specialisations';
+import { isScenarioUnlocked, newlyUnlocked, starsFor } from './game/campaign';
 import { cellCenter } from './game/map';
 import {
   callNextWave,
@@ -62,6 +63,8 @@ const view: HudView = {
   muted: audio.isMuted(),
   menuDifficulty: DEFAULT_DIFFICULTY,
   records: loadRecords(),
+  starsEarned: 0,
+  unlockedByWin: null,
 };
 
 /** Último escenario jugado: lo que se reintenta al perder. */
@@ -122,8 +125,12 @@ function unlockAudio(): void {
 }
 
 function beginRun(difficultyId: DifficultyId, scenarioId: ScenarioId): void {
+  // Un escenario bloqueado no arranca partida: la comprobación va aquí, donde
+  // se conocen los récords, y no dentro de la simulación.
+  if (!startGame(state, difficultyId, scenarioId, isScenarioUnlocked(view.records, scenarioId))) {
+    return;
+  }
   lastScenarioId = scenarioId;
-  startGame(state, difficultyId, scenarioId);
   camera = openingCamera();
   lastLives = state.lives;
   lastScreen = state.screen;
@@ -337,14 +344,18 @@ function reactToRunEnd(): void {
   const justEnded = ended && lastScreen !== state.screen;
 
   if (justEnded) {
+    const before = view.records;
     const { records } = recordRun(
-      view.records,
+      before,
       state.scenarioId,
       state.difficultyId,
       displayedWave(state),
       state.stats.kills,
+      state.screen === 'victory',
     );
     view.records = records;
+    view.starsEarned = starsFor(records, state.scenarioId);
+    view.unlockedByWin = newlyUnlocked(before, records);
     saveRecords(records);
     hud.setView(view);
   }

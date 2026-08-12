@@ -12,22 +12,32 @@ import { DIFFICULTY_ORDER, type DifficultyId } from '../game/difficulty';
 import { SCENARIO_LIST, type ScenarioId } from '../game/scenarios';
 
 /**
- * La versión sube al pasar de "un récord por dificultad" a "uno por escenario
- * y dificultad". Con la clave anterior, un formato viejo se leería como nuevo
- * y sus marcas se atribuirían a un escenario que nunca se jugó.
+ * La versión sube cada vez que cambia la forma del récord: primero al pasar de
+ * "uno por dificultad" a "uno por escenario y dificultad", y ahora al añadir si
+ * la partida se ganó. Con la clave anterior, un formato viejo se leería como
+ * nuevo y las estrellas saldrían de datos que no dicen lo que aparentan.
  */
-const RECORDS_KEY = 'tower-game:records:v2';
+const RECORDS_KEY = 'tower-game:records:v3';
 const MUTED_KEY = 'tower-game:muted:v1';
 
 export interface RunRecord {
   bestWave: number;
   bestKills: number;
+  /**
+   * Si alguna vez se ganó en esta combinación.
+   *
+   * No basta con `bestWave`: perder en la oleada final la deja igual que
+   * ganarla, y de hecho el simulador de balance muere justo ahí en Difícil.
+   * Deducir la victoria de la oleada daría estrellas por perder en el último
+   * asalto.
+   */
+  won: boolean;
 }
 
 /** Récords indexados por escenario y, dentro de cada uno, por dificultad. */
 export type Records = Record<ScenarioId, Record<DifficultyId, RunRecord>>;
 
-const EMPTY: RunRecord = { bestWave: 0, bestKills: 0 };
+const EMPTY: RunRecord = { bestWave: 0, bestKills: 0, won: false };
 
 export function emptyRecords(): Records {
   const records = {} as Records;
@@ -61,10 +71,11 @@ function isFiniteNumber(value: unknown): value is number {
 
 function toRecord(entry: unknown): RunRecord {
   if (typeof entry !== 'object' || entry === null) return { ...EMPTY };
-  const { bestWave, bestKills } = entry as Record<string, unknown>;
+  const { bestWave, bestKills, won } = entry as Record<string, unknown>;
   return {
     bestWave: isFiniteNumber(bestWave) ? Math.max(0, Math.floor(bestWave)) : 0,
     bestKills: isFiniteNumber(bestKills) ? Math.max(0, Math.floor(bestKills)) : 0,
+    won: won === true,
   };
 }
 
@@ -128,6 +139,7 @@ export function recordRun(
   difficultyId: DifficultyId,
   wave: number,
   kills: number,
+  won = false,
 ): { records: Records; beatenWave: boolean } {
   const previous = recordFor(records, scenarioId, difficultyId);
   const beatenWave = wave > previous.bestWave;
@@ -139,6 +151,8 @@ export function recordRun(
       [difficultyId]: {
         bestWave: Math.max(previous.bestWave, Math.max(0, Math.floor(wave))),
         bestKills: Math.max(previous.bestKills, Math.max(0, Math.floor(kills))),
+        // Una victoria no se borra: jugar peor después no deshace lo logrado.
+        won: previous.won || won,
       },
     },
   };

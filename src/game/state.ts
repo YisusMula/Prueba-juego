@@ -272,16 +272,26 @@ export function createGameState(
   };
 }
 
-/** Reinicia la partida a su estado inicial y la pone en marcha. */
+/**
+ * Reinicia la partida a su estado inicial y la pone en marcha.
+ *
+ * `unlocked` lo decide quien llama, porque el desbloqueo se deriva de los
+ * récords y esos viven fuera de la simulación. Por defecto es cierto: los
+ * tests y el reintento no tienen que conocer la campaña para arrancar una
+ * partida. Devuelve si la partida ha empezado.
+ */
 export function startGame(
   state: GameState,
   difficultyId?: DifficultyId,
   scenarioId?: ScenarioId,
-): void {
+  unlocked = true,
+): boolean {
+  if (!unlocked) return false;
   if (difficultyId) state.difficultyId = difficultyId;
   if (scenarioId) state.scenarioId = scenarioId;
   resetRun(state);
   state.screen = 'playing';
+  return true;
 }
 
 /** Abre la pantalla de selección de escenario desde el menú principal. */

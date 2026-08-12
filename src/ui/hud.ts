@@ -31,9 +31,23 @@ import {
 } from '../game/state';
 import { describeWave, waveEnemyCount } from '../game/waves';
 import { SCENARIO_LIST, type ScenarioId } from '../game/scenarios';
+import {
+  MAX_STARS_PER_SCENARIO,
+  isScenarioUnlocked,
+  maxStars,
+  starsFor,
+  totalStars,
+  unlockRequirement,
+} from '../game/campaign';
 import type { Specialisation, SpecialisationId } from '../game/specialisations';
 import { getTerrainCanvas } from '../render/terrain';
 import { type Records, bestRecordFor, recordFor } from '../storage/records';
+
+/** Estrellas conseguidas sobre el máximo, como fila de símbolos. */
+function starRow(stars: number): string {
+  const filled = Math.max(0, Math.min(MAX_STARS_PER_SCENARIO, Math.floor(stars)));
+  return '★'.repeat(filled) + '☆'.repeat(MAX_STARS_PER_SCENARIO - filled);
+}
 
 /** Etiqueta legible de la forma del escenario, a partir de sus rutas. */
 function describeRoutes(routes: number, entrances: number): string {
@@ -78,6 +92,10 @@ export interface HudView {
   muted: boolean;
   menuDifficulty: DifficultyId;
   records: Records;
+  /** Estrellas del escenario tras la última partida terminada. */
+  starsEarned: number;
+  /** Escenario que la última victoria acaba de abrir, si abrió alguno. */
+  unlockedByWin: { name: string } | null;
 }
 
 interface ShopCard {
@@ -141,6 +159,7 @@ export class Hud {
   private readonly difficultyPickerEl = requireElement('difficulty-picker');
   private readonly difficultyButtons: { id: DifficultyId; button: HTMLButtonElement }[] = [];
   private readonly menuRecordEl = requireElement('menu-record');
+  private readonly menuStarsEl = requireElement('menu-stars');
 
   private readonly branchPicker = requireElement('branch-picker');
   private readonly branchButtonsEl = requireElement('branch-buttons');
@@ -148,6 +167,7 @@ export class Hud {
   private readonly screenMenu = requireElement('screen-menu');
   private readonly screenScenarios = requireElement('screen-scenarios');
   private readonly scenarioListEl = requireElement('scenario-list');
+  private readonly scenarioTotalEl = requireElement('scenario-total');
   private readonly screenPause = requireElement('screen-pause');
   private readonly screenDefeat = requireElement('screen-defeat');
   private readonly defeatSummary = requireElement('defeat-summary');
@@ -155,8 +175,15 @@ export class Hud {
   private readonly screenVictory = requireElement('screen-victory');
   private readonly victorySummary = requireElement('victory-summary');
   private readonly victoryRecord = requireElement('victory-record');
+  private readonly victoryStars = requireElement('victory-stars');
+  private readonly victoryUnlock = requireElement('victory-unlock');
 
-  private readonly scenarioCards: { id: ScenarioId; recordEl: HTMLElement }[] = [];
+  private readonly scenarioCards: {
+    id: ScenarioId;
+    card: HTMLButtonElement;
+    starsEl: HTMLElement;
+    recordEl: HTMLElement;
+  }[] = [];
 
   /**
    * Qué ramas hay pintadas ahora mismo. `sync()` corre en cada frame, y
@@ -257,14 +284,17 @@ export class Hud {
       lanes.className = 'scenario-lanes';
       lanes.textContent = describeRoutes(scene.routes.length, scene.spawnCells.length);
 
+      const starsEl = document.createElement('span');
+      starsEl.className = 'scenario-stars';
+
       const recordEl = document.createElement('span');
       recordEl.className = 'scenario-record';
 
-      card.append(thumb, name, blurb, lanes, recordEl);
+      card.append(thumb, name, blurb, lanes, starsEl, recordEl);
       card.addEventListener('click', () => callbacks.onPickScenario(scene.id));
 
       this.scenarioListEl.append(card);
-      this.scenarioCards.push({ id: scene.id, recordEl });
+      this.scenarioCards.push({ id: scene.id, card, starsEl, recordEl });
     }
   }
 
@@ -596,6 +626,11 @@ export class Hud {
       this.victorySummary.textContent =
         `Has superado las ${FINAL_WAVE} oleadas con ${this.state.lives} vidas intactas ` +
         `y ${kills} criaturas eliminadas.`;
+      const unlocked = this.view.unlockedByWin;
+      this.victoryStars.textContent =
+        `${starRow(this.view.starsEarned)}  ${this.view.starsEarned} de ${MAX_STARS_PER_SCENARIO}`;
+      this.victoryUnlock.hidden = unlocked === null;
+      if (unlocked) this.victoryUnlock.textContent = `🔓 Has desbloqueado ${unlocked.name}`;
       this.victoryRecord.textContent = this.recordLine();
     }
   }
@@ -607,19 +642,38 @@ export class Hud {
     return `Tu mejor marca aquí: oleada ${record.bestWave}`;
   }
 
-  /** Refresca los récords de las tarjetas de escenario. */
+  /** Refresca estrellas, candados y récords de las tarjetas de escenario. */
   private syncScenarioPicker(): void {
+    const { records } = this.view;
+
     for (const entry of this.scenarioCards) {
-      const record = recordFor(this.view.records, entry.id, this.view.menuDifficulty);
+      const unlocked = isScenarioUnlocked(records, entry.id);
+      entry.card.disabled = !unlocked;
+      entry.card.classList.toggle('is-locked', !unlocked);
+
+      if (!unlocked) {
+        const requirement = unlockRequirement(records, entry.id);
+        entry.starsEl.textContent = '🔒 Bloqueado';
+        entry.recordEl.textContent = requirement ? `Gana ${requirement.name}` : '';
+        continue;
+      }
+
+      entry.starsEl.textContent = starRow(starsFor(records, entry.id));
+      const record = recordFor(records, entry.id, this.view.menuDifficulty);
       entry.recordEl.textContent =
         record.bestWave > 0 ? `🏅 Oleada ${record.bestWave}` : 'Sin jugar';
     }
+
+    this.scenarioTotalEl.textContent = `⭐ ${totalStars(records)} de ${maxStars()} estrellas`;
   }
 
   private syncMenu(): void {
     for (const entry of this.difficultyButtons) {
       entry.button.classList.toggle('is-active', entry.id === this.view.menuDifficulty);
     }
+
+    this.menuStarsEl.textContent =
+      `⭐ ${totalStars(this.view.records)} de ${maxStars()} estrellas`;
 
     const record = bestRecordFor(this.view.records, this.view.menuDifficulty);
     this.menuRecordEl.textContent =
