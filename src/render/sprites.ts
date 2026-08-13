@@ -354,7 +354,37 @@ export function drawTower(ctx: CanvasRenderingContext2D, tower: Tower, time = 0)
       drawFrostTower(ctx, tower, tower.level);
       break;
   }
-  drawTowerDamage(ctx, tower, statsAtLevel(type, tower.level).maxHp);
+  drawSpecialisationMark(ctx, tower);
+  drawTowerDamage(ctx, tower, statsAtLevel(type, tower.level, tower.specialisation).maxHp);
+}
+
+/**
+ * Estandarte dorado sobre una torre especializada.
+ *
+ * Es una marca de rol, no de rama: dos torres del mismo tipo con ramas
+ * distintas no se distinguen entre sí, pero sí de una sin especializar. Con un
+ * icono por rama habría doce símbolos que memorizar; lo que el jugador necesita
+ * de un vistazo es "a este puesto ya le di su papel".
+ */
+function drawSpecialisationMark(ctx: CanvasRenderingContext2D, tower: Tower): void {
+  if (tower.specialisation === null) return;
+  const { x, y } = tower;
+  const top = y - CELL * 0.52;
+
+  ctx.strokeStyle = '#6b5a2a';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(x + CELL * 0.28, top + CELL * 0.16);
+  ctx.lineTo(x + CELL * 0.28, top - CELL * 0.06);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffd75e';
+  ctx.beginPath();
+  ctx.moveTo(x + CELL * 0.28, top - CELL * 0.05);
+  ctx.lineTo(x + CELL * 0.46, top + CELL * 0.01);
+  ctx.lineTo(x + CELL * 0.28, top + CELL * 0.07);
+  ctx.closePath();
+  ctx.fill();
 }
 
 /** Silueta simplificada para la previsualización y los iconos de la tienda. */
@@ -377,6 +407,9 @@ export function drawTowerGhost(
     recoil: 0,
     hp: 1,
     frozenTargets: [],
+    priority: 'first',
+    invested: 0,
+    specialisation: null,
   };
   drawTower(ctx, ghost);
 }
@@ -391,6 +424,37 @@ function drawHealthBar(ctx: CanvasRenderingContext2D, enemy: Enemy, y: number): 
   ctx.fillRect(enemy.x - width / 2, y, width, height);
   ctx.fillStyle = ratio > 0.5 ? '#5fd35f' : ratio > 0.25 ? '#e8c44a' : '#e05a4a';
   ctx.fillRect(enemy.x - width / 2, y, width * ratio, height);
+
+  // Marco metálico: distingue a un acorazado de un enemigo corriente sin
+  // añadir un segundo indicador que compita con la barra de vida.
+  if (enemy.armor > 0) {
+    ctx.strokeStyle = '#cfd6dd';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(enemy.x - width / 2 - 0.5, y - 0.5, width + 1, height + 1);
+  }
+}
+
+/** Aura de sanación: el jugador tiene que ver a quién está curando el chamán. */
+function drawHealAura(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number): void {
+  if (enemy.healRadius <= 0) return;
+  const pulse = 0.55 + Math.sin(time * 3 + enemy.phase) * 0.12;
+
+  ctx.save();
+  ctx.strokeStyle = `rgba(150, 240, 190, ${0.28 * pulse + 0.12})`;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 6]);
+  ctx.beginPath();
+  ctx.arc(enemy.x, enemy.y, enemy.healRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  const glow = ctx.createRadialGradient(enemy.x, enemy.y, 0, enemy.x, enemy.y, enemy.healRadius);
+  glow.addColorStop(0, `rgba(120, 235, 175, ${0.16 * pulse})`);
+  glow.addColorStop(1, 'rgba(120, 235, 175, 0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(enemy.x, enemy.y, enemy.healRadius, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawGroundEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number): void {
@@ -398,6 +462,10 @@ function drawGroundEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
   const bob = Math.sin(time * 8 + enemy.phase) * 2;
   const x = enemy.x;
   const y = enemy.y + bob;
+
+  // El aura va bajo la criatura: si se pintara encima, el velo verde taparía
+  // a los enemigos que está curando, que es justo lo que hay que ver.
+  drawHealAura(ctx, enemy, time);
 
   shadow(ctx, x, enemy.y + enemy.radius * 0.75, enemy.radius * 0.85);
 
@@ -429,6 +497,7 @@ function drawGroundEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
   drawGroundFeatures(ctx, enemy, x, y);
 
   if (enemy.offPath) drawTrampledGrass(ctx, enemy, x, y);
+  if (enemy.flash > 0) drawDamageFlash(ctx, x, y, enemy.radius, enemy.flash);
   if (enemy.slowTimer > 0) drawFrostOverlay(ctx, x, y, enemy.radius);
 
   drawHealthBar(ctx, enemy, enemy.y - enemy.radius * 1.9);
@@ -451,6 +520,96 @@ function drawGroundFeatures(ctx: CanvasRenderingContext2D, enemy: Enemy, x: numb
       ctx.moveTo(x, y + r * 0.9);
       ctx.quadraticCurveTo(x + r * 0.9, y + r * 1.1, x + r * 1.3, y + r * 0.6);
       ctx.stroke();
+      break;
+    }
+    case 'spider': {
+      // Ocho patas finas: se lee como enjambre incluso a tamaño pequeño.
+      ctx.strokeStyle = '#100e16';
+      ctx.lineWidth = 1.4;
+      for (let i = 0; i < 4; i += 1) {
+        const spread = r * (0.9 + i * 0.28);
+        const lift = r * (0.55 - i * 0.3);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x - spread * 0.7, y + lift, x - spread, y + r * 0.75);
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x + spread * 0.7, y + lift, x + spread, y + r * 0.75);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#b04a4a';
+      ctx.beginPath();
+      ctx.arc(x, y + r * 0.35, r * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case 'beetle': {
+      // Caparazón partido: la lectura de "va blindado".
+      ctx.fillStyle = '#2a4438';
+      ctx.beginPath();
+      ctx.ellipse(x, y + r * 0.05, r * 0.95, r * 0.85, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#111d18';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y - r * 0.75);
+      ctx.lineTo(x, y + r * 0.85);
+      ctx.stroke();
+      ctx.fillStyle = '#9fb8a8';
+      ctx.beginPath();
+      ctx.ellipse(x - r * 0.4, y - r * 0.3, r * 0.22, r * 0.14, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case 'slime':
+    case 'slimeling': {
+      // Brillo gelatinoso y goteo: se distingue del resto sin leer el nombre.
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+      ctx.beginPath();
+      ctx.ellipse(x - r * 0.35, y - r * 0.45, r * 0.3, r * 0.18, -0.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = ENEMY_TYPES[enemy.typeId].accent;
+      ctx.beginPath();
+      ctx.arc(x + r * 0.5, y + r * 0.85, r * 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case 'shaman': {
+      // Capucha y bastón.
+      ctx.fillStyle = '#3d2160';
+      ctx.beginPath();
+      ctx.arc(x, y - r * 0.55, r * 0.72, Math.PI, 0);
+      ctx.fill();
+      ctx.strokeStyle = '#8a6a3a';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(x + r * 0.85, y + r * 0.9);
+      ctx.lineTo(x + r * 0.95, y - r * 1.3);
+      ctx.stroke();
+      ctx.fillStyle = '#9df0c4';
+      ctx.beginPath();
+      ctx.arc(x + r * 0.95, y - r * 1.4, r * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case 'golem': {
+      // Placas de piedra y grietas.
+      ctx.strokeStyle = '#3d382f';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(x - r * 0.8, y - r * 0.25);
+      ctx.lineTo(x + r * 0.8, y - r * 0.25);
+      ctx.moveTo(x - r * 0.25, y - r * 0.25);
+      ctx.lineTo(x - r * 0.35, y + r * 0.8);
+      ctx.moveTo(x + r * 0.3, y - r * 0.25);
+      ctx.lineTo(x + r * 0.42, y + r * 0.8);
+      ctx.stroke();
+      ctx.fillStyle = '#9c958a';
+      ctx.beginPath();
+      ctx.moveTo(x - r * 0.95, y - r * 0.95);
+      ctx.lineTo(x - r * 0.3, y - r * 1.15);
+      ctx.lineTo(x - r * 0.5, y - r * 0.6);
+      ctx.closePath();
+      ctx.fill();
       break;
     }
     case 'fox': {
@@ -578,6 +737,22 @@ function drawTrampledGrass(ctx: CanvasRenderingContext2D, enemy: Enemy, x: numbe
   ctx.stroke();
 }
 
+/** Destello blanco al recibir daño: confirma el impacto de un vistazo. */
+function drawDamageFlash(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  flash: number,
+): void {
+  // 0.12 s es la duración completa del destello; se desvanece en ese tramo.
+  const alpha = Math.min(1, flash / 0.12) * 0.75;
+  ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+  ctx.beginPath();
+  ctx.ellipse(x, y, radius * 1.08, radius * 1.14, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 /** Brillo helado sobre un enemigo congelado por la torre de hielo. */
 function drawFrostOverlay(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
   ctx.fillStyle = 'rgba(180, 230, 250, 0.4)';
@@ -637,6 +812,7 @@ function drawAirEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number)
   ctx.fill();
 
   drawAirFeatures(ctx, enemy, x, y);
+  if (enemy.flash > 0) drawDamageFlash(ctx, x, y, enemy.radius, enemy.flash);
   if (enemy.slowTimer > 0) drawFrostOverlay(ctx, x, y, enemy.radius);
 
   drawHealthBar(ctx, enemy, y - enemy.radius * 1.8);

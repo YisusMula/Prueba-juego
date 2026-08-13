@@ -2,19 +2,25 @@
  * Simulación del juego: un paso de tiempo fijo, sin dependencias de navegador.
  */
 
-import { PATH_LENGTH, positionAtDistance } from './map';
+import { positionAtDistance } from './scenarios';
 import { enemyType } from './enemies';
+import { FINAL_WAVE } from './difficulty';
 import { frostFreezeCapacity, statsAtLevel, towerType } from './towers';
 import { WAVE_REST } from './state';
 import type { Enemy, GameState, Projectile, Tower } from './state';
 import {
+  applyHealing,
   addEffect,
-  addGold,
   beginNextWave,
+  damageEnemy,
+  enemyRoute,
+  emitSound,
   spawnEnemy,
   loseLife,
   syncShopAffordability,
 } from './state';
+
+export { damageEnemy };
 
 /** Paso de simulación fijo: la lógica no depende de los FPS del dispositivo. */
 export const FIXED_DT = 1 / 60;
@@ -46,37 +52,68 @@ function canTarget(tower: Tower, enemy: Enemy): boolean {
  * avance sumando la distancia de fuga y lo recorrido en línea recta desde
  * entonces; ambas magnitudes están en la misma escala de píxeles de mundo.
  */
-function effectiveProgress(enemy: Enemy): number {
-  if (!enemy.offPath) return enemy.distance;
-  return enemy.breakawayDistance + enemy.offPathProgress;
+/**
+ * Cuánto ha avanzado un enemigo, como fracción de su ruta.
+ *
+ * Se normaliza porque en un escenario con varias rutas éstas pueden no medir
+ * lo mismo: comparar distancias en bruto haría que "primero" y "último"
+ * favorecieran sistemáticamente a la ruta más larga.
+ */
+function effectiveProgress(state: GameState, enemy: Enemy): number {
+  const total = enemyRoute(state, enemy).length;
+  if (total <= 0) return 0;
+  const travelled = enemy.offPath
+    ? enemy.breakawayDistance + enemy.offPathProgress
+    : enemy.distance;
+  return travelled / total;
 }
 
-/** Enemigo válido más avanzado en el recorrido dentro del alcance. */
+/**
+ * ¿Es `candidate` mejor objetivo que `best` según la prioridad de la torre?
+ * Solo decide entre candidatos que ya han pasado el filtro de validez, así
+ * que ninguna prioridad puede hacer que una torre dispare a un enemigo que
+ * su tipo no puede atacar.
+ */
+function isBetterTarget(
+  state: GameState,
+  tower: Tower,
+  candidate: Enemy,
+  best: Enemy,
+  candidateDistSq: number,
+  bestDistSq: number,
+): boolean {
+  switch (tower.priority) {
+    case 'last':
+      return effectiveProgress(state, candidate) < effectiveProgress(state, best);
+    case 'strongest':
+      return candidate.hp > best.hp;
+    case 'closest':
+      return candidateDistSq < bestDistSq;
+    case 'first':
+    default:
+      return effectiveProgress(state, candidate) > effectiveProgress(state, best);
+  }
+}
+
+/** Enemigo válido elegido según la prioridad de la torre, dentro del alcance. */
 export function findTarget(state: GameState, tower: Tower, range: number): Enemy | null {
   let best: Enemy | null = null;
+  let bestDistSq = Infinity;
+
   for (const enemy of state.enemies) {
     if (enemy.hp <= 0) continue;
     if (!canTarget(tower, enemy)) continue;
     const dx = enemy.x - tower.x;
     const dy = enemy.y - tower.y;
-    if (dx * dx + dy * dy > range * range) continue;
-    if (best === null || effectiveProgress(enemy) > effectiveProgress(best)) best = enemy;
+    const distSq = dx * dx + dy * dy;
+    if (distSq > range * range) continue;
+
+    if (best === null || isBetterTarget(state, tower, enemy, best, distSq, bestDistSq)) {
+      best = enemy;
+      bestDistSq = distSq;
+    }
   }
   return best;
-}
-
-/** Aplica daño y, si el enemigo muere, otorga su recompensa de oro. */
-export function damageEnemy(state: GameState, enemy: Enemy, amount: number): void {
-  if (enemy.hp <= 0) return;
-  enemy.hp -= amount;
-  if (enemy.hp > 0) {
-    addEffect(state, 'hit', enemy.x, enemy.y, { life: 0.18, radius: enemy.radius });
-    return;
-  }
-  enemy.hp = 0;
-  state.stats.kills += 1;
-  addGold(state, enemy.reward);
-  addEffect(state, 'gold', enemy.x, enemy.y, { life: 0.8, text: `+${enemy.reward}` });
 }
 
 /** Torre viva más cercana dentro del alcance de golpe de un enemigo. */
@@ -125,18 +162,28 @@ function tryFreeze(state: GameState, towerId: number, enemy: Enemy): void {
 
   const alreadyFrozen = tower.frozenTargets.includes(enemy.id);
   if (!alreadyFrozen) {
-    const capacity = frostFreezeCapacity(tower.level);
+    const capacity = frostFreezeCapacity(tower.level, tower.specialisation);
     if (tower.frozenTargets.length >= capacity) return;
     tower.frozenTargets.push(enemy.id);
   }
   enemy.slowTimer = FREEZE_DURATION;
+  // La fragilidad viaja con el enemigo, no con la torre: quien aprovecha el
+  // daño extra es la torre que dispare después, sea cual sea.
+  enemy.vulnerability = statsAtLevel(
+    towerType(tower.typeId),
+    tower.level,
+    tower.specialisation,
+  ).vulnerability;
 }
 
 function updateWaves(state: GameState, dt: number): void {
   switch (state.wavePhase) {
     case 'preparing': {
       state.waveTimer -= dt;
-      if (state.waveTimer <= 0) beginNextWave(state);
+      if (state.waveTimer <= 0) {
+        beginNextWave(state);
+        emitSound(state, 'wave-start');
+      }
       break;
     }
     case 'spawning': {
@@ -165,15 +212,23 @@ function leakEnemy(state: GameState, x: number, y: number): void {
   loseLife(state);
   state.stats.leaked += 1;
   addEffect(state, 'leak', x, y, { life: 0.9, text: '-1' });
+  emitSound(state, 'leak');
 }
 
 function updateEnemies(state: GameState, dt: number): void {
   const survivors: Enemy[] = [];
 
   for (const enemy of state.enemies) {
+    const route = enemyRoute(state, enemy);
     if (enemy.hp <= 0) continue;
 
-    if (enemy.slowTimer > 0) enemy.slowTimer = Math.max(0, enemy.slowTimer - dt);
+    if (enemy.slowTimer > 0) {
+      enemy.slowTimer = Math.max(0, enemy.slowTimer - dt);
+      // Al descongelarse pierde la fragilidad: si no, un valor viejo se
+      // aplicaría al volver a congelarlo una torre de hielo sin esa rama.
+      if (enemy.slowTimer === 0) enemy.vulnerability = 1;
+    }
+    if (enemy.flash > 0) enemy.flash = Math.max(0, enemy.flash - dt);
     if (enemy.meleeCooldown > 0) enemy.meleeCooldown = Math.max(0, enemy.meleeCooldown - dt);
 
     // Un enemigo que está golpeando una torre no avanza mientras dura el golpe.
@@ -203,7 +258,7 @@ function updateEnemies(state: GameState, dt: number): void {
     if (type.canSkipPath && !enemy.offPath && enemy.distance >= enemy.breakawayDistance) {
       enemy.offPath = true;
       enemy.offPathStart = { x: enemy.x, y: enemy.y };
-      const goal = positionAtDistance(PATH_LENGTH);
+      const goal = positionAtDistance(route, route.length);
       enemy.offPathTotal = Math.hypot(goal.x - enemy.x, goal.y - enemy.y);
       enemy.offPathProgress = 0;
     }
@@ -211,12 +266,12 @@ function updateEnemies(state: GameState, dt: number): void {
     if (enemy.offPath) {
       enemy.offPathProgress += effectiveSpeed * dt;
       if (enemy.offPathProgress >= enemy.offPathTotal) {
-        const goal = positionAtDistance(PATH_LENGTH);
+        const goal = positionAtDistance(route, route.length);
         leakEnemy(state, goal.x, goal.y);
         continue;
       }
       const t = enemy.offPathTotal > 0 ? enemy.offPathProgress / enemy.offPathTotal : 1;
-      const goal = positionAtDistance(PATH_LENGTH);
+      const goal = positionAtDistance(route, route.length);
       enemy.x = enemy.offPathStart.x + (goal.x - enemy.offPathStart.x) * t;
       enemy.y = enemy.offPathStart.y + (goal.y - enemy.offPathStart.y) * t;
       survivors.push(enemy);
@@ -224,13 +279,13 @@ function updateEnemies(state: GameState, dt: number): void {
     }
 
     enemy.distance += effectiveSpeed * dt;
-    if (enemy.distance >= PATH_LENGTH) {
-      const goal = positionAtDistance(PATH_LENGTH);
+    if (enemy.distance >= route.length) {
+      const goal = positionAtDistance(route, route.length);
       leakEnemy(state, goal.x, goal.y);
       continue;
     }
 
-    const position = positionAtDistance(enemy.distance);
+    const position = positionAtDistance(route, enemy.distance);
     enemy.x = position.x;
     enemy.y = position.y;
     survivors.push(enemy);
@@ -241,7 +296,7 @@ function updateEnemies(state: GameState, dt: number): void {
 
 function fire(state: GameState, tower: Tower, target: Enemy): void {
   const type = towerType(tower.typeId);
-  const stats = statsAtLevel(type, tower.level);
+  const stats = statsAtLevel(type, tower.level, tower.specialisation);
   const angle = Math.atan2(target.y - tower.y, target.x - tower.x);
 
   state.projectiles.push({
@@ -260,11 +315,25 @@ function fire(state: GameState, tower: Tower, target: Enemy): void {
     angle,
     towerId: tower.id,
     applyFreeze: type.id === 'frost',
+    piercing: stats.piercing,
+    chainTargets: stats.chainTargets,
+    chainFalloff: stats.chainFalloff,
   });
 
+  emitSound(state, SHOT_SOUNDS[type.id]);
   tower.cooldown = 1 / stats.fireRate;
   tower.recoil = 1;
 }
+
+/** Cada tipo de torre suena distinto al disparar. */
+const SHOT_SOUNDS = {
+  archer: 'shoot-arrow',
+  cannon: 'shoot-cannon',
+  mortar: 'shoot-mortar',
+  ballista: 'shoot-bolt',
+  magic: 'shoot-magic',
+  frost: 'shoot-frost',
+} as const;
 
 function updateTowers(state: GameState, dt: number): void {
   for (const tower of state.towers) {
@@ -274,7 +343,7 @@ function updateTowers(state: GameState, dt: number): void {
     // Sin estructura, la torre no adquiere objetivo ni dispara hasta repararse.
     if (tower.hp <= 0) continue;
 
-    const stats = statsAtLevel(towerType(tower.typeId), tower.level);
+    const stats = statsAtLevel(towerType(tower.typeId), tower.level, tower.specialisation);
     const target = findTarget(state, tower, stats.range);
     if (!target) continue;
 
@@ -329,14 +398,62 @@ function impact(state: GameState, projectile: Projectile, target: Enemy | null):
       if (!hittable) continue;
       const dx = enemy.x - projectile.targetX;
       const dy = enemy.y - projectile.targetY;
-      if (dx * dx + dy * dy <= radiusSq) damageEnemy(state, enemy, projectile.damage);
+      if (dx * dx + dy * dy <= radiusSq) {
+        damageEnemy(state, enemy, projectile.damage, projectile.piercing);
+      }
     }
     return;
   }
 
   if (target) {
-    damageEnemy(state, target, projectile.damage);
+    damageEnemy(state, target, projectile.damage, projectile.piercing);
     if (projectile.applyFreeze && target.hp > 0) tryFreeze(state, projectile.towerId, target);
+    chainFrom(state, projectile, target);
+  }
+}
+
+/** Alcance de un salto de cadena, en píxeles de mundo. */
+const CHAIN_RANGE = 130;
+
+/**
+ * Propaga un disparo encadenado.
+ *
+ * Cada salto va al enemigo válido más cercano que **este disparo** todavía no
+ * ha tocado. Sin ese registro, dos enemigos juntos se rebotarían el rayo entre
+ * ellos hasta agotar los saltos: mucho más daño del previsto y además se ve
+ * mal. El dominio se respeta igual que en la adquisición de objetivo, así que
+ * una torre que no ataca al aire tampoco encadena hacia un aéreo.
+ */
+function chainFrom(state: GameState, projectile: Projectile, first: Enemy): void {
+  if (projectile.chainTargets <= 0) return;
+
+  const hit = new Set<number>([first.id]);
+  let from = first;
+  let damage = projectile.damage;
+
+  for (let jump = 0; jump < projectile.chainTargets; jump += 1) {
+    damage *= projectile.chainFalloff;
+    if (damage < 1) return;
+
+    let next: Enemy | null = null;
+    let bestDistSq = CHAIN_RANGE * CHAIN_RANGE;
+    for (const enemy of state.enemies) {
+      if (enemy.hp <= 0 || hit.has(enemy.id)) continue;
+      const hittable = enemy.domain === 'air' ? projectile.canHitAir : projectile.canHitGround;
+      if (!hittable) continue;
+      const dx = enemy.x - from.x;
+      const dy = enemy.y - from.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > bestDistSq) continue;
+      next = enemy;
+      bestDistSq = distSq;
+    }
+    if (!next) return;
+
+    addEffect(state, 'hit', next.x, next.y, { life: 0.16, radius: next.radius });
+    damageEnemy(state, next, damage, projectile.piercing);
+    hit.add(next.id);
+    from = next;
   }
 }
 
@@ -355,22 +472,58 @@ function removeDeadEnemies(state: GameState): void {
   }
 }
 
+function updateAbilities(state: GameState, dt: number): void {
+  for (const slot of state.abilities) {
+    if (slot.cooldown > 0) slot.cooldown = Math.max(0, slot.cooldown - dt);
+  }
+}
+
+/**
+ * ¿Se ha completado la oleada final? Es el mismo criterio que usa la fase de
+ * limpieza para dar una oleada por terminada: nada pendiente de aparecer y
+ * nada vivo en el escenario.
+ */
+function hasClearedFinalWave(state: GameState): boolean {
+  return (
+    !state.endless &&
+    state.waveIndex >= FINAL_WAVE &&
+    state.spawnQueue.length === 0 &&
+    state.enemies.length === 0
+  );
+}
+
 /** Avanza la simulación. No hace nada si la partida no está en curso. */
 export function step(state: GameState, dt: number): void {
   if (state.screen !== 'playing') return;
 
   state.time += dt;
+  updateAbilities(state, dt);
   updateWaves(state, dt);
   updateEnemies(state, dt);
+  // Después de mover: el aura se resuelve con las posiciones de este paso, no
+  // con las del anterior.
+  applyHealing(state, dt);
   updateTowers(state, dt);
   updateProjectiles(state, dt);
   removeDeadEnemies(state);
   updateEffects(state, dt);
   syncShopAffordability(state);
 
+  // La derrota manda sobre la victoria: quedarse sin vidas en la última
+  // oleada es perder, aunque ese mismo paso la deje despejada.
   if (state.lives <= 0) {
     state.screen = 'defeat';
     state.shopSelection = null;
+    state.aimingAbility = null;
+    emitSound(state, 'defeat');
+    return;
+  }
+
+  if (hasClearedFinalWave(state)) {
+    state.screen = 'victory';
+    state.shopSelection = null;
+    state.aimingAbility = null;
+    emitSound(state, 'victory');
   }
 }
 

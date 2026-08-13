@@ -4,18 +4,9 @@
  * frame solo se compone la imagen resultante.
  */
 
-import {
-  CELL,
-  COLS,
-  GOAL_CELL,
-  MAP_HEIGHT,
-  MAP_WIDTH,
-  ROWS,
-  SPAWN_CELL,
-  WAYPOINTS,
-  cellCenter,
-  terrainAt,
-} from '../game/map';
+import { CELL, COLS, MAP_HEIGHT, MAP_WIDTH, ROWS, type Point, cellCenter } from '../game/map';
+import { type Cell } from '../game/map';
+import { type Scenario, terrainAt } from '../game/scenarios';
 
 /** Generador pseudoaleatorio determinista: el prado siempre se ve igual. */
 function mulberry32(seed: number): () => number {
@@ -65,43 +56,56 @@ function paintGrass(ctx: CanvasRenderingContext2D, random: () => number): void {
   }
 }
 
-function tracePath(ctx: CanvasRenderingContext2D): void {
-  const first = WAYPOINTS[0];
-  if (!first) return;
+/**
+ * Traza todas las rutas del escenario en un solo `Path2D` lógico. Cada capa del
+ * camino se pinta de una pasada sobre las dos ramas a la vez; si se pintaran
+ * por separado, el borde oscuro de la segunda se dibujaría *encima* de la
+ * tierra de la primera y aparecería una costura en el tramo compartido.
+ */
+function traceRoutes(ctx: CanvasRenderingContext2D, scene: Scenario): void {
   ctx.beginPath();
-  ctx.moveTo(first.x, first.y);
-  for (let i = 1; i < WAYPOINTS.length; i += 1) {
-    const point = WAYPOINTS[i];
-    if (point) ctx.lineTo(point.x, point.y);
+  for (const route of scene.routes) {
+    const points = route.waypoints as readonly Point[];
+    const first = points[0];
+    if (!first) continue;
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < points.length; i += 1) {
+      const point = points[i];
+      if (point) ctx.lineTo(point.x, point.y);
+    }
   }
 }
 
-function paintPath(ctx: CanvasRenderingContext2D, random: () => number): void {
+function paintPath(
+  ctx: CanvasRenderingContext2D,
+  scene: Scenario,
+  random: () => number,
+): void {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
   // Sombra bajo el camino, para que parezca hundido en la hierba.
   ctx.strokeStyle = 'rgba(30, 62, 26, 0.35)';
   ctx.lineWidth = PATH_WIDTH + 12;
-  tracePath(ctx);
+  traceRoutes(ctx, scene);
   ctx.stroke();
 
   // Borde de tierra oscura.
   ctx.strokeStyle = '#8a6435';
   ctx.lineWidth = PATH_WIDTH + 4;
-  tracePath(ctx);
+  traceRoutes(ctx, scene);
   ctx.stroke();
 
   // Tierra del camino.
   ctx.strokeStyle = '#c39a63';
   ctx.lineWidth = PATH_WIDTH;
-  tracePath(ctx);
+  traceRoutes(ctx, scene);
   ctx.stroke();
 
   // Rodadas más claras en el centro.
   ctx.strokeStyle = 'rgba(224, 197, 152, 0.5)';
   ctx.lineWidth = PATH_WIDTH * 0.42;
-  tracePath(ctx);
+  traceRoutes(ctx, scene);
   ctx.stroke();
 
   // Guijarros, solo sobre celdas de camino.
@@ -109,7 +113,7 @@ function paintPath(ctx: CanvasRenderingContext2D, random: () => number): void {
     const x = random() * MAP_WIDTH;
     const y = random() * MAP_HEIGHT;
     const cell = { col: Math.floor(x / CELL), row: Math.floor(y / CELL) };
-    const terrain = terrainAt(cell.col, cell.row);
+    const terrain = terrainAt(scene, cell.col, cell.row);
     if (terrain !== 'path' && terrain !== 'spawn' && terrain !== 'goal') continue;
     ctx.fillStyle = random() > 0.5 ? 'rgba(146, 108, 62, 0.5)' : 'rgba(232, 210, 172, 0.45)';
     ctx.beginPath();
@@ -188,10 +192,14 @@ function paintRock(ctx: CanvasRenderingContext2D, x: number, y: number, scale: n
 
 const FLOWER_COLORS = ['#f2f2f2', '#f4a6c8', '#f0d264', '#a9c2f5'];
 
-function paintDecorations(ctx: CanvasRenderingContext2D, random: () => number): void {
+function paintDecorations(
+  ctx: CanvasRenderingContext2D,
+  scene: Scenario,
+  random: () => number,
+): void {
   for (let row = 0; row < ROWS; row += 1) {
     for (let col = 0; col < COLS; col += 1) {
-      if (terrainAt(col, row) !== 'grass') continue;
+      if (terrainAt(scene, col, row) !== 'grass') continue;
       const roll = random();
       const center = cellCenter(col, row);
       const jitterX = (random() - 0.5) * CELL * 0.5;
@@ -217,8 +225,8 @@ function paintDecorations(ctx: CanvasRenderingContext2D, random: () => number): 
   }
 }
 
-function paintSpawn(ctx: CanvasRenderingContext2D): void {
-  const center = cellCenter(SPAWN_CELL.col, SPAWN_CELL.row);
+function paintSpawn(ctx: CanvasRenderingContext2D, cell: Cell): void {
+  const center = cellCenter(cell.col, cell.row);
 
   ctx.fillStyle = '#4a4038';
   ctx.beginPath();
@@ -236,8 +244,8 @@ function paintSpawn(ctx: CanvasRenderingContext2D): void {
   ctx.fill();
 }
 
-function paintGoal(ctx: CanvasRenderingContext2D): void {
-  const center = cellCenter(GOAL_CELL.col, GOAL_CELL.row);
+function paintGoal(ctx: CanvasRenderingContext2D, cell: Cell): void {
+  const center = cellCenter(cell.col, cell.row);
   const x = center.x;
   const y = center.y;
 
@@ -281,25 +289,35 @@ function paintGoal(ctx: CanvasRenderingContext2D): void {
   ctx.fill();
 }
 
-let cached: HTMLCanvasElement | null = null;
+/** Un lienzo por escenario: cada uno se dibuja una sola vez y se reutiliza. */
+const cached = new Map<string, HTMLCanvasElement>();
 
-/** Devuelve el mapa ya dibujado; solo se calcula la primera vez. */
-export function getTerrainCanvas(): HTMLCanvasElement {
-  if (cached) return cached;
+/**
+ * Devuelve el mapa ya dibujado. `scale` permite pedir una miniatura para la
+ * pantalla de selección sin repetir el código de dibujo: se pinta lo mismo con
+ * el contexto escalado.
+ */
+export function getTerrainCanvas(scene: Scenario, scale = 1): HTMLCanvasElement {
+  const key = `${scene.id}@${scale}`;
+  const hit = cached.get(key);
+  if (hit) return hit;
 
   const canvas = document.createElement('canvas');
-  canvas.width = MAP_WIDTH;
-  canvas.height = MAP_HEIGHT;
+  canvas.width = Math.max(1, Math.round(MAP_WIDTH * scale));
+  canvas.height = Math.max(1, Math.round(MAP_HEIGHT * scale));
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('No se pudo crear el contexto del terreno');
+  ctx.scale(scale, scale);
 
-  const random = mulberry32(20240607);
+  // La semilla depende del escenario para que cada mapa tenga su propia
+  // decoración, pero sigue siendo fija: el mismo mapa se ve siempre igual.
+  const random = mulberry32(20240607 + scene.id.length * 7919);
   paintGrass(ctx, random);
-  paintPath(ctx, random);
-  paintDecorations(ctx, random);
-  paintSpawn(ctx);
-  paintGoal(ctx);
+  paintPath(ctx, scene, random);
+  paintDecorations(ctx, scene, random);
+  for (const cell of scene.spawnCells) paintSpawn(ctx, cell);
+  for (const cell of scene.goalCells) paintGoal(ctx, cell);
 
-  cached = canvas;
+  cached.set(key, canvas);
   return canvas;
 }

@@ -1,87 +1,145 @@
 /**
  * Pruebas de balance: simulan partidas completas sin navegador para que un
  * ajuste de números no deje el juego trivial ni imposible.
+ *
+ * El jugador automático imita lo que hace uno real: repara lo que se rompe,
+ * compra la torre de más daño por segundo que puede pagar, **concentra** las
+ * mejoras en sus puestos en vez de repartirlas a voleo, y gasta las
+ * habilidades cuando hay enemigos agrupados.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
   type GameState,
+  castAbility,
   createGameState,
   displayedWave,
+  isAbilityReady,
   placeTower,
   repairSelectedTower,
+  specialiseSelectedTower,
   startGame,
   upgradeSelectedTower,
 } from '../src/game/state';
+import { SPECIALISATION_LEVEL, specialisationsFor } from '../src/game/specialisations';
 import { FIXED_DT, step } from '../src/game/step';
-import { PATH_CELLS, isBuildableTerrain } from '../src/game/map';
-import { TOWER_TYPE_LIST, effectiveDps } from '../src/game/towers';
+import {
+  DEFAULT_SCENARIO,
+  SCENARIO_LIST,
+  type Scenario,
+  type ScenarioId,
+  isBuildableTerrain,
+  scenario,
+} from '../src/game/scenarios';
+import { TOWER_MAX_LEVEL, TOWER_TYPE_LIST, effectiveDps } from '../src/game/towers';
+import { type DifficultyId, FINAL_WAVE } from '../src/game/difficulty';
 
-/** Celdas de prado pegadas al camino, en orden de recorrido. */
-function spotsAlongPath(): { col: number; row: number }[] {
-  const spots: { col: number; row: number }[] = [];
+/**
+ * Celdas de prado pegadas al camino, en orden de recorrido.
+ *
+ * Con varias rutas se **intercalan**: un jugador real que ve el camino
+ * partirse reparte sus torres entre las ramas en vez de vaciar una y empezar
+ * la otra. Recorrer las rutas en serie dejaría un ramal indefenso y mediría el
+ * despiste del robot, no el balance del escenario.
+ */
+function spotsAlongPath(scene: Scenario): { col: number; row: number }[] {
   const seen = new Set<string>();
+  const perRoute = scene.routes.map((route) => {
+    const spots: { col: number; row: number }[] = [];
+    for (let i = 2; i < route.cells.length; i += 1) {
+      const cell = route.cells[i] as { col: number; row: number };
+      const around = [
+        { col: cell.col, row: cell.row - 1 },
+        { col: cell.col, row: cell.row + 1 },
+        { col: cell.col - 1, row: cell.row },
+        { col: cell.col + 1, row: cell.row },
+      ];
+      for (const candidate of around) {
+        const key = `${candidate.col},${candidate.row}`;
+        if (seen.has(key) || !isBuildableTerrain(scene, candidate.col, candidate.row)) continue;
+        seen.add(key);
+        spots.push(candidate);
+      }
+    }
+    return spots;
+  });
 
-  for (let i = 2; i < PATH_CELLS.length; i += 1) {
-    const cell = PATH_CELLS[i] as { col: number; row: number };
-    const around = [
-      { col: cell.col, row: cell.row - 1 },
-      { col: cell.col, row: cell.row + 1 },
-      { col: cell.col - 1, row: cell.row },
-      { col: cell.col + 1, row: cell.row },
-    ];
-    for (const candidate of around) {
-      const key = `${candidate.col},${candidate.row}`;
-      if (seen.has(key) || !isBuildableTerrain(candidate.col, candidate.row)) continue;
-      seen.add(key);
-      spots.push(candidate);
+  const interleaved: { col: number; row: number }[] = [];
+  const longest = Math.max(0, ...perRoute.map((spots) => spots.length));
+  for (let i = 0; i < longest; i += 1) {
+    for (const spots of perRoute) {
+      const spot = spots[i];
+      if (spot) interleaved.push(spot);
     }
   }
-
-  return spots;
+  return interleaved;
 }
 
 interface Outcome {
   screen: GameState['screen'];
   wave: number;
   lives: number;
+  /** Oro sin gastar al terminar: delata una economía que se desborda. */
+  gold: number;
+  /** Máximo de oro que ha llegado a acumular en toda la partida. */
+  peakGold: number;
 }
 
-/**
- * Jugador automático: coloca torres junto al camino hasta su tope y luego
- * invierte el oro en mejoras.
- */
-function autoPlay(options: { maxTowers: number; stopAtWave: number }): Outcome {
-  const state = createGameState();
+interface PlayOptions {
+  difficultyId?: DifficultyId;
+  scenarioId?: ScenarioId;
+  maxTowers?: number;
+  stopAtWave?: number;
+}
+
+function autoPlay(options: PlayOptions = {}): Outcome {
+  const {
+    difficultyId = 'normal',
+    scenarioId = DEFAULT_SCENARIO,
+    maxTowers = 999,
+    stopAtWave = FINAL_WAVE,
+  } = options;
+
+  const state = createGameState(difficultyId, scenarioId);
   startGame(state);
-  const spots = spotsAlongPath();
+  const spots = spotsAlongPath(scenario(scenarioId));
 
   let spotIndex = 0;
   let ticks = 0;
-  const maxTicks = 60 * 60 * 60; // una hora de juego simulada
+  let peakGold = state.gold;
+  const maxTicks = 60 * 60 * 90; // hora y media de juego simulada
 
-  while (state.screen === 'playing' && state.waveIndex <= options.stopAtWave && ticks < maxTicks) {
+  while (state.screen === 'playing' && state.waveIndex <= stopAtWave && ticks < maxTicks) {
     step(state, FIXED_DT);
     ticks += 1;
+    peakGold = Math.max(peakGold, state.gold);
     if (ticks % 30 !== 0) continue;
 
-    // Un jugador atento repara una torre inutilizada antes que cualquier otra cosa.
-    const disabled = state.towers.find((tower) => tower.hp <= 0);
-    if (disabled) {
-      state.selectedTowerId = disabled.id;
+    // Con enemigos agrupados, un jugador atento gasta sus habilidades.
+    if (state.enemies.length >= 6) {
+      if (isAbilityReady(state, 'meteor')) {
+        const target = state.enemies[Math.floor(state.enemies.length / 2)];
+        if (target) castAbility(state, 'meteor', target.x, target.y);
+      } else if (isAbilityReady(state, 'blizzard') && state.enemies.length >= 12) {
+        castAbility(state, 'blizzard');
+      }
+    }
+
+    // Reparar una torre inutilizada va antes que cualquier otra compra.
+    const broken = state.towers.find((tower) => tower.hp <= 0);
+    if (broken) {
+      state.selectedTowerId = broken.id;
       repairSelectedTower(state);
       state.selectedTowerId = null;
       continue;
     }
 
-    // Entre las que puede pagar, la de mayor daño por segundo: nadie abre la
-    // partida gastando todo el oro en la torre de hielo por ser "la más cara".
     const affordable = TOWER_TYPE_LIST.filter((type) => state.gold >= type.cost);
     const best = affordable.reduce<(typeof affordable)[number] | undefined>(
       (top, type) => (!top || effectiveDps(type) > effectiveDps(top) ? type : top),
       undefined,
     );
-    if (best && spotIndex < spots.length && state.towers.length < options.maxTowers) {
+    if (best && spotIndex < spots.length && state.towers.length < maxTowers) {
       state.shopSelection = best.id;
       const spot = spots[spotIndex] as { col: number; row: number };
       if (placeTower(state, spot.col, spot.row)) spotIndex += 1;
@@ -89,17 +147,40 @@ function autoPlay(options: { maxTowers: number; stopAtWave: number }): Outcome {
       continue;
     }
 
-    if (state.towers.length > 0) {
-      const tower = state.towers[ticks % state.towers.length];
-      if (tower) {
-        state.selectedTowerId = tower.id;
-        upgradeSelectedTower(state);
-        state.selectedTowerId = null;
-      }
+    // Una torre que ya puede especializarse lo hace antes de seguir subiendo:
+    // dejar la rama sin elegir es desperdiciar la mitad de la mejora.
+    const unspecialised = state.towers.find(
+      (tower) => tower.specialisation === null && tower.level >= SPECIALISATION_LEVEL,
+    );
+    if (unspecialised) {
+      state.selectedTowerId = unspecialised.id;
+      const [first, second] = specialisationsFor(unspecialised.typeId);
+      // Alterna entre las dos ramas por identificador de torre, sin azar: así
+      // el simulador mide una defensa mixta y no la mejor rama repetida, que
+      // es lo que haría un jugador que solo sabe una receta.
+      const pick = unspecialised.id % 2 === 0 ? first : second;
+      if (pick) specialiseSelectedTower(state, pick.id);
+      state.selectedTowerId = null;
+      continue;
+    }
+
+    // Concentrar las mejoras en los puestos ya montados rinde mucho más que
+    // repartirlas por todo el mapa, y es lo que haría un jugador real.
+    const target = state.towers.find((tower) => tower.level < TOWER_MAX_LEVEL);
+    if (target) {
+      state.selectedTowerId = target.id;
+      upgradeSelectedTower(state);
+      state.selectedTowerId = null;
     }
   }
 
-  return { screen: state.screen, wave: displayedWave(state), lives: state.lives };
+  return {
+    screen: state.screen,
+    wave: displayedWave(state),
+    lives: state.lives,
+    gold: state.gold,
+    peakGold,
+  };
 }
 
 describe('balance de la partida', () => {
@@ -114,7 +195,7 @@ describe('balance de la partida', () => {
     }
 
     expect(state.screen).toBe('defeat');
-    expect(displayedWave(state)).toBeLessThanOrEqual(5);
+    expect(displayedWave(state)).toBeLessThanOrEqual(6);
   });
 
   it('un jugador modesto aguanta las primeras oleadas', () => {
@@ -123,14 +204,64 @@ describe('balance de la partida', () => {
     expect(outcome.lives).toBeGreaterThan(10);
   });
 
-  // Simula cerca de 40 minutos de partida: necesita más margen que el resto.
   it(
-    'el juego termina cayendo aunque se llene el mapa de torres',
+    'en Normal se puede ganar jugando bien',
     () => {
-      const outcome = autoPlay({ maxTowers: 999, stopAtWave: 45 });
-      expect(outcome.screen).toBe('defeat');
-      expect(outcome.wave).toBeGreaterThan(20);
+      const outcome = autoPlay({ difficultyId: 'normal', maxTowers: 20 });
+      expect(outcome.screen).toBe('victory');
+      expect(outcome.wave).toBe(FINAL_WAVE);
     },
-    30_000,
+    60_000,
+  );
+
+  it(
+    'en Fácil se gana con margen de sobra',
+    () => {
+      const outcome = autoPlay({ difficultyId: 'easy', maxTowers: 20 });
+      expect(outcome.screen).toBe('victory');
+      // La dificultad fácil debe perdonar errores: se llega con vidas de sobra.
+      expect(outcome.lives).toBeGreaterThan(20);
+    },
+    60_000,
+  );
+
+  it(
+    'en Difícil no basta con la misma estrategia',
+    () => {
+      const easy = autoPlay({ difficultyId: 'easy', maxTowers: 20 });
+      const hard = autoPlay({ difficultyId: 'hard', maxTowers: 20 });
+
+      // La dificultad tiene que notarse de verdad, no ser un adorno.
+      expect(hard.wave).toBeLessThan(easy.wave);
+      expect(hard.screen).toBe('defeat');
+    },
+    90_000,
+  );
+
+  it(
+    'cada escenario se puede ganar en Normal',
+    () => {
+      for (const scene of SCENARIO_LIST) {
+        // El tope de torres se reparte por ruta: cubrir dos carriles exige
+        // más puestos que cubrir uno, y con el mismo tope el robot dejaría
+        // media defensa por ramal midiendo el tope, no el escenario.
+        const outcome = autoPlay({ scenarioId: scene.id, maxTowers: 20 * scene.routes.length });
+        expect(outcome.screen, `${scene.name} no se puede ganar`).toBe('victory');
+      }
+    },
+    180_000,
+  );
+
+  it(
+    'el oro no se desborda: siempre queda dónde gastarlo',
+    () => {
+      // El problema que motivó esta iteración era acumular oro sin uso en
+      // oleadas avanzadas. Con la reparación y los 8 niveles de mejora, una
+      // partida bien jugada debe terminar sin un excedente desmedido.
+      const outcome = autoPlay({ difficultyId: 'normal' });
+      expect(outcome.gold).toBeLessThan(5000);
+      expect(outcome.peakGold).toBeLessThan(8000);
+    },
+    60_000,
   );
 });

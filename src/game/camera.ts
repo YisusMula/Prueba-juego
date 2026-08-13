@@ -122,6 +122,40 @@ export function coverZoomFor(viewport: Viewport): number {
   return Math.max(viewport.width / MAP_WIDTH, viewport.height / MAP_HEIGHT);
 }
 
+/**
+ * Desplaza la cámara lo justo para que un punto entre en pantalla.
+ *
+ * Se desplaza, no se centra: centrar en cada pulsación de flecha haría saltar
+ * el escenario entero a cada paso del cursor de teclado y marearía. Si el punto
+ * ya está visible, la cámara no se toca.
+ *
+ * El `margin` deja un respiro alrededor del punto para que no quede pegado al
+ * borde, donde apenas se ve su entorno.
+ */
+export function ensureVisible(
+  camera: Camera,
+  viewport: Viewport,
+  point: Point,
+  margin = 0,
+): Camera {
+  const halfWidth = viewport.width / (2 * camera.zoom);
+  const halfHeight = viewport.height / (2 * camera.zoom);
+
+  let { x, y } = camera;
+  const left = x - halfWidth + margin;
+  const right = x + halfWidth - margin;
+  const top = y - halfHeight + margin;
+  const bottom = y + halfHeight - margin;
+
+  if (point.x < left) x -= left - point.x;
+  else if (point.x > right) x += point.x - right;
+  if (point.y < top) y -= top - point.y;
+  else if (point.y > bottom) y += point.y - bottom;
+
+  if (x === camera.x && y === camera.y) return camera;
+  return clampCamera({ x, y, zoom: camera.zoom }, viewport);
+}
+
 /** Vista inicial de la partida, centrada en el punto indicado. */
 export function initialCamera(viewport: Viewport, focus: Point): Camera {
   const zoom = clampZoom(coverZoomFor(viewport), viewport);

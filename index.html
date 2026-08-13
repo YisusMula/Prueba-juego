@@ -7,6 +7,11 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <meta name="theme-color" content="#2f4f2a" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Tower Game" />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23569a3c'/%3E%3Cpath d='M6 26h20v-3H6z' fill='%23c39a63'/%3E%3Cpath d='M11 23V12h10v11z' fill='%23ddcaa6'/%3E%3Cpath d='M11 12V9h2.5v2h1.7V9h1.6v2h1.7V9H21v3z' fill='%23c2ad86'/%3E%3Cpath d='M16 4l6 5H10z' fill='%234b8f57'/%3E%3C/svg%3E"
@@ -22,6 +27,12 @@
       <div id="stage">
         <canvas id="scene" aria-label="Campo de batalla"></canvas>
       </div>
+
+      <!--
+        Región de anuncios: invisible en pantalla, pero es lo único que un
+        lector de pantalla recibe de lo que pasa en el lienzo.
+      -->
+      <p id="live-region" class="visually-hidden" role="status" aria-live="polite"></p>
 
       <header id="hud" class="panel-top">
         <div class="stats">
@@ -40,11 +51,47 @@
         </div>
         <div class="hud-actions">
           <span id="wave-hint" class="wave-hint"></span>
+          <div class="speed-control" role="group" aria-label="Velocidad de juego">
+            <button class="btn btn-speed" type="button" data-speed="1">1×</button>
+            <button class="btn btn-speed" type="button" data-speed="2">2×</button>
+            <button class="btn btn-speed" type="button" data-speed="3">3×</button>
+          </div>
+          <button id="btn-mute" class="btn btn-icon" type="button" aria-label="Silenciar sonido">
+            <span id="mute-icon" aria-hidden="true">🔊</span>
+          </button>
           <button id="btn-menu" class="btn btn-icon" type="button" aria-label="Menú">
             <span aria-hidden="true">☰</span> Menú
           </button>
         </div>
       </header>
+
+      <div id="wave-banner" class="wave-banner" hidden>
+        <div class="wave-banner-head">
+          <span class="wave-banner-title">Próxima oleada</span>
+          <button id="btn-call-wave" class="btn btn-call" type="button">
+            ¡Que vengan ya! <span id="call-wave-bonus" class="call-bonus">+0 🪙</span>
+          </button>
+        </div>
+        <div id="wave-preview" class="wave-preview"></div>
+        <div id="wave-warnings" class="wave-warnings"></div>
+      </div>
+
+      <div id="wave-progress" class="wave-progress" hidden>
+        <div class="wave-progress-bar"><div id="wave-progress-fill"></div></div>
+        <span id="wave-progress-text">0 / 0</span>
+      </div>
+
+      <div id="tutorial-hint" class="tutorial-hint" hidden>
+        <div class="tutorial-hint-head">
+          <span id="tutorial-step" class="tutorial-step">Paso 1 de 5</span>
+          <button id="btn-skip-tutorial" class="btn btn-ghost btn-skip" type="button">
+            Saltar guía
+          </button>
+        </div>
+        <p id="tutorial-text" class="tutorial-text"></p>
+      </div>
+
+      <div id="ability-bar" class="ability-bar"></div>
 
       <div id="zoom-controls" class="zoom-controls">
         <button id="btn-zoom-in" class="btn btn-round" type="button" aria-label="Acercar">+</button>
@@ -74,12 +121,25 @@
           <div><dt>Cadencia</dt><dd id="tower-panel-rate">0/s</dd></div>
           <div><dt>Objetivos</dt><dd id="tower-panel-targets">Tierra</dd></div>
         </dl>
+        <div class="priority-picker" role="group" aria-label="Prioridad de objetivo">
+          <span class="priority-label">Dispara a</span>
+          <div id="priority-buttons" class="priority-buttons"></div>
+        </div>
+        <p id="tower-panel-branch" class="tower-panel-branch" hidden></p>
+        <div id="branch-picker" class="branch-picker" role="group"
+             aria-label="Especialización" hidden>
+          <span class="branch-label">Especialízala · elección permanente</span>
+          <div id="branch-buttons" class="branch-buttons"></div>
+        </div>
         <button id="btn-upgrade" class="btn btn-primary btn-block" type="button">
           <span id="upgrade-label">Mejorar</span>
           <span id="upgrade-price"> · <span id="tower-panel-cost">0</span> 🪙</span>
         </button>
         <button id="btn-repair" class="btn btn-repair btn-block" type="button" hidden>
           Reparar · <span id="tower-panel-repair-cost">0</span> 🪙
+        </button>
+        <button id="btn-sell" class="btn btn-sell btn-block" type="button">
+          Vender · <span id="tower-panel-sell-value">0</span> 🪙
         </button>
       </aside>
 
@@ -95,12 +155,32 @@
             Las criaturas avanzan por el camino hasta tu castillo. Levanta torres en el prado,
             súbelas de nivel y no dejes pasar a ninguna.
           </p>
+          <div id="difficulty-picker" class="difficulty-picker" role="group"
+               aria-label="Dificultad"></div>
+          <p id="menu-stars" class="menu-stars"></p>
+          <p id="menu-record" class="menu-record"></p>
+          <button id="btn-continue" class="btn btn-primary btn-large btn-continue" type="button" hidden>
+            Continuar<span id="continue-detail" class="continue-detail"></span>
+          </button>
           <button id="btn-start" class="btn btn-primary btn-large" type="button">Comenzar</button>
+          <button id="btn-replay-tutorial" class="btn btn-ghost btn-tutorial" type="button">
+            Ver la guía de primeros pasos
+          </button>
           <ul class="overlay-tips">
+            <li>Sobrevive a 30 oleadas para ganar la partida</li>
             <li>Arrastra para mover la vista · pellizca o rueda para el zoom</li>
-            <li>Elige una torre abajo y pulsa en el prado para colocarla</li>
-            <li>Pulsa una torre colocada para subirla de nivel</li>
+            <li>Llama a la oleada antes de tiempo para ganar oro extra</li>
           </ul>
+        </div>
+      </section>
+
+      <section id="screen-scenarios" class="overlay overlay-scenarios" hidden>
+        <div class="overlay-content overlay-wide">
+          <p class="overlay-kicker">Elige el terreno</p>
+          <h2 class="overlay-heading">Escenarios</h2>
+          <p id="scenario-total" class="scenario-total"></p>
+          <div id="scenario-list" class="scenario-list"></div>
+          <button id="btn-scenarios-back" class="btn btn-ghost" type="button">Volver</button>
         </div>
       </section>
 
@@ -119,7 +199,28 @@
         <div class="overlay-content overlay-card">
           <h2 class="overlay-heading defeat-heading">Has perdido</h2>
           <p id="defeat-summary" class="overlay-text">Las criaturas han tomado el castillo.</p>
+          <p id="defeat-record" class="overlay-record"></p>
           <button id="btn-retry" class="btn btn-primary btn-block" type="button">Reintentar</button>
+          <button id="btn-defeat-menu" class="btn btn-ghost btn-block" type="button">
+            Salir al menú principal
+          </button>
+        </div>
+      </section>
+
+      <section id="screen-victory" class="overlay overlay-victory" hidden>
+        <div class="overlay-content overlay-card">
+          <p class="overlay-kicker victory-kicker">El prado resiste</p>
+          <h2 class="overlay-heading victory-heading">¡Victoria!</h2>
+          <p id="victory-summary" class="overlay-text"></p>
+          <p id="victory-stars" class="victory-stars"></p>
+          <p id="victory-unlock" class="victory-unlock" hidden></p>
+          <p id="victory-record" class="overlay-record"></p>
+          <button id="btn-endless" class="btn btn-primary btn-block" type="button">
+            Continuar sin fin
+          </button>
+          <button id="btn-victory-menu" class="btn btn-ghost btn-block" type="button">
+            Salir al menú principal
+          </button>
         </div>
       </section>
     </div>

@@ -1,10 +1,13 @@
 import { FIXED_DT, step } from '../src/game/step';
+import { type Cell } from '../src/game/map';
 import {
-  type Cell,
-  PATH_CELLS,
-  distanceAtPathIndex,
+  type Scenario,
+  DEFAULT_SCENARIO,
+  distanceAtRouteIndex,
   isBuildableTerrain,
-} from '../src/game/map';
+  routeOf,
+  scenario,
+} from '../src/game/scenarios';
 import type { GameState } from '../src/game/state';
 
 /** Avanza la simulación `seconds` segundos en pasos fijos. */
@@ -21,14 +24,24 @@ export function quietRun(state: GameState): void {
   state.enemies = [];
 }
 
+/** Escenario por defecto, el de una sola ruta. */
+export function defaultScenario(): Scenario {
+  return scenario(DEFAULT_SCENARIO);
+}
+
 /**
  * Celda de prado junto a la celda de camino indicada, con la distancia de
  * recorrido correspondiente. Sirve para montar escenarios de disparo: los
  * enemigos solo se pueden posicionar moviéndolos por el recorrido, porque la
  * simulación recalcula sus coordenadas a partir de la distancia.
  */
-export function grassBesidePath(index: number): { cell: Cell; distance: number } {
-  const pathCell = PATH_CELLS[index];
+export function grassBesidePath(
+  index: number,
+  scene: Scenario = defaultScenario(),
+  routeIndex = 0,
+): { cell: Cell; distance: number } {
+  const route = routeOf(scene, routeIndex);
+  const pathCell = route.cells[index];
   if (!pathCell) throw new Error(`Índice de camino fuera de rango: ${index}`);
 
   const candidates: Cell[] = [
@@ -37,8 +50,8 @@ export function grassBesidePath(index: number): { cell: Cell; distance: number }
     { col: pathCell.col - 1, row: pathCell.row },
     { col: pathCell.col + 1, row: pathCell.row },
   ];
-  const grass = candidates.find((cell) => isBuildableTerrain(cell.col, cell.row));
+  const grass = candidates.find((cell) => isBuildableTerrain(scene, cell.col, cell.row));
   if (!grass) throw new Error(`Sin prado junto a la celda de camino ${index}`);
 
-  return { cell: grass, distance: distanceAtPathIndex(index) };
+  return { cell: grass, distance: distanceAtRouteIndex(route, index) };
 }

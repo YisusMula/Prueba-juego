@@ -47,7 +47,7 @@ Durante la partida el juego SHALL mostrar en la parte inferior una barra con tod
 
 ### Requirement: Panel de torre seleccionada
 
-Al seleccionar una torre colocada, el juego SHALL mostrar un panel con su nombre, su nivel actual, su daño y alcance, su estructura actual sobre su máximo, el coste de la siguiente mejora y un botón de mejora. El botón de mejora SHALL aparecer deshabilitado cuando el jugador no tenga oro suficiente o la torre esté en su nivel máximo. Cuando la estructura de la torre esté por debajo de su máximo, el panel SHALL mostrar además un botón de reparar con su coste, deshabilitado cuando el jugador no tenga oro suficiente.
+Al seleccionar una torre colocada, el juego SHALL mostrar un panel con su nombre, su nivel actual, su daño y alcance, su estructura actual sobre su máximo, el coste de la siguiente mejora y un botón de mejora. El botón de mejora SHALL aparecer deshabilitado cuando el jugador no tenga oro suficiente o la torre esté en su nivel máximo. Cuando la estructura de la torre esté por debajo de su máximo, el panel SHALL mostrar además un botón de reparar con su coste, deshabilitado cuando el jugador no tenga oro suficiente. El panel SHALL incluir también un **selector de prioridad de objetivo** y un **botón de vender** que muestre el reembolso que se obtendría.
 
 #### Scenario: Panel con datos de la torre
 
@@ -72,6 +72,17 @@ Al seleccionar una torre colocada, el juego SHALL mostrar un panel con su nombre
 - **WHEN** se muestra el panel
 - **THEN** el botón de reparar aparece deshabilitado
 
+#### Scenario: El panel ofrece vender con su reembolso
+
+- **WHEN** el jugador selecciona una torre colocada
+- **THEN** el panel muestra un botón de vender con la cantidad de oro que devolvería
+
+#### Scenario: El panel permite cambiar la prioridad de objetivo
+
+- **GIVEN** una torre seleccionada
+- **WHEN** el jugador elige otra prioridad de objetivo en el panel
+- **THEN** esa torre pasa a usar la prioridad elegida
+
 ### Requirement: Botón de menú en partida
 
 Durante la partida el juego SHALL mostrar un botón de menú accesible en todo momento desde el HUD. Pulsarlo SHALL pausar la partida y abrir el menú de pausa.
@@ -95,4 +106,228 @@ La interfaz SHALL adaptarse al tamaño y la orientación de la pantalla, de modo
 - **GIVEN** una torre seleccionada para comprar
 - **WHEN** el jugador pulsa sobre un botón del HUD o de la barra inferior
 - **THEN** no se coloca ninguna torre en el escenario
+
+### Requirement: Control de la velocidad de juego
+
+El HUD SHALL ofrecer un control para cambiar la velocidad de la simulación entre al menos 1×, 2× y 3×. La velocidad elegida SHALL afectar por igual a todo lo que avanza con el tiempo de juego (enemigos, disparos, recargas de torres y de habilidades, temporizadores de oleada) y NO SHALL alterar ningún resultado del juego más allá del ritmo. La velocidad SHALL mostrarse siempre en pantalla y SHALL conservarse al pausar y reanudar.
+
+#### Scenario: Cambiar la velocidad acelera la partida por igual
+
+- **GIVEN** la partida a velocidad 1×
+- **WHEN** el jugador la pone a 2×
+- **THEN** en el mismo tiempo real transcurre aproximadamente el doble de tiempo de juego
+
+#### Scenario: La velocidad sobrevive a la pausa
+
+- **GIVEN** la partida a velocidad 2×
+- **WHEN** el jugador pausa y reanuda
+- **THEN** la partida continúa a 2×
+
+#### Scenario: La velocidad se ve en pantalla
+
+- **WHEN** la partida está en curso
+- **THEN** el HUD indica la velocidad activa
+
+### Requirement: Llamar a la siguiente oleada
+
+Durante la pausa de preparación entre oleadas, el HUD SHALL mostrar un botón para llamar a la siguiente oleada de inmediato, indicando el oro de bonus que se obtendría. El botón SHALL desaparecer o deshabilitarse cuando no haya ninguna oleada pendiente de empezar.
+
+#### Scenario: El botón aparece durante la preparación
+
+- **GIVEN** la partida está en la pausa entre oleadas
+- **WHEN** se muestra el HUD
+- **THEN** hay un botón para llamar a la siguiente oleada con su bonus indicado
+
+#### Scenario: El botón no está disponible con la oleada en marcha
+
+- **GIVEN** una oleada que ya está generando enemigos
+- **WHEN** se muestra el HUD
+- **THEN** el botón de llamar a la oleada no está disponible
+
+### Requirement: Previsualización de la próxima oleada
+
+Durante la pausa de preparación, el HUD SHALL mostrar de qué se compone la oleada que viene: los tipos de criatura y cuántas de cada una. SHALL destacar de forma visible si la oleada incluye enemigos aéreos, enemigos capaces de dañar torres, enemigos acorazados, enemigos sanadores o enemigos que se dividen al morir, para que el jugador pueda prepararse.
+
+#### Scenario: La previsualización enumera la composición
+
+- **GIVEN** la partida está en la pausa entre oleadas
+- **WHEN** se muestra la previsualización
+- **THEN** indica los tipos de criatura de la próxima oleada y cuántas hay de cada uno
+
+#### Scenario: Se avisa de las amenazas especiales
+
+- **GIVEN** una próxima oleada que incluye enemigos aéreos
+- **WHEN** se muestra la previsualización
+- **THEN** se señala de forma destacada que vienen enemigos aéreos
+
+#### Scenario: Se avisa de los rasgos del bestiario
+
+- **GIVEN** una próxima oleada que incluye enemigos acorazados
+- **WHEN** se muestra la previsualización
+- **THEN** se señala de forma destacada que vienen enemigos acorazados
+
+### Requirement: Progreso de la oleada en curso
+
+Mientras una oleada está en marcha, el HUD SHALL mostrar su progreso: cuántos enemigos han sido despachados de los que componen la oleada.
+
+#### Scenario: El progreso avanza al eliminar enemigos
+
+- **GIVEN** una oleada en marcha
+- **WHEN** mueren o se escapan varios de sus enemigos
+- **THEN** el indicador de progreso de la oleada avanza en consecuencia
+
+### Requirement: Control de sonido en el HUD
+
+El HUD SHALL ofrecer en todo momento un control para silenciar y reactivar el sonido, cuyo estado visual SHALL reflejar si el sonido está activo o silenciado.
+
+#### Scenario: El control refleja el estado del sonido
+
+- **WHEN** el jugador silencia el sonido desde el HUD
+- **THEN** el control pasa a mostrar el estado silenciado
+
+### Requirement: Barra de habilidades
+
+Durante la partida el HUD SHALL mostrar las habilidades disponibles con su estado de recarga. Una habilidad en recarga SHALL mostrarse claramente como no disponible, con una indicación de cuánto le queda. La habilidad seleccionada para apuntar SHALL mostrarse resaltada.
+
+#### Scenario: Una habilidad en recarga se ve no disponible
+
+- **GIVEN** una habilidad que se acaba de usar
+- **WHEN** se muestra la barra de habilidades
+- **THEN** esa habilidad aparece como no disponible con su recarga restante
+
+#### Scenario: La habilidad en apuntado se resalta
+
+- **GIVEN** el jugador ha seleccionado una habilidad dirigida
+- **WHEN** se muestra la barra de habilidades
+- **THEN** esa habilidad aparece resaltada
+
+### Requirement: Rasgos del enemigo visibles en la interfaz
+
+La interfaz SHALL permitir al jugador conocer los rasgos de un enemigo antes de
+tener que reaccionar a ellos. La barra de vida de un enemigo acorazado SHALL
+distinguirse de la de uno sin armadura, y un enemigo sanador SHALL mostrar de
+forma visible el alcance de su aura.
+
+#### Scenario: Un acorazado se distingue a simple vista
+
+- **WHEN** se dibuja un enemigo con armadura
+- **THEN** su representación lo distingue de un enemigo sin armadura
+
+#### Scenario: El aura del sanador es visible
+
+- **WHEN** se dibuja un enemigo sanador
+- **THEN** se representa el alcance de su aura de sanación
+
+### Requirement: Elección de especialización en el panel de torre
+
+Cuando una torre seleccionada pueda especializarse y aún no lo haya hecho, el
+panel SHALL ofrecer sus dos ramas, cada una con su nombre y una descripción de
+lo que cambia, de modo que el jugador pueda decidir sin probar.
+
+El panel SHALL avisar de que la elección es permanente.
+
+Una vez elegida, el panel SHALL mostrar la especialización de la torre y ya no
+SHALL ofrecer la elección.
+
+#### Scenario: El panel ofrece las dos ramas cuando toca
+
+- **GIVEN** una torre seleccionada que ha alcanzado el nivel de especialización y no está especializada
+- **WHEN** se muestra el panel
+- **THEN** aparecen las dos especializaciones con su nombre y su descripción
+
+#### Scenario: Antes de tiempo no se ofrece
+
+- **GIVEN** una torre seleccionada por debajo del nivel de especialización
+- **WHEN** se muestra el panel
+- **THEN** no se ofrece ninguna especialización
+
+#### Scenario: Ya especializada, el panel la muestra en lugar de la elección
+
+- **GIVEN** una torre seleccionada ya especializada
+- **WHEN** se muestra el panel
+- **THEN** el panel muestra el nombre de su especialización
+- **AND** no ofrece elegir ninguna rama
+
+### Requirement: Una torre especializada se distingue en el escenario
+
+Una torre con especialización SHALL representarse de forma distinguible de una
+torre del mismo tipo sin especializar, para que el jugador reconozca de un
+vistazo qué papel cumple cada puesto.
+
+#### Scenario: La torre especializada se ve distinta
+
+- **WHEN** se dibuja una torre especializada
+- **THEN** su representación la distingue de una del mismo tipo y nivel sin especializar
+
+### Requirement: Guía de primeros pasos
+
+El juego SHALL ofrecer una guía de primeros pasos formada por una secuencia
+ordenada de pasos. Cada paso SHALL tener un texto de pista y una condición que
+se evalúa sobre el estado de la partida.
+
+La guía SHALL mostrar el **primer paso cuya condición no se cumpla todavía**. Un
+paso cuya condición ya se cumple SHALL considerarse completado sin intervención
+del jugador. Cuando todos los pasos estén completados, la guía SHALL terminar.
+
+La guía no SHALL modificar el estado de la partida ni impedir ninguna acción: es
+información en pantalla, no un peaje.
+
+#### Scenario: Al empezar se muestra el primer paso
+
+- **GIVEN** una partida recién empezada con la guía activa
+- **WHEN** se consulta el paso actual
+- **THEN** es el primero de la secuencia
+
+#### Scenario: Hacer lo que pide avanza la guía
+
+- **GIVEN** la guía mostrando un paso
+- **WHEN** el jugador hace lo que ese paso pide
+- **THEN** la guía pasa a mostrar el siguiente paso pendiente
+
+#### Scenario: Un paso ya cumplido no se pide
+
+- **GIVEN** un jugador que ya ha colocado una torre antes de que la guía llegue a ese paso
+- **WHEN** se consulta el paso actual
+- **THEN** no es el de colocar una torre
+
+#### Scenario: La guía retrocede si el jugador deshace
+
+- **GIVEN** la guía pidiendo que se mejore la torre colocada
+- **WHEN** el jugador vende esa torre y no le queda ninguna
+- **THEN** la guía vuelve a pedir que coloque una torre
+
+#### Scenario: Completar todos los pasos termina la guía
+
+- **GIVEN** un estado que cumple la condición de todos los pasos
+- **WHEN** se consulta el paso actual
+- **THEN** no hay ninguno y la guía se da por terminada
+
+#### Scenario: La guía no altera la partida
+
+- **GIVEN** dos partidas idénticas, una con la guía activa y otra sin ella
+- **WHEN** avanzan el mismo tiempo de simulación
+- **THEN** su estado es el mismo
+
+### Requirement: Contenido de la guía
+
+La guía SHALL enseñar, en este orden, a elegir una torre en la barra de compra,
+a colocarla sobre el prado, a subirla de nivel y a especializarla.
+
+No SHALL haber un paso para seleccionar la torre colocada, porque colocarla ya
+abre su panel: un paso que el juego cumple solo no le pide nada al jugador. La
+forma de reabrir el panel SHALL explicarse dentro del paso de mejora.
+
+Cada paso SHALL tener un texto no vacío que diga qué hacer.
+
+#### Scenario: Los pasos cubren la cadena de construcción
+
+- **WHEN** se consulta la secuencia de pasos
+- **THEN** incluye elegir torre, colocarla, mejorarla y especializarla
+- **AND** cada paso tiene un texto no vacío
+
+#### Scenario: Ningún paso está cumplido de antemano en una partida nueva
+
+- **GIVEN** una partida recién empezada, sin torres
+- **WHEN** se recorre la secuencia de pasos
+- **THEN** ninguno tiene su condición ya cumplida
 

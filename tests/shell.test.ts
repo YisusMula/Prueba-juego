@@ -12,9 +12,10 @@ import {
   startGame,
   upgradeSelectedTower,
 } from '../src/game/state';
-import { PATH_LENGTH, cellCenter } from '../src/game/map';
+import { cellCenter } from '../src/game/map';
+import { routeOf } from '../src/game/scenarios';
 import { spawnEnemy } from '../src/game/state';
-import { quietRun, run } from './helpers';
+import { defaultScenario, quietRun, run } from './helpers';
 
 describe('game-shell: menú principal', () => {
   it('arranca en el menú, sin simular nada', () => {
@@ -105,7 +106,7 @@ describe('game-shell: derrota', () => {
     quietRun(state);
     state.lives = 1;
     const enemy = spawnEnemy(state, 'rat', 1);
-    enemy.distance = PATH_LENGTH - 1;
+    enemy.distance = routeOf(defaultScenario(), 0).length - 1;
     run(state, 0.5);
   }
 
