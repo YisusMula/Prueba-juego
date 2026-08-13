@@ -28,6 +28,12 @@
         <canvas id="scene" aria-label="Campo de batalla"></canvas>
       </div>
 
+      <!--
+        Región de anuncios: invisible en pantalla, pero es lo único que un
+        lector de pantalla recibe de lo que pasa en el lienzo.
+      -->
+      <p id="live-region" class="visually-hidden" role="status" aria-live="polite"></p>
+
       <header id="hud" class="panel-top">
         <div class="stats">
           <div class="stat stat-lives" title="Vidas restantes">

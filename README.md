@@ -100,9 +100,9 @@ lista, atenuados y diciendo qué hace falta para abrirlos.
 
 Las estrellas de un escenario salen de la **dificultad más alta en la que hayas
 ganado** en él: ⭐ en Fácil, ⭐⭐ en Normal, ⭐⭐⭐ en Difícil. Con cinco
-escenarios, el total son 15. No se suman entre
-dificultades, así que ganar en Difícil concede las tres directamente y no deja
-tareas pendientes que no enseñan nada.
+escenarios, el total son 15. No se suman entre dificultades, así que ganar en
+Difícil concede las tres directamente y no deja tareas pendientes que no
+enseñan nada.
 
 Solo cuenta **ganar**: llegar a la oleada 30 y morir en ella no da estrellas. El
 menú principal y la pantalla de selección muestran tu total sobre el máximo.
@@ -208,6 +208,18 @@ rasgos vienen antes de que lleguen.
 | Meteoro / Ventisca | Teclas `Q` / `W` | Botones de la barra lateral |
 | Silenciar | Botón 🔊 | Botón 🔊 |
 | Pausar | Botón `Menú` o `Esc` | Botón `Menú` |
+| Mover el cursor de celda | Flechas | — |
+| Colocar / seleccionar en esa celda | `Enter` | — |
+
+El juego **se puede jugar entero con el teclado**: el tabulador llega a todos
+los botones y las flechas mueven un cursor sobre la rejilla que `Enter` confirma,
+con el mismo efecto que un toque. La vista sigue al cursor si se sale de
+pantalla. Con el foco sobre un botón, la tecla es del botón: los atajos del
+juego no la interceptan.
+
+Una región de anuncios comunica a los lectores de pantalla lo que un jugador
+vidente ve de un vistazo: el comienzo de cada oleada, la pérdida de una vida y
+el final de la partida.
 
 Los enemigos que quedan fuera de la vista se señalan con **flechas en el borde**
 de la pantalla, para que un mapa desplazable no te haga perder de vista una fuga.

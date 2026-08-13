@@ -8,6 +8,7 @@ import {
   type Camera,
   type Viewport,
   clampCamera,
+  ensureVisible,
   fitCamera,
   initialCamera,
   zoomCameraAt,
@@ -18,7 +19,7 @@ import type { SpecialisationId } from './game/specialisations';
 import { currentTutorialStep } from './game/tutorial';
 import { clearRun, loadRun, loadRunSummary, saveRun } from './storage/savegame';
 import { isScenarioUnlocked, newlyUnlocked, starsFor } from './game/campaign';
-import { cellCenter } from './game/map';
+import { CELL, type Cell, cellCenter, inBounds } from './game/map';
 import {
   callNextWave,
   continueEndless,
@@ -92,6 +93,13 @@ let lastScenarioId: ScenarioId = DEFAULT_SCENARIO;
 let viewport: Viewport = { width: 1, height: 1 };
 let camera: Camera = fitCamera(viewport);
 let pointer: { x: number; y: number } | null = null;
+/**
+ * Celda señalada con el teclado. Vive aquí y no en `GameState` porque es una
+ * intención a medio formar del jugador, igual que la posición del ratón:
+ * guardarla con la partida haría aparecer un cursor donde se dejó hace una
+ * hora, y haría divergir dos partidas idénticas por un movimiento de cursor.
+ */
+let keyboardCell: Cell | null = null;
 let devicePixelRatioUsed = 1;
 /** Vidas de la última comprobación, para sacudir la pantalla al perder una. */
 let lastLives = state.lives;
@@ -163,6 +171,10 @@ function beginRun(difficultyId: DifficultyId, scenarioId: ScenarioId): void {
     return;
   }
   lastScenarioId = scenarioId;
+  keyboardCell = null;
+  announcedWave = 0;
+  announcedLives = state.lives;
+  announcedScreen = state.screen;
   view.tutorial = tutorialPending;
   // La partida nueva sustituye a la guardada desde el primer instante: si el
   // jugador cierra ahora, lo que reanude debe ser esta, no la anterior.
@@ -363,6 +375,53 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+const ARROWS: Readonly<Record<string, Cell>> = {
+  ArrowUp: { col: 0, row: -1 },
+  ArrowDown: { col: 0, row: 1 },
+  ArrowLeft: { col: -1, row: 0 },
+  ArrowRight: { col: 1, row: 0 },
+};
+
+/** Mueve el cursor de teclado y arrastra la vista si se sale. */
+function moveKeyboardCursor(delta: Cell): void {
+  const from = keyboardCell ?? currentScenario(state).spawnCells[0] ?? { col: 0, row: 0 };
+  // La primera flecha solo hace aparecer el cursor donde empieza el camino;
+  // saltar además una celda haría perder de vista de dónde ha salido.
+  const next = keyboardCell
+    ? { col: from.col + delta.col, row: from.row + delta.row }
+    : { col: from.col, row: from.row };
+
+  if (!inBounds(next.col, next.row)) return;
+  keyboardCell = next;
+
+  const centre = cellCenter(next.col, next.row);
+  camera = ensureVisible(camera, viewport, centre, CELL);
+}
+
+/** Actúa sobre la celda del cursor: exactamente lo mismo que un toque. */
+function confirmKeyboardCursor(): void {
+  if (!keyboardCell) return;
+  unlockAudio();
+  const centre = cellCenter(keyboardCell.col, keyboardCell.row);
+  handleWorldTap(state, centre.x, centre.y);
+  hud.sync();
+}
+
+/**
+ * ¿El foco está en un control que ya responde al teclado?
+ *
+ * Si lo está, los atajos del juego **no deben tocar la tecla**: `Enter` y
+ * `Espacio` son la forma estándar de activar un botón, y cancelarlos con
+ * `preventDefault` deja toda la interfaz inservible para quien navega con
+ * tabulador. Es exactamente lo que pasaba con el atajo de llamar a la oleada
+ * antes de existir el cursor de teclado.
+ */
+function focusIsOnControl(): boolean {
+  const active = document.activeElement;
+  if (!active || active === document.body) return false;
+  return active.matches('button, input, select, textarea, a[href], [contenteditable], [tabindex]');
+}
+
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     if (state.screen === 'playing') pauseGame(state);
@@ -372,6 +431,20 @@ window.addEventListener('keydown', (event) => {
   }
 
   if (state.screen !== 'playing') return;
+  // Con el foco en un botón, la tecla es suya: el juego no la intercepta.
+  if (focusIsOnControl()) return;
+
+  const delta = ARROWS[event.key];
+  if (delta) {
+    event.preventDefault();
+    moveKeyboardCursor(delta);
+    return;
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    confirmKeyboardCursor();
+    return;
+  }
 
   // Atajos de velocidad y habilidades para quien juega con teclado.
   if (event.key === '1' || event.key === '2' || event.key === '3') {
@@ -394,6 +467,12 @@ window.addEventListener('keydown', (event) => {
   }
   if (event.key === ' ') {
     event.preventDefault();
+    // Con el cursor en pantalla, Espacio confirma sobre él; sin cursor sigue
+    // siendo el atajo de llamar a la oleada, que es lo que hacía hasta ahora.
+    if (keyboardCell) {
+      confirmKeyboardCursor();
+      return;
+    }
     unlockAudio();
     callNextWave(state);
     hud.sync();
@@ -441,6 +520,48 @@ function reactToRunEnd(): void {
   }
 
   lastScreen = state.screen;
+}
+
+/**
+ * Región de anuncios para lectores de pantalla.
+ *
+ * Comunica lo que un jugador vidente capta de un vistazo, y solo cuando cambia:
+ * el juego se actualiza sesenta veces por segundo, y una región que hablara en
+ * cada fotograma taparía cualquier cosa útil.
+ */
+const liveRegion = document.getElementById('live-region');
+let lastAnnouncement = '';
+
+function announce(message: string): void {
+  if (!liveRegion || message === lastAnnouncement) return;
+  lastAnnouncement = message;
+  liveRegion.textContent = message;
+}
+
+/** Hechos discretos que merecen anunciarse: no un volcado del estado. */
+let announcedWave = 0;
+let announcedLives = state.lives;
+let announcedScreen: typeof state.screen = state.screen;
+
+function announceEvents(): void {
+  if (state.screen === 'playing') {
+    if (state.wavePhase !== 'preparing' && state.waveIndex !== announcedWave) {
+      announcedWave = state.waveIndex;
+      announce(`Empieza la oleada ${displayedWave(state)}.`);
+    }
+    if (state.lives < announcedLives) {
+      announce(`Has perdido una vida. Te quedan ${state.lives}.`);
+    }
+    announcedLives = state.lives;
+  }
+
+  if (state.screen !== announcedScreen) {
+    announcedScreen = state.screen;
+    if (state.screen === 'victory') announce('¡Victoria! Has superado todas las oleadas.');
+    if (state.screen === 'defeat') {
+      announce(`Derrota en la oleada ${displayedWave(state)}. Sin vidas.`);
+    }
+  }
 }
 
 /**
@@ -503,12 +624,16 @@ function frame(now: number): void {
   reactToLifeLoss();
   reactToRunEnd();
   reactToTutorial();
+  announceEvents();
   autosave(elapsed);
 
   canvas!.classList.toggle('is-placing', state.shopSelection !== null);
   canvas!.classList.toggle('is-aiming', state.aimingAbility !== null);
 
-  renderScene(ctx!, state, camera, viewport, devicePixelRatioUsed, { pointer });
+  renderScene(ctx!, state, camera, viewport, devicePixelRatioUsed, {
+    pointer,
+    keyboardCell,
+  });
   hud.sync();
 
   requestAnimationFrame(frame);

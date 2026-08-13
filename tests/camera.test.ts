@@ -12,6 +12,7 @@ import {
   screenToWorld,
   worldToScreen,
   zoomCameraAt,
+  ensureVisible,
 } from '../src/game/camera';
 import { MAP_HEIGHT, MAP_WIDTH, worldToCell } from '../src/game/map';
 import { TAP_MOVE_THRESHOLD, isTap } from '../src/game/gesture';
@@ -145,5 +146,48 @@ describe('viewport-navigation: pulsación frente a arrastre', () => {
 
   it('una pulsación larga tampoco cuenta', () => {
     expect(isTap({ movedX: 1, movedY: 1, elapsedMs: 1500 })).toBe(false);
+  });
+});
+
+describe('viewport-navigation: la vista sigue al cursor', () => {
+  const viewport = { width: 800, height: 600 };
+
+  it('no mueve la cámara si el punto ya se ve', () => {
+    const camera = clampCamera({ x: 640, y: 448, zoom: 1 }, viewport);
+    const same = ensureVisible(camera, viewport, { x: camera.x + 20, y: camera.y - 20 });
+
+    expect(same).toBe(camera);
+  });
+
+  it('desplaza lo justo, no centra', () => {
+    const camera = clampCamera({ x: 640, y: 448, zoom: 1 }, viewport);
+    // Un punto justo fuera del borde derecho.
+    const target = { x: camera.x + viewport.width / 2 + 40, y: camera.y };
+    const moved = ensureVisible(camera, viewport, target);
+
+    expect(moved.x).toBeGreaterThan(camera.x);
+    // Si centrara, la cámara acabaría en el punto; desplazándose queda antes.
+    expect(moved.x).toBeLessThan(target.x);
+    expect(moved.y).toBe(camera.y);
+  });
+
+  it('deja el punto dentro de la vista', () => {
+    const camera = clampCamera({ x: 500, y: 400, zoom: 1.4 }, viewport);
+    const target = { x: 1100, y: 780 };
+    const moved = ensureVisible(camera, viewport, target);
+
+    const halfWidth = viewport.width / (2 * moved.zoom);
+    const halfHeight = viewport.height / (2 * moved.zoom);
+    expect(target.x).toBeGreaterThanOrEqual(moved.x - halfWidth - 0.001);
+    expect(target.x).toBeLessThanOrEqual(moved.x + halfWidth + 0.001);
+    expect(target.y).toBeGreaterThanOrEqual(moved.y - halfHeight - 0.001);
+    expect(target.y).toBeLessThanOrEqual(moved.y + halfHeight + 0.001);
+  });
+
+  it('nunca deja ver fuera del mapa', () => {
+    const camera = clampCamera({ x: 200, y: 200, zoom: 1 }, viewport);
+    const moved = ensureVisible(camera, viewport, { x: -500, y: -500 });
+
+    expect(moved).toEqual(clampCamera(moved, viewport));
   });
 });

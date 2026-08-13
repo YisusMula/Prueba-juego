@@ -7,11 +7,14 @@ import { statsAtLevel, towerType } from '../game/towers';
 import { type GameState, canPlaceTower, getSelectedTower } from '../game/state';
 import { getTerrainCanvas } from './terrain';
 import { currentScenario } from '../game/state';
+import { isBuildableTerrain } from '../game/scenarios';
 import { AIR_ALTITUDE, drawEnemy, drawProjectile, drawTower, drawTowerGhost } from './sprites';
 
 export interface SceneInput {
   /** Posición del puntero en píxeles de pantalla, o null si no hay. */
   pointer: { x: number; y: number } | null;
+  /** Celda señalada con el teclado, o null si el jugador no lo ha usado. */
+  keyboardCell: { col: number; row: number } | null;
 }
 
 function drawRangeCircle(
@@ -119,6 +122,33 @@ function drawSelectionHighlight(ctx: CanvasRenderingContext2D, state: GameState)
   ctx.setLineDash([8, 6]);
   ctx.strokeRect(tower.col * CELL + 3, tower.row * CELL + 3, CELL - 6, CELL - 6);
   ctx.setLineDash([]);
+}
+
+/**
+ * Cursor de teclado.
+ *
+ * Se dibuja con un recuadro más grueso y sin discontinuo, para distinguirlo del
+ * resaltado de la torre seleccionada: pueden estar los dos a la vez y confundir
+ * cuál responde a las teclas sería peor que no tener cursor.
+ */
+function drawKeyboardCursor(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  cell: { col: number; row: number } | null,
+): void {
+  if (!cell) return;
+
+  const x = cell.col * CELL;
+  const y = cell.row * CELL;
+  const buildable = isBuildableTerrain(currentScenario(state), cell.col, cell.row);
+
+  ctx.save();
+  ctx.strokeStyle = buildable ? '#ffffff' : '#e2574c';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(x + 2, y + 2, CELL - 4, CELL - 4);
+  ctx.fillStyle = buildable ? 'rgba(255, 255, 255, 0.12)' : 'rgba(226, 87, 76, 0.16)';
+  ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
+  ctx.restore();
 }
 
 function drawEffects(ctx: CanvasRenderingContext2D, state: GameState): void {
@@ -305,6 +335,7 @@ export function renderScene(
 
   ctx.drawImage(getTerrainCanvas(currentScenario(state)), 0, 0, MAP_WIDTH, MAP_HEIGHT);
 
+  drawKeyboardCursor(ctx, state, input.keyboardCell);
   drawSelectionHighlight(ctx, state);
   drawPlacementPreview(ctx, state, camera, viewport, input.pointer);
   drawAbilityPreview(ctx, state, camera, viewport, input.pointer);
