@@ -1,0 +1,44 @@
+# Uso (desde enregla/):
+#   cp server/.env.example server/.env   # y edítalo (NODE_ENV=production, APP_URL https, SMTP, etc.)
+#   docker compose --env-file server/.env up -d --build
+# La app aplica las migraciones al arrancar. Datos de PostgreSQL en el volumen `pgdata`.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: enregla
+      POSTGRES_USER: enregla
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en server/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U enregla -d enregla"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Sin puertos publicados: solo accesible desde la red interna de compose.
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: server/.env
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgres://enregla:${POSTGRES_PASSWORD}@db:5432/enregla
+      HOST: 0.0.0.0
+      PORT: 3000
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+
+volumes:
+  pgdata:
