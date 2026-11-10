@@ -50,6 +50,7 @@ export async function closeTestApp(ctx: TestCtx): Promise<void> {
 }
 
 const TABLES = [
+  'job_runs',
   'records',
   'audit_events',
   'rate_limits',
@@ -113,6 +114,9 @@ export class Client {
       headers: h,
       ...(body !== undefined ? { payload: body as Record<string, unknown> } : {}),
     });
+    // Los emails/tokens de registro y recuperación se generan tras responder (H10): se espera
+    // a esos trabajos para que los tests sigan siendo deterministas.
+    await this.app.drainBackground();
     for (const c of res.cookies) {
       if (c.value === '' || (c.maxAge !== undefined && c.maxAge <= 0) || (c.expires && c.expires.getTime() < Date.now())) this.cookies.delete(c.name);
       else this.cookies.set(c.name, c.value);

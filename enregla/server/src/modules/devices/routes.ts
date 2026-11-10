@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { idParam, parse } from '../../http/validation.js';
-import { orgCtx, requireWritable } from '../../http/guards.js';
+import { orgCtx, requireUser, requireWritable } from '../../http/guards.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { audit } from '../../lib/audit.js';
 import { randomToken, sha256 } from '../../lib/crypto.js';
@@ -10,10 +10,12 @@ import { keysetAfter, toPage } from '../../lib/pagination.js';
 
 export const KIOSK_TOKEN_PREFIX = 'kd_';
 
-function deviceView(d: { id: string; name: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null }) {
+function deviceView(d: { id: string; name: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null; created_by_name?: string | null }) {
   return {
     id: d.id,
     name: d.name,
+    /** Nombre de quien lo dio de alta (null si esa cuenta ya no existe). */
+    createdByName: d.created_by_name ?? null,
     createdAt: d.created_at.toISOString(),
     lastUsedAt: d.last_used_at?.toISOString() ?? null,
     revokedAt: d.revoked_at?.toISOString() ?? null,
@@ -28,7 +30,12 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', async (req) => {
     const ctx = orgCtx(req);
     const q = parse(S.pagination, req.query);
-    let query = db.selectFrom('devices as d').select(cols).where('d.organization_id', '=', ctx.org.id);
+    let query = db
+      .selectFrom('devices as d')
+      .leftJoin('users as u', 'u.id', 'd.created_by')
+      .select(cols)
+      .select('u.name as created_by_name')
+      .where('d.organization_id', '=', ctx.org.id);
     if (q.cursor) query = query.where(keysetAfter({ table: 'devices', alias: 'd', cursor: q.cursor, orgId: ctx.org.id, direction: 'asc' }));
     const rows = await query.orderBy('d.created_at').orderBy('d.id').limit(q.limit + 1).execute();
     return toPage(rows, q.limit, (r) => r.id, deviceView);
@@ -52,7 +59,8 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
       .returning(['id', 'name', 'created_at', 'last_used_at', 'revoked_at'])
       .executeTakeFirstOrThrow();
     await audit(db, { event: 'device.created', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { deviceId: row.id, name: row.name } });
-    return reply.status(201).send({ device: deviceView(row), token });
+    const creator = requireUser(req).user.name;
+    return reply.status(201).send({ device: deviceView({ ...row, created_by_name: creator }), token });
   });
 
   // Revocar siempre está permitido (incluso en solo lectura): reduce privilegios.

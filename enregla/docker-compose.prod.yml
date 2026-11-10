@@ -1,0 +1,75 @@
+# Despliegue de producción de ejemplo: app + PostgreSQL + Caddy (TLS automático con Let's Encrypt).
+# Uso (desde enregla/):
+#   cp server/.env.example server/.env    # NODE_ENV=production, APP_URL=https://TU_DOMINIO, SMTP_*, MAIL_FROM,
+#                                         # POSTGRES_PASSWORD larga, DOMAIN=TU_DOMINIO, ACME_EMAIL=tu@email
+#   docker compose -f docker-compose.prod.yml --env-file server/.env up -d --build
+# Requisitos: el DNS de DOMAIN apunta a este servidor y los puertos 80/443 están abiertos.
+# La app NO publica ningún puerto: solo Caddy es accesible desde fuera.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: enregla
+      POSTGRES_USER: enregla
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en server/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U enregla -d enregla"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: server/.env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://enregla:${POSTGRES_PASSWORD}@db:5432/enregla
+      HOST: 0.0.0.0
+      PORT: 3000
+      # Solo se confía en el proxy de la red interna `edge` (Caddy). Nunca TRUST_PROXY=true.
+      TRUST_PROXY: 172.30.0.0/24
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    networks: [internal, edge]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Define DOMAIN (p. ej. app.tudominio.es) en server/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?Define ACME_EMAIL en server/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+    networks: [edge]
+
+networks:
+  internal:
+    internal: true
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

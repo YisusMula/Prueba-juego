@@ -27,6 +27,8 @@ export interface BillingProvider {
   readonly priceAnnual: string;
   createCheckoutSession(params: CheckoutParams): Promise<{ url: string }>;
   createPortalSession(params: { customerId: string; returnUrl: string }): Promise<{ url: string }>;
+  /** Cancela de inmediato una suscripción (al eliminar el local). Una suscripción que ya no existe cuenta como cancelada. */
+  cancelSubscription(subscriptionId: string): Promise<void>;
   /** Verifica la firma sobre el cuerpo crudo. Lanza si la firma no es válida. */
   constructEvent(rawBody: Buffer, signature: string): BillingEvent;
 }
@@ -72,6 +74,16 @@ export class StripeBillingProvider implements BillingProvider {
   async createPortalSession(p: { customerId: string; returnUrl: string }): Promise<{ url: string }> {
     const session = await this.stripe.billingPortal.sessions.create({ customer: p.customerId, return_url: p.returnUrl, locale: 'es' });
     return { url: session.url };
+  }
+
+  async cancelSubscription(subscriptionId: string): Promise<void> {
+    try {
+      await this.stripe.subscriptions.cancel(subscriptionId, undefined, { idempotencyKey: `cancel-${subscriptionId}` });
+    } catch (err) {
+      const e = err as { code?: string; statusCode?: number };
+      if (e.code === 'resource_missing' || e.statusCode === 404) return;
+      throw err;
+    }
   }
 
   constructEvent(rawBody: Buffer, signature: string): BillingEvent {

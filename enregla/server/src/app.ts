@@ -8,6 +8,7 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AppDeps } from './http/context.js';
 import { AppError } from './lib/errors.js';
+import { TrySemaphore } from './lib/semaphore.js';
 import { checkCsrf, isCsrfExempt, registerSecurity } from './http/security.js';
 import { loadSession, clearSessionCookie } from './modules/auth/sessions.js';
 import { loadOrgContext } from './http/guards.js';
@@ -45,6 +46,16 @@ export const REDACT_PATHS = [
   '*.token_hash',
 ];
 
+function containsNul(value: unknown, depth = 0): boolean {
+  if (typeof value === 'string') return value.includes('\u0000');
+  if (depth > 32 || value === null || typeof value !== 'object') return false;
+  if (Buffer.isBuffer(value)) return false;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k.includes('\u0000') || containsNul(v, depth + 1)) return true;
+  }
+  return false;
+}
+
 function trustHops(n: number) {
   return (_address: string, hop: number) => hop < n;
 }
@@ -74,9 +85,33 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
   // API solo JSON: sin parser de text/plain (→ 415 para cualquier otro Content-Type).
   app.removeContentTypeParser('text/plain');
   app.decorate('deps', deps);
+  // Trabajos en segundo plano (emails, tokens, auditoría que no deben influir en el tiempo de respuesta).
+  const pendingJobs = new Set<Promise<void>>();
+  const track = (p: Promise<void>) => {
+    pendingJobs.add(p);
+    void p.finally(() => pendingJobs.delete(p));
+  };
   app.decorate('sendMail', (message) => {
-    deps.mailer.send(message).catch((err: unknown) => app.log.error({ err: (err as Error).message, subject: message.subject }, 'Error enviando email'));
+    track(
+      deps.mailer.send(message).catch((err: unknown) => {
+        app.log.error({ err: (err as Error).message, subject: message.subject }, 'Error enviando email');
+      }),
+    );
   });
+  app.decorate('runInBackground', (label: string, job: () => Promise<void>) => {
+    track(
+      new Promise<void>((resolve) => setImmediate(resolve))
+        .then(job)
+        .catch((err: unknown) => {
+          app.log.error({ err, job: label }, 'Error en tarea en segundo plano');
+        }),
+    );
+  });
+  app.decorate('drainBackground', async () => {
+    while (pendingJobs.size > 0) await Promise.all([...pendingJobs]);
+  });
+  app.addHook('onClose', async () => app.drainBackground());
+  app.decorate('pdfSlots', new TrySemaphore(config.reports.pdfConcurrency));
   app.decorateRequest('auth', null);
   app.decorateRequest('orgCtx', null);
   app.decorateRequest('deviceCtx', null);
@@ -96,6 +131,14 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     }
   });
 
+  // PostgreSQL no admite el carácter NUL en text/jsonb: se rechaza con 400 en cualquier entrada.
+  app.addHook('preValidation', async (req) => {
+    if (!req.url.startsWith('/api/') || req.url === '/api/billing/webhook') return;
+    if (req.url.includes('%00') || containsNul(req.body) || containsNul(req.query) || containsNul(req.params)) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Los datos enviados contienen caracteres no permitidos');
+    }
+  });
+
   app.setErrorHandler((err: unknown, req, reply) => {
     if (err instanceof AppError) {
       if (err.headers) reply.headers(err.headers);
@@ -104,6 +147,12 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     const e = err as { statusCode?: number; code?: string; message?: string };
     if (e.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
       return reply.status(413).send({ error: { code: 'PAYLOAD_TOO_LARGE', message: 'El cuerpo de la petición es demasiado grande' } });
+    }
+    // Errores de datos de PostgreSQL (clase 22: fechas fuera de rango, texto no válido, números
+    // desbordados…) provocados por entradas raras: 400, nunca 500.
+    if (typeof e.code === 'string' && /^22[0-9A-Z]{3}$/.test(e.code) && !e.statusCode) {
+      req.log.warn({ pgCode: e.code }, 'Entrada rechazada por la base de datos');
+      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: 'Los datos enviados no son válidos' } });
     }
     if (e.statusCode && e.statusCode >= 400 && e.statusCode < 500) {
       const message = e.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE' ? 'Tipo de contenido no admitido (usa application/json)' : 'Petición no válida';

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 const bool = z
@@ -45,6 +46,9 @@ const envSchema = z.object({
   SCHEDULER_INTERVAL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
   WEB_DIST_DIR: z.string().optional(),
   TRIAL_DAYS: z.coerce.number().int().min(1).max(60).default(14),
+  AUDIT_RETENTION_MONTHS: z.coerce.number().int().min(1).max(120).default(12),
+  UNVERIFIED_ACCOUNT_DAYS: z.coerce.number().int().min(1).max(90).default(7),
+  PDF_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
 });
 
 export interface RateLimitRule {
@@ -86,18 +90,62 @@ export interface Config {
   trialDays: number;
   rateLimits: {
     loginIp: RateLimitRule;
+    /** Intentos fallidos por (cuenta + IP): el umbral "normal" de bloqueo. */
+    loginAccountIp: RateLimitRule;
+    /** Techo por cuenta (todas las IP) contra fuerza bruta distribuida. */
     loginAccount: RateLimitRule;
     registerIp: RateLimitRule;
     passwordResetIp: RateLimitRule;
     passwordResetAccount: RateLimitRule;
+    /** Reenvíos de verificación: claves propias, separadas de las de reset. */
+    verifyIp: RateLimitRule;
+    verifyAccount: RateLimitRule;
     tokenIp: RateLimitRule;
     pinDevice: RateLimitRule;
+    /** PIN erróneos por dispositivo (todas las personas). */
+    pinFailDevice: RateLimitRule;
     publicIp: RateLimitRule;
     kioskDevice: RateLimitRule;
     sensitiveUser: RateLimitRule;
+    /** Informes y exportaciones: se aplican por organización y por usuario. */
+    reportPdf: RateLimitRule;
+    reportCsv: RateLimitRule;
+    orgExport: RateLimitRule;
+    /** Alta de registros desde la web (usuario + organización) y desde el kiosko (dispositivo). */
+    recordCreateUser: RateLimitRule;
+    recordCreateDevice: RateLimitRule;
+    /** Invitaciones: mismo destinatario por organización, por organización y por usuario. */
+    inviteRecipient: RateLimitRule;
+    inviteOrg: RateLimitRule;
+    inviteUser: RateLimitRule;
   };
   pinMaxFailures: number;
   pinLockMinutes: number;
+  reports: {
+    /** Máximo de filas de un PDF (por encima se pide acotar o usar CSV). */
+    maxPdfRows: number;
+    /** PDF generándose a la vez en este proceso; si está lleno se responde 429. */
+    pdfConcurrency: number;
+    /** Segundos sugeridos en Retry-After cuando no hay hueco para otro PDF. */
+    pdfBusyRetrySeconds: number;
+  };
+  retention: {
+    auditMonths: number;
+    unverifiedAccountDays: number;
+  };
+}
+
+const TRUST_PROXY_NAMES = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+function isIpOrCidr(v: string): boolean {
+  if (TRUST_PROXY_NAMES.has(v)) return true;
+  const [ip, bits, ...rest] = v.split('/');
+  if (rest.length > 0 || !ip) return false;
+  const family = isIP(ip);
+  if (family === 0) return false;
+  if (bits === undefined) return true;
+  if (!/^\d{1,3}$/.test(bits)) return false;
+  return Number(bits) <= (family === 4 ? 32 : 128);
 }
 
 function parseTrustProxy(v: string): boolean | number | string[] {
@@ -144,7 +192,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
   if (mailTransport === 'smtp' && !e.SMTP_HOST) problems.push('SMTP_HOST es obligatorio con MAIL_TRANSPORT=smtp');
   if (e.SMTP_USER && !e.SMTP_PASS) problems.push('SMTP_PASS es obligatorio si se define SMTP_USER');
 
+  const trustProxy = parseTrustProxy(e.TRUST_PROXY);
+  if (Array.isArray(trustProxy)) {
+    const bad = trustProxy.filter((x) => !isIpOrCidr(x));
+    if (bad.length > 0) problems.push(`TRUST_PROXY contiene valores que no son IP/CIDR: ${bad.join(', ')}`);
+  }
+
   if (isProduction) {
+    if (trustProxy === true) {
+      problems.push(
+        'TRUST_PROXY=true no se permite en producción (cualquiera podría falsificar su IP con X-Forwarded-For): indica el número de proxies delante de la app (p. ej. TRUST_PROXY=1) o la lista de IP/CIDR del proxy (p. ej. TRUST_PROXY=172.18.0.0/16)',
+      );
+    }
     if (!appOrigin.startsWith('https://')) problems.push('APP_URL debe usar https en producción');
     if (mailTransport !== 'smtp') problems.push('En producción MAIL_TRANSPORT debe ser smtp');
     if (e.COOKIE_SECURE === false) problems.push('COOKIE_SECURE no puede desactivarse en producción');
@@ -181,7 +240,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     appName: e.APP_NAME,
     appOrigin,
     allowedOrigins,
-    trustProxy: parseTrustProxy(e.TRUST_PROXY),
+    trustProxy,
     cookieSecure,
     // El prefijo __Host- exige Secure; en desarrollo sobre http se usa un nombre sin prefijo.
     cookieName: cookieSecure ? '__Host-enregla_session' : 'enregla_session',
@@ -201,18 +260,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     trialDays: e.TRIAL_DAYS,
     rateLimits: {
       loginIp: { limit: 30, windowSeconds: 15 * 60 },
-      loginAccount: { limit: 10, windowSeconds: 15 * 60 },
+      loginAccountIp: { limit: 10, windowSeconds: 15 * 60 },
+      loginAccount: { limit: 100, windowSeconds: 3600 },
       registerIp: { limit: 10, windowSeconds: 3600 },
       passwordResetIp: { limit: 10, windowSeconds: 3600 },
       passwordResetAccount: { limit: 3, windowSeconds: 3600 },
+      verifyIp: { limit: 10, windowSeconds: 3600 },
+      verifyAccount: { limit: 3, windowSeconds: 3600 },
       tokenIp: { limit: 30, windowSeconds: 15 * 60 },
       pinDevice: { limit: 30, windowSeconds: 15 * 60 },
+      pinFailDevice: { limit: 20, windowSeconds: 15 * 60 },
       publicIp: { limit: 120, windowSeconds: 60 },
       kioskDevice: { limit: 600, windowSeconds: 60 },
       sensitiveUser: { limit: 10, windowSeconds: 15 * 60 },
+      reportPdf: { limit: 10, windowSeconds: 10 * 60 },
+      reportCsv: { limit: 20, windowSeconds: 10 * 60 },
+      orgExport: { limit: 5, windowSeconds: 3600 },
+      recordCreateUser: { limit: 120, windowSeconds: 60 },
+      recordCreateDevice: { limit: 120, windowSeconds: 60 },
+      inviteRecipient: { limit: 3, windowSeconds: 24 * 3600 },
+      inviteOrg: { limit: 20, windowSeconds: 24 * 3600 },
+      inviteUser: { limit: 30, windowSeconds: 24 * 3600 },
     },
     pinMaxFailures: 5,
     pinLockMinutes: 15,
+    reports: { maxPdfRows: 5_000, pdfConcurrency: e.PDF_MAX_CONCURRENCY, pdfBusyRetrySeconds: 15 },
+    retention: { auditMonths: e.AUDIT_RETENTION_MONTHS, unverifiedAccountDays: e.UNVERIFIED_ACCOUNT_DAYS },
   };
   return { ...config, ...overrides };
 }

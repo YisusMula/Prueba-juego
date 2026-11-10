@@ -4,6 +4,7 @@ import * as S from '../../schemas/index.js';
 import { idParam, parse } from '../../http/validation.js';
 import { orgCtx, requireUser, requireWritable } from '../../http/guards.js';
 import { notFound } from '../../lib/errors.js';
+import { enforce } from '../../lib/rate-limit.js';
 import { keysetAfter, toPage } from '../../lib/pagination.js';
 import type { DB } from '../../db/index.js';
 import { recordView } from '../views.js';
@@ -18,7 +19,10 @@ async function getRecord(db: DB, orgId: string, id: string) {
 }
 
 export async function recordRoutes(app: FastifyInstance): Promise<void> {
-  const { db } = app.deps;
+  const { db, config, rateLimiter } = app.deps;
+  /** Límite holgado de altas (registros y enmiendas) por usuario y local. */
+  const limitCreate = (userId: string, orgId: string) =>
+    enforce(rateLimiter, `records:user:${userId}:org:${orgId}`, config.rateLimits.recordCreateUser, 'Demasiados registros seguidos. Espera un minuto.');
 
   app.get('/', async (req) => {
     const ctx = orgCtx(req);
@@ -54,6 +58,7 @@ export async function recordRoutes(app: FastifyInstance): Promise<void> {
     const ctx = requireWritable(req);
     const auth = requireUser(req);
     const body = parse(S.createRecordBody, req.body);
+    await limitCreate(auth.user.id, ctx.org.id);
     const row = await createRecord(
       db,
       ctx.org,
@@ -69,6 +74,7 @@ export async function recordRoutes(app: FastifyInstance): Promise<void> {
     const auth = requireUser(req);
     const id = idParam(req.params, 'recordId', 'Registro');
     const body = parse(S.amendmentBody, req.body);
+    await limitCreate(auth.user.id, ctx.org.id);
     const row = await createRecord(
       db,
       ctx.org,

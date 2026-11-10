@@ -3,7 +3,7 @@ import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
 import { deviceCtx } from '../../http/guards.js';
-import { AppError, notFound, readOnly } from '../../lib/errors.js';
+import { AppError, notFound, rateLimited, readOnly } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { verifySecret } from '../../lib/password.js';
 import { audit } from '../../lib/audit.js';
@@ -74,6 +74,60 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     return computeToday(db, ctx.org);
   });
 
+  const lockedError = (retrySeconds: number) =>
+    new AppError(429, 'PIN_LOCKED', 'PIN bloqueado temporalmente por demasiados intentos fallidos. Pide a un encargado que lo desbloquee o espera unos minutos.', undefined, {
+      'Retry-After': String(Math.max(1, retrySeconds)),
+    });
+
+  /**
+   * Verificación de PIN con reserva atómica del intento ANTES de verificar:
+   *  1. Reserva en el dispositivo (límite de PIN erróneos por dispositivo, todas las personas).
+   *  2. Reserva en la persona: UPDATE condicional que incrementa el contador solo si no está
+   *     bloqueada; la reserva que alcanza el máximo fija ya el bloqueo. Así, por muchas
+   *     peticiones simultáneas que lleguen, nunca se verifican más de `pinMaxFailures` PIN
+   *     por ventana.
+   *  3. Si el PIN es correcto se devuelven ambas reservas (contador a 0, sin bloqueo).
+   */
+  async function verifyPinWithReservation(ctx: { org: { id: string }; deviceId: string }, staffId: string, pinHash: string, pin: string, ip: string): Promise<void> {
+    const deviceKey = `pin-fail:device:${ctx.deviceId}`;
+    const dev = await rateLimiter.hit(deviceKey, config.rateLimits.pinFailDevice);
+    if (!dev.allowed) {
+      await rateLimiter.release(deviceKey);
+      throw rateLimited(dev.retryAfterSeconds, 'Demasiados PIN incorrectos en este dispositivo. Espera unos minutos.');
+    }
+    const max = config.pinMaxFailures;
+    const lockSecs = config.pinLockMinutes * 60;
+    const expired = sql<boolean>`(pin_locked_until IS NOT NULL AND pin_locked_until <= now())`;
+    const next = sql<number>`(CASE WHEN ${expired} THEN 1 ELSE pin_failed_count + 1 END)`;
+    const reserved = await db
+      .updateTable('staff')
+      .set({
+        pin_failed_count: next,
+        pin_locked_until: sql<Date | null>`CASE WHEN ${next} >= ${max} THEN now() + make_interval(secs => ${lockSecs}) WHEN ${expired} THEN NULL ELSE pin_locked_until END`,
+      })
+      .where('id', '=', staffId)
+      .where(sql<boolean>`(pin_locked_until IS NULL OR pin_locked_until <= now())`)
+      .returning(['pin_failed_count'])
+      .executeTakeFirst();
+    if (!reserved) {
+      await rateLimiter.release(deviceKey);
+      const st = await db.selectFrom('staff').select('pin_locked_until').where('id', '=', staffId).executeTakeFirst();
+      throw lockedError(st?.pin_locked_until ? Math.ceil((st.pin_locked_until.getTime() - Date.now()) / 1000) : lockSecs);
+    }
+    const ok = /^\d{4,6}$/.test(pin) && (await verifySecret(pinHash, pin));
+    if (ok) {
+      await db.updateTable('staff').set({ pin_failed_count: 0, pin_locked_until: null }).where('id', '=', staffId).execute();
+      await rateLimiter.release(deviceKey);
+      return;
+    }
+    await audit(db, { event: 'staff.pin_failed', organizationId: ctx.org.id, ip, metadata: { staffId, deviceId: ctx.deviceId } });
+    if (reserved.pin_failed_count >= max) {
+      await audit(db, { event: 'staff.pin_locked', organizationId: ctx.org.id, ip, metadata: { staffId, deviceId: ctx.deviceId } });
+      throw lockedError(lockSecs);
+    }
+    throw new AppError(401, 'INVALID_PIN', 'PIN incorrecto');
+  }
+
   app.post('/records', async (req, reply) => {
     const ctx = deviceCtx(req);
     if (!isWritable(ctx.org)) throw readOnly();
@@ -88,41 +142,12 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     if (!staff.active) throw new AppError(400, 'VALIDATION_ERROR', 'Ese miembro del personal está desactivado', [{ path: 'staffId', message: 'Desactivado' }]);
 
     if (staff.pin_hash) {
-      if (staff.pin_locked_until && staff.pin_locked_until.getTime() > Date.now()) {
-        const retry = Math.ceil((staff.pin_locked_until.getTime() - Date.now()) / 1000);
-        throw new AppError(429, 'PIN_LOCKED', 'PIN bloqueado temporalmente por demasiados intentos fallidos. Pide a un encargado que lo desbloquee o espera unos minutos.', undefined, {
-          'Retry-After': String(retry),
-        });
-      }
       if (!body.pin) throw new AppError(401, 'PIN_REQUIRED', 'Introduce tu PIN');
       await enforce(rateLimiter, `pin:device:${ctx.deviceId}`, config.rateLimits.pinDevice);
-      const ok = /^\d{4,6}$/.test(body.pin) && (await verifySecret(staff.pin_hash, body.pin));
-      if (!ok) {
-        const upd = await db
-          .updateTable('staff')
-          .set({ pin_failed_count: sql<number>`pin_failed_count + 1` })
-          .where('id', '=', staff.id)
-          .returning(['pin_failed_count'])
-          .executeTakeFirstOrThrow();
-        await audit(db, { event: 'staff.pin_failed', organizationId: ctx.org.id, ip: req.ip, metadata: { staffId: staff.id, deviceId: ctx.deviceId } });
-        if (upd.pin_failed_count >= config.pinMaxFailures) {
-          await db
-            .updateTable('staff')
-            .set({ pin_failed_count: 0, pin_locked_until: new Date(Date.now() + config.pinLockMinutes * 60_000) })
-            .where('id', '=', staff.id)
-            .execute();
-          await audit(db, { event: 'staff.pin_locked', organizationId: ctx.org.id, ip: req.ip, metadata: { staffId: staff.id, deviceId: ctx.deviceId } });
-          throw new AppError(429, 'PIN_LOCKED', 'PIN bloqueado temporalmente por demasiados intentos fallidos. Pide a un encargado que lo desbloquee o espera unos minutos.', undefined, {
-            'Retry-After': String(config.pinLockMinutes * 60),
-          });
-        }
-        throw new AppError(401, 'INVALID_PIN', 'PIN incorrecto');
-      }
-      if (staff.pin_failed_count > 0) {
-        await db.updateTable('staff').set({ pin_failed_count: 0, pin_locked_until: null }).where('id', '=', staff.id).execute();
-      }
+      await verifyPinWithReservation(ctx, staff.id, staff.pin_hash, body.pin, req.ip);
     }
 
+    await enforce(rateLimiter, `records:device:${ctx.deviceId}`, config.rateLimits.recordCreateDevice, 'Demasiados registros seguidos desde este dispositivo. Espera un minuto.');
     const row = await createRecord(db, ctx.org, { userId: null, userName: null, staffId: staff.id, deviceId: ctx.deviceId }, body.type, body.data);
     return reply.status(201).send({ record: recordView(row) });
   });

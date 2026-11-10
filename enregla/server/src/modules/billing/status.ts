@@ -42,3 +42,9 @@ export function subscriptionView(org: Organization, now = new Date()) {
     hasBillingAccount: org.stripe_customer_id != null,
   };
 }
+
+/** Estados de Stripe en los que la suscripción sigue viva (y habría que cancelarla al borrar el local). */
+export function hasLiveStripeSubscription(org: Pick<Organization, 'subscription_status' | 'stripe_subscription_id'>): boolean {
+  if (!org.stripe_subscription_id) return false;
+  return !['canceled', 'incomplete_expired'].includes(org.subscription_status);
+}

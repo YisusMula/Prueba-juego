@@ -10,6 +10,8 @@ export interface UsersTable {
   email_verified_at: TimestampNullable;
   password_hash: string;
   name: string;
+  /** Fin de la prueba gratuita de la cuenta (fijado al crear su primer local). */
+  trial_ends_at: TimestampNullable;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -199,6 +201,11 @@ export interface RateLimitsTable {
   reset_at: Timestamp;
 }
 
+export interface JobRunsTable {
+  name: string;
+  last_run_at: Timestamp;
+}
+
 export interface StripeEventsTable {
   id: string;
   type: string;
@@ -222,6 +229,7 @@ export interface Database {
   audit_events: AuditEventsTable;
   rate_limits: RateLimitsTable;
   stripe_events: StripeEventsTable;
+  job_runs: JobRunsTable;
 }
 
 export type User = Selectable<UsersTable>;

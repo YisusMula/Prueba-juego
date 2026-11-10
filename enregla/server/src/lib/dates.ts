@@ -1,12 +1,36 @@
+// Construir un Intl.DateTimeFormat es caro (decenas de µs): se cachea uno por (tipo, zona).
+// El número de zonas válidas es finito (lista IANA), así que la caché está acotada.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function formatter(kind: 'date' | 'hour' | 'datetimeEs', timeZone: string): Intl.DateTimeFormat {
+  const key = `${kind}|${timeZone}`;
+  let f = formatters.get(key);
+  if (!f) {
+    if (kind === 'date') f = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+    else if (kind === 'hour') f = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', hourCycle: 'h23' });
+    else {
+      f = new Intl.DateTimeFormat('es-ES', {
+        timeZone,
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      });
+    }
+    formatters.set(key, f);
+  }
+  return f;
+}
+
 /** Fecha local YYYY-MM-DD de un instante en una zona horaria IANA. */
 export function localDate(instant: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(instant);
+  return formatter('date', timeZone).format(instant);
 }
 
 /** Hora local (0–23) de un instante. */
 export function localHour(instant: Date, timeZone: string): number {
-  const h = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', hourCycle: 'h23' }).format(instant);
-  return Number(h);
+  return Number(formatter('hour', timeZone).format(instant));
 }
 
 function toUtc(date: string): Date {
@@ -52,15 +76,5 @@ export function formatDateEs(date: string): string {
 
 /** dd/mm/aaaa hh:mm en la zona del local. */
 export function formatDateTimeEs(instant: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('es-ES', {
-    timeZone,
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  })
-    .format(instant)
-    .replace(',', '');
+  return formatter('datetimeEs', timeZone).format(instant).replace(',', '');
 }

@@ -1,5 +1,6 @@
 import { sql } from 'kysely';
 import type { AppDeps } from '../../http/context.js';
+import type { DB } from '../../db/index.js';
 import type { EmailTokenPurpose } from '../../db/types.js';
 import { isWellFormedToken, randomToken, sha256 } from '../../lib/crypto.js';
 
@@ -67,4 +68,19 @@ export async function consumeEmailToken(deps: AppDeps, token: string, purpose: E
     .returning(['id', 'user_id', 'new_email'])
     .executeTakeFirst();
   return row ?? null;
+}
+
+/**
+ * Anula TODOS los tokens pendientes del usuario (cambio de email, restablecimiento,
+ * verificación). Se llama al restablecer o cambiar la contraseña: un tercero que conocía
+ * la contraseña antigua no puede completar después un cambio de email que dejó pedido.
+ */
+export async function invalidateUserTokens(db: DB, userId: string): Promise<number> {
+  const r = await db
+    .updateTable('email_tokens')
+    .set({ used_at: sql<Date>`now()` })
+    .where('user_id', '=', userId)
+    .where('used_at', 'is', null)
+    .executeTakeFirst();
+  return Number(r.numUpdatedRows);
 }

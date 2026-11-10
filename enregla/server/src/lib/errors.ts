@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'INVALID_PIN'
   | 'PIN_LOCKED'
   | 'RATE_LIMITED'
+  | 'REPORT_TOO_LARGE'
   | 'PAYLOAD_TOO_LARGE'
   | 'BILLING_NOT_CONFIGURED'
   | 'BILLING_ERROR'
@@ -42,8 +43,8 @@ export const unauthenticated = () => new AppError(401, 'UNAUTHENTICATED', 'Debes
 export const badRequest = (msg: string, details?: ErrorDetail[]) => new AppError(400, 'BAD_REQUEST', msg, details);
 export const conflict = (msg: string) => new AppError(409, 'CONFLICT', msg);
 export const invalidToken = () => new AppError(400, 'INVALID_TOKEN', 'El enlace no es válido o ha caducado');
-export const rateLimited = (retryAfter: number) =>
-  new AppError(429, 'RATE_LIMITED', 'Demasiados intentos. Espera un momento y vuelve a intentarlo.', undefined, {
+export const rateLimited = (retryAfter: number, message = 'Demasiados intentos. Espera un momento y vuelve a intentarlo.') =>
+  new AppError(429, 'RATE_LIMITED', message, undefined, {
     'Retry-After': String(retryAfter),
   });
 export const readOnly = () =>

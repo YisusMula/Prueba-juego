@@ -1,0 +1,16 @@
+# Caddy delante de EnRegla: TLS automático y X-Forwarded-For fiable.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	# Caddy sustituye (no añade) X-Forwarded-For con la IP real del cliente.
+	reverse_proxy app:3000 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	# El webhook de Stripe y la API pueden tardar algo más (informes).
+	request_body {
+		max_size 2MB
+	}
+}

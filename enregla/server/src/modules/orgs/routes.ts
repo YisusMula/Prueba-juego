@@ -12,6 +12,7 @@ import { randomToken } from '../../lib/crypto.js';
 import { json } from '../../db/index.js';
 import type { DB } from '../../db/index.js';
 import { TEMPLATES } from './templates.js';
+import { hasLiveStripeSubscription } from '../billing/status.js';
 import { keysetAfter } from '../../lib/pagination.js';
 import { orgView, recordView } from '../views.js';
 
@@ -24,6 +25,15 @@ export async function createOrganization(
   input: { name: string; businessType: S.CreateOrgBody['businessType']; timezone: string; ownerId: string; trialDays: number },
 ) {
   return db.transaction().execute(async (trx) => {
+    // La prueba gratuita es UNA por cuenta: la primera organización fija la fecha en el
+    // usuario (de forma atómica) y las siguientes heredan esa misma fecha. Si ya caducó,
+    // el local nace en solo lectura (con la plantilla igualmente precargada).
+    const owner = await trx
+      .updateTable('users')
+      .set({ trial_ends_at: sql<Date>`coalesce(trial_ends_at, now() + make_interval(days => ${input.trialDays}))` })
+      .where('id', '=', input.ownerId)
+      .returning('trial_ends_at')
+      .executeTakeFirstOrThrow();
     const org = await trx
       .insertInto('organizations')
       .values({
@@ -31,7 +41,7 @@ export async function createOrganization(
         business_type: input.businessType,
         timezone: input.timezone,
         public_menu_slug: randomToken(16),
-        trial_ends_at: new Date(Date.now() + input.trialDays * 24 * 3600 * 1000),
+        trial_ends_at: owner.trial_ends_at!,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -136,6 +146,21 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       await audit(db, { event: 'auth.login_failed', userId: ctx.userId, ip: req.ip, metadata: { reason: 'reauth' } });
       throw new AppError(401, 'INVALID_CREDENTIALS', 'La contraseña no es correcta');
     }
+    // Una suscripción viva en Stripe se cancela ANTES de borrar; si falla, no se borra nada.
+    const org = await db.selectFrom('organizations').selectAll().where('id', '=', ctx.org.id).executeTakeFirstOrThrow();
+    if (hasLiveStripeSubscription(org)) {
+      const billing = app.deps.billing;
+      if (!billing) {
+        throw new AppError(503, 'BILLING_NOT_CONFIGURED', 'Este local tiene una suscripción activa y la facturación no está configurada en el servidor: no se puede cancelar, así que el local no se ha eliminado.');
+      }
+      try {
+        await billing.cancelSubscription(org.stripe_subscription_id!);
+      } catch (err) {
+        req.log.error({ err: (err as Error).message }, 'Error cancelando la suscripción al eliminar el local');
+        throw new AppError(502, 'BILLING_ERROR', 'No se ha podido cancelar la suscripción en Stripe, así que el local NO se ha eliminado. Inténtalo de nuevo en unos minutos.');
+      }
+      await audit(db, { event: 'billing.subscription_canceled', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { reason: 'org_deleted' } });
+    }
     await db.deleteFrom('organizations').where('id', '=', ctx.org.id).execute();
     await audit(db, { event: 'org.deleted', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { name: ctx.org.name } });
     return reply.status(204).send();
@@ -167,6 +192,9 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
   // Exportación RGPD completa (JSON en streaming).
   app.get('/export', async (req, reply) => {
     const ctx = requireRole(req, 'owner');
+    const msg = 'Has alcanzado el máximo de exportaciones por hora. Inténtalo más tarde.';
+    await enforce(rateLimiter, `export:org:${ctx.org.id}`, config.rateLimits.orgExport, msg);
+    await enforce(rateLimiter, `export:user:${ctx.userId}`, config.rateLimits.orgExport, msg);
     await audit(db, { event: 'org.exported', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip });
     const orgId = ctx.org.id;
     async function* generate(): AsyncGenerator<string> {

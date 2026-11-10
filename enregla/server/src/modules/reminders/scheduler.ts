@@ -70,6 +70,81 @@ export async function runCleanup(deps: AppDeps): Promise<void> {
   await sql`DELETE FROM email_tokens WHERE expires_at < now() - interval '7 days'`.execute(deps.db);
 }
 
+const RETENTION_LOCK_KEY = 72_017_003;
+const RETENTION_JOB = 'retention';
+
+export interface RetentionResult {
+  ran: boolean;
+  auditEvents: number;
+  unverifiedUsers: number;
+  sessions: number;
+  emailTokens: number;
+  invitations: number;
+  rateLimits: number;
+}
+
+/**
+ * Purga diaria de datos personales y técnicos caducados. Segura con varias instancias:
+ * advisory lock de transacción + marca `job_runs` para ejecutarse como mucho una vez cada
+ * 24 h entre todas las instancias. Plazos (README): auditoría > AUDIT_RETENTION_MONTHS
+ * (12), cuentas sin verificar > UNVERIFIED_ACCOUNT_DAYS (7), sesiones caducadas, tokens
+ * de email caducados o usados hace > 7 días, invitaciones caducadas/revocadas hace > 30 días
+ * y filas de rate limit vencidas.
+ */
+export async function runRetention(deps: AppDeps, opts: { force?: boolean } = {}): Promise<RetentionResult> {
+  const none: RetentionResult = { ran: false, auditEvents: 0, unverifiedUsers: 0, sessions: 0, emailTokens: 0, invitations: 0, rateLimits: 0 };
+  const { auditMonths, unverifiedAccountDays } = deps.config.retention;
+  return deps.db.transaction().execute(async (trx) => {
+    const lock = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(${RETENTION_LOCK_KEY}) AS ok`.execute(trx);
+    if (!lock.rows[0]?.ok) return none;
+    const last = await trx.selectFrom('job_runs').select('last_run_at').where('name', '=', RETENTION_JOB).executeTakeFirst();
+    if (!opts.force && last && Date.now() - last.last_run_at.getTime() < 24 * 3600 * 1000) return none;
+
+    const n = (r: { numDeletedRows: bigint }[] | { numDeletedRows: bigint }) => Number((Array.isArray(r) ? r[0]! : r).numDeletedRows);
+    const auditEvents = n(await trx.deleteFrom('audit_events').where('created_at', '<', sql<Date>`now() - make_interval(months => ${auditMonths})`).execute());
+    const unverifiedUsers = n(
+      await trx
+        .deleteFrom('users')
+        .where('email_verified_at', 'is', null)
+        .where('created_at', '<', sql<Date>`now() - make_interval(days => ${unverifiedAccountDays})`)
+        .where(({ not, exists, selectFrom }) => not(exists(selectFrom('memberships as m').select('m.user_id').whereRef('m.user_id', '=', 'users.id'))))
+        .execute(),
+    );
+    const sessions = n(
+      await trx
+        .deleteFrom('sessions')
+        .where((eb) =>
+          eb.or([
+            eb('expires_at', '<', sql<Date>`now()`),
+            eb('last_seen_at', '<', sql<Date>`now() - make_interval(secs => ${Math.floor(deps.config.sessionIdleMs / 1000)})`),
+          ]),
+        )
+        .execute(),
+    );
+    const emailTokens = n(
+      await trx
+        .deleteFrom('email_tokens')
+        .where((eb) => eb.or([eb('expires_at', '<', sql<Date>`now() - interval '7 days'`), eb('used_at', '<', sql<Date>`now() - interval '7 days'`)]))
+        .execute(),
+    );
+    const invitations = n(
+      await trx
+        .deleteFrom('invitations')
+        .where('accepted_at', 'is', null)
+        .where((eb) => eb.or([eb('expires_at', '<', sql<Date>`now() - interval '30 days'`), eb('revoked_at', '<', sql<Date>`now() - interval '30 days'`)]))
+        .execute(),
+    );
+    const rateLimits = n(await trx.deleteFrom('rate_limits').where('reset_at', '<', sql<Date>`now() - interval '1 hour'`).execute());
+
+    await trx
+      .insertInto('job_runs')
+      .values({ name: RETENTION_JOB, last_run_at: sql<Date>`now()` })
+      .onConflict((oc) => oc.column('name').doUpdateSet({ last_run_at: sql<Date>`now()` }))
+      .execute();
+    return { ran: true, auditEvents, unverifiedUsers, sessions, emailTokens, invitations, rateLimits };
+  });
+}
+
 export function startScheduler(deps: AppDeps, log: FastifyBaseLogger): () => void {
   let running = false;
   let ticks = 0;
@@ -80,6 +155,8 @@ export function startScheduler(deps: AppDeps, log: FastifyBaseLogger): () => voi
       const r = await runReminderTick(deps);
       if (r.emailsSent > 0) log.info({ emailsSent: r.emailsSent }, 'Recordatorios diarios enviados');
       if (ticks++ % 60 === 0) await runCleanup(deps);
+      const ret = await runRetention(deps);
+      if (ret.ran) log.info(ret, 'Purga diaria de datos caducados');
     } catch (err) {
       log.error({ err }, 'Error en la tarea programada');
     } finally {

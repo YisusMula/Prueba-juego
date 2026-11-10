@@ -10,7 +10,7 @@ beforeAll(async () => {
       rateLimits: {
         ...(await import('./helpers.js')).testConfig().rateLimits,
         loginIp: { limit: 8, windowSeconds: 900 },
-        loginAccount: { limit: 4, windowSeconds: 900 },
+        loginAccountIp: { limit: 4, windowSeconds: 900 },
         registerIp: { limit: 3, windowSeconds: 3600 },
         passwordResetAccount: { limit: 2, windowSeconds: 3600 },
         publicIp: { limit: 3, windowSeconds: 60 },
@@ -108,7 +108,7 @@ describe('cabeceras de seguridad y CORS', () => {
 });
 
 describe('rate limiting', () => {
-  it('limita intentos de login por cuenta', async () => {
+  it('limita intentos de login por cuenta (desde la misma IP)', async () => {
     await createUser(ctx, 'u@example.com');
     const c = new Client(ctx.app);
     const codes: number[] = [];

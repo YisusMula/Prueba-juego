@@ -15,6 +15,10 @@ const COLOR = {
   border: '#cbd2d9',
 };
 
+/** Filas entre cesiones del event loop (cada fila cuesta ~1 ms de CPU). */
+const YIELD_EVERY_ROWS = 20;
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 export interface PdfInput {
   appName: string;
   org: Organization;
@@ -127,6 +131,11 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
       for await (const batch of input.records(type)) {
         for (const r of batch) {
           if (totalRows >= input.maxRows) break;
+          // Cede el event loop cada pocas filas: el resto de peticiones (y /healthz) siguen respondiendo.
+          if (totalRows % YIELD_EVERY_ROWS === 0) {
+            await yieldToEventLoop();
+            if (doc.destroyed) return; // descarga cancelada: se deja de trabajar
+          }
           const cells = formatRow(type, r, tz).map((c) => pdfText(c || '—'));
           doc.font('Helvetica').fontSize(8);
           const h = Math.max(...cells.map((c, i) => doc.heightOfString(c, { width: widths[i]! - 6 }))) + 6;

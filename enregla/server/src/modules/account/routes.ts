@@ -6,11 +6,11 @@ import { requireUser } from '../../http/guards.js';
 import { AppError, badRequest, conflict } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { checkPasswordPolicy, hashSecret, verifySecret } from '../../lib/password.js';
-import { audit } from '../../lib/audit.js';
+import { audit, pseudonymizeUserAudit } from '../../lib/audit.js';
 import { emails } from '../../lib/emails.js';
 import { subscriptionView } from '../billing/status.js';
 import { clearSessionCookie, deleteUserSessions } from '../auth/sessions.js';
-import { createEmailToken } from '../auth/tokens.js';
+import { createEmailToken, invalidateUserTokens } from '../auth/tokens.js';
 import { policyError, userView } from '../auth/routes.js';
 
 export async function accountRoutes(app: FastifyInstance): Promise<void> {
@@ -72,7 +72,11 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     if (policy) throw policyError(policy);
     if (body.newPassword === body.currentPassword) throw policyError('La nueva contraseña debe ser distinta de la actual');
     const hash = await hashSecret(body.newPassword);
-    await db.updateTable('users').set({ password_hash: hash, updated_at: sql<Date>`now()` }).where('id', '=', user.id).execute();
+    await db.transaction().execute(async (trx) => {
+      await trx.updateTable('users').set({ password_hash: hash, updated_at: sql<Date>`now()` }).where('id', '=', user.id).execute();
+      // Anula cambios de email y restablecimientos pendientes (pudo pedirlos quien conocía la contraseña antigua).
+      await invalidateUserTokens(trx, user.id);
+    });
     await deleteUserSessions(deps, user.id, auth.sessionId);
     await audit(db, { event: 'auth.password_changed', userId: user.id, ip: req.ip });
     app.sendMail(emails.passwordChanged(ctx, user.email));
@@ -90,6 +94,8 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       const token = await createEmailToken(deps, user.id, 'email_change', body.newEmail);
       app.sendMail(emails.emailChange(ctx, body.newEmail, token));
     }
+    // Aviso al email actual: si no ha sido el titular, puede cambiar la contraseña (lo que anula la solicitud).
+    app.sendMail(emails.emailChangeRequested(ctx, user.email, body.newEmail));
     await audit(db, { event: 'auth.email_change_requested', userId: user.id, ip: req.ip });
     return reply.status(202).send({ message: 'Te hemos enviado un enlace de confirmación al nuevo email.' });
   });
@@ -98,32 +104,46 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     const auth = requireUser(req);
     const body = parse(S.passwordConfirmBody, req.body);
     const user = await checkPassword(auth.user.id, body.password, req.ip);
-    // No se permite dejar locales sin propietario: hay que eliminarlos o transferirlos antes.
-    const blocking = await db
-      .selectFrom('memberships as m')
-      .innerJoin('organizations as o', 'o.id', 'm.organization_id')
-      .select(['o.id', 'o.name'])
-      .where('m.user_id', '=', user.id)
-      .where('m.role', '=', 'owner')
-      .where(({ not, exists, selectFrom }) =>
-        not(
-          exists(
-            selectFrom('memberships as m2')
-              .select('m2.user_id')
-              .whereRef('m2.organization_id', '=', 'm.organization_id')
-              .where('m2.role', '=', 'owner')
-              .where('m2.user_id', '!=', user.id),
-          ),
-        ),
-      )
-      .execute();
-    if (blocking.length > 0) {
-      throw conflict(
-        `Eres el único propietario de: ${blocking.map((o) => o.name).join(', ')}. Elimina esos locales o nombra otro propietario antes de borrar tu cuenta.`,
-      );
-    }
-    await db.deleteFrom('users').where('id', '=', user.id).execute();
-    await audit(db, { event: 'account.deleted', userId: user.id, ip: req.ip });
+    // No se permite dejar locales sin propietario. Se bloquean (FOR UPDATE) las filas de
+    // propietarios de todos sus locales, en orden fijo, para que dos bajas simultáneas
+    // (o una baja y una salida) no dejen un local sin owner. La cuenta nunca arrastra
+    // locales: si es el único propietario, hay que eliminarlos o transferirlos antes.
+    await db.transaction().execute(async (trx) => {
+      const mine = await trx.selectFrom('memberships').select('organization_id').where('user_id', '=', user.id).where('role', '=', 'owner').execute();
+      const orgIds = mine.map((m) => m.organization_id);
+      if (orgIds.length > 0) {
+        const owners = await trx
+          .selectFrom('memberships')
+          .select(['organization_id', 'user_id'])
+          .where('organization_id', 'in', orgIds)
+          .where('role', '=', 'owner')
+          .orderBy('organization_id')
+          .orderBy('user_id')
+          .forUpdate()
+          .execute();
+        const blockingIds = orgIds.filter((id) => !owners.some((o) => o.organization_id === id && o.user_id !== user.id));
+        if (blockingIds.length > 0) {
+          const names = await trx.selectFrom('organizations').select('name').where('id', 'in', blockingIds).orderBy('name').execute();
+          throw conflict(
+            `Eres el único propietario de: ${names.map((o) => o.name).join(', ')}. Elimina esos locales o nombra otro propietario antes de borrar tu cuenta.`,
+          );
+        }
+      }
+      // Sus tokens de kiosko dejan de funcionar con su salida.
+      const revoked = await trx
+        .updateTable('devices')
+        .set({ revoked_at: sql<Date>`now()` })
+        .where('created_by', '=', user.id)
+        .where('revoked_at', 'is', null)
+        .returning(['id', 'organization_id'])
+        .execute();
+      for (const d of revoked) {
+        await audit(trx, { event: 'device.revoked_with_member', organizationId: d.organization_id, metadata: { deviceId: d.id, reason: 'account_deleted' } });
+      }
+      await trx.deleteFrom('users').where('id', '=', user.id).execute();
+      await pseudonymizeUserAudit(trx, user.id, user.email);
+      await audit(trx, { event: 'account.deleted', userId: user.id });
+    });
     app.sendMail(emails.accountDeleted(ctx, user.email));
     clearSessionCookie(reply, deps);
     return reply.status(204).send();

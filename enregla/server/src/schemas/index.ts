@@ -9,7 +9,15 @@ import { z } from 'zod';
 // Primitivas
 // ---------------------------------------------------------------------------
 export const uuid = z.uuid({ error: 'Identificador no válido' });
-export const isoDate = z.iso.date({ error: 'Fecha no válida (formato AAAA-MM-DD)' });
+/** Años admitidos en fechas: fuera de este rango PostgreSQL o los cálculos de fechas pueden fallar. */
+export const MIN_YEAR = 2000;
+export const MAX_YEAR = 2100;
+export const isoDate = z.iso
+  .date({ error: 'Fecha no válida (formato AAAA-MM-DD)' })
+  .refine((d) => {
+    const y = Number(d.slice(0, 4));
+    return y >= MIN_YEAR && y <= MAX_YEAR;
+  }, `La fecha debe estar entre los años ${MIN_YEAR} y ${MAX_YEAR}`);
 const text = (max: number) => z.string().trim().min(1).max(max);
 const optionalText = (max: number) =>
   z
@@ -64,17 +72,16 @@ export const BUSINESS_TYPE_LABELS: Record<(typeof BUSINESS_TYPES)[number], strin
   tienda: 'Tienda de alimentación',
 };
 
-export const timezone = z
-  .string()
-  .max(64)
-  .refine((tz) => {
-    try {
-      new Intl.DateTimeFormat('es-ES', { timeZone: tz });
-      return true;
-    } catch {
-      return false;
-    }
-  }, 'Zona horaria no válida');
+/**
+ * Solo nombres IANA (más `UTC`). Desplazamientos como `+01:00` los acepta Intl pero
+ * PostgreSQL los interpreta con el signo invertido (convención POSIX), así que se rechazan.
+ */
+let timeZones: Set<string> | null = null;
+export function isValidTimeZone(tz: string): boolean {
+  timeZones ??= new Set([...Intl.supportedValuesOf('timeZone'), 'UTC']);
+  return timeZones.has(tz);
+}
+export const timezone = z.string().max(64).refine(isValidTimeZone, 'Zona horaria no válida (usa un nombre IANA, p. ej. Europe/Madrid)');
 
 export const createOrgBody = z.object({
   name: text(120),

@@ -12,14 +12,37 @@ import type { DB } from '../../db/index.js';
 
 const INVITATION_TTL_MS = 7 * 24 * 3600 * 1000;
 
-async function ownerCount(db: DB, orgId: string): Promise<number> {
-  const r = await db
+/**
+ * Bloquea (FOR UPDATE, orden fijo) las filas de propietarios del local dentro de la
+ * transacción y devuelve sus ids. Serializa salidas, expulsiones, cambios de rol y bajas
+ * de cuenta para que nunca quede un local sin propietario.
+ */
+export async function lockOwners(trx: DB, orgId: string): Promise<string[]> {
+  const rows = await trx
     .selectFrom('memberships')
-    .select(sql<number>`count(*)::int`.as('n'))
+    .select('user_id')
     .where('organization_id', '=', orgId)
     .where('role', '=', 'owner')
-    .executeTakeFirstOrThrow();
-  return r.n;
+    .orderBy('user_id')
+    .forUpdate()
+    .execute();
+  return rows.map((r) => r.user_id);
+}
+
+/** Revoca los dispositivos de cocina que creó un miembro al salir del local (misma transacción). */
+export async function revokeDevicesOf(trx: DB, orgId: string, userId: string, actorId: string | null, ip: string | null, reason: string): Promise<string[]> {
+  const rows = await trx
+    .updateTable('devices')
+    .set({ revoked_at: sql<Date>`now()` })
+    .where('organization_id', '=', orgId)
+    .where('created_by', '=', userId)
+    .where('revoked_at', 'is', null)
+    .returning('id')
+    .execute();
+  for (const r of rows) {
+    await audit(trx, { event: 'device.revoked_with_member', organizationId: orgId, userId: actorId, ip, metadata: { deviceId: r.id, createdBy: userId, reason } });
+  }
+  return rows.map((r) => r.id);
 }
 
 function invitationView(i: { id: string; email: string; role: string; expires_at: Date; created_at: Date }) {
@@ -28,7 +51,7 @@ function invitationView(i: { id: string; email: string; role: string; expires_at
 
 /** Rutas bajo /api/orgs/:orgId */
 export async function memberRoutes(app: FastifyInstance): Promise<void> {
-  const { db, config } = app.deps;
+  const { db, config, rateLimiter } = app.deps;
   const ctxMail = { appName: config.appName, appOrigin: config.appOrigin };
 
   app.get('/members', async (req) => {
@@ -52,18 +75,21 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
     const ctx = requireWritable(req);
     const userId = idParam(req.params, 'userId', 'Miembro');
     const body = parse(S.updateMemberBody, req.body);
-    const member = await db
-      .selectFrom('memberships')
-      .select(['role'])
-      .where('organization_id', '=', ctx.org.id)
-      .where('user_id', '=', userId)
-      .executeTakeFirst();
-    if (!member) throw notFound('Miembro');
-    if (member.role === 'owner' && body.role !== 'owner' && (await ownerCount(db, ctx.org.id)) <= 1) {
-      throw conflict('El local debe tener al menos un propietario');
-    }
-    await db.updateTable('memberships').set({ role: body.role }).where('organization_id', '=', ctx.org.id).where('user_id', '=', userId).execute();
-    await audit(db, { event: 'member.role_changed', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { target: userId, from: member.role, to: body.role } });
+    await db.transaction().execute(async (trx) => {
+      const owners = await lockOwners(trx, ctx.org.id);
+      const member = await trx
+        .selectFrom('memberships')
+        .select(['role'])
+        .where('organization_id', '=', ctx.org.id)
+        .where('user_id', '=', userId)
+        .executeTakeFirst();
+      if (!member) throw notFound('Miembro');
+      if (member.role === 'owner' && body.role !== 'owner' && owners.filter((o) => o !== userId).length === 0) {
+        throw conflict('El local debe tener al menos un propietario');
+      }
+      await trx.updateTable('memberships').set({ role: body.role }).where('organization_id', '=', ctx.org.id).where('user_id', '=', userId).execute();
+      await audit(trx, { event: 'member.role_changed', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { target: userId, from: member.role, to: body.role } });
+    });
     return { userId, role: body.role };
   });
 
@@ -71,18 +97,23 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
     const ctx = orgCtx(req);
     const userId = idParam(req.params, 'userId', 'Miembro');
     if (userId !== ctx.userId && ctx.role !== 'owner') throw forbidden('Solo el propietario puede quitar a otros miembros');
-    const member = await db
-      .selectFrom('memberships')
-      .select(['role'])
-      .where('organization_id', '=', ctx.org.id)
-      .where('user_id', '=', userId)
-      .executeTakeFirst();
-    if (!member) throw notFound('Miembro');
-    if (member.role === 'owner' && (await ownerCount(db, ctx.org.id)) <= 1) {
-      throw conflict('El local debe tener al menos un propietario. Nombra otro propietario o elimina el local.');
-    }
-    await db.deleteFrom('memberships').where('organization_id', '=', ctx.org.id).where('user_id', '=', userId).execute();
-    await audit(db, { event: 'member.removed', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { target: userId } });
+    await db.transaction().execute(async (trx) => {
+      const owners = await lockOwners(trx, ctx.org.id);
+      const member = await trx
+        .selectFrom('memberships')
+        .select(['role'])
+        .where('organization_id', '=', ctx.org.id)
+        .where('user_id', '=', userId)
+        .executeTakeFirst();
+      if (!member) throw notFound('Miembro');
+      if (member.role === 'owner' && owners.filter((o) => o !== userId).length === 0) {
+        throw conflict('El local debe tener al menos un propietario. Nombra otro propietario o elimina el local.');
+      }
+      await trx.deleteFrom('memberships').where('organization_id', '=', ctx.org.id).where('user_id', '=', userId).execute();
+      // Los tokens de kiosko que creó dejan de funcionar con su salida.
+      await revokeDevicesOf(trx, ctx.org.id, userId, ctx.userId, req.ip, userId === ctx.userId ? 'member_left' : 'member_removed');
+      await audit(trx, { event: 'member.removed', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { target: userId } });
+    });
     return reply.status(204).send();
   });
 
@@ -122,6 +153,11 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
       .where('expires_at', '>', sql<Date>`now()`)
       .executeTakeFirstOrThrow();
     if (pending.n >= 50) throw conflict('Hay demasiadas invitaciones pendientes');
+    // Anti-spam: mismo destinatario por local, total por local y total por usuario (ventana de 24 h).
+    const limitMsg = 'Has alcanzado el límite de invitaciones por hoy. Inténtalo mañana.';
+    await enforce(rateLimiter, `invite:org:${ctx.org.id}:to:${body.email}`, config.rateLimits.inviteRecipient, 'Ya has enviado varias invitaciones a este email hoy. Inténtalo mañana.');
+    await enforce(rateLimiter, `invite:org:${ctx.org.id}`, config.rateLimits.inviteOrg, limitMsg);
+    await enforce(rateLimiter, `invite:user:${ctx.userId}`, config.rateLimits.inviteUser, limitMsg);
     const token = randomToken();
     const inv = await db.transaction().execute(async (trx) => {
       await trx

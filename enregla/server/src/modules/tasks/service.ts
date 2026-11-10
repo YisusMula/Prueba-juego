@@ -214,6 +214,10 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
     cleanByPlan.set(r.cleaning_plan_id, list);
   }
 
+  // Fecha local de alta de cada equipo/plan: se calcula una vez, no por cada día del rango.
+  const equipmentSince = equipment.map((e) => ({ e, since: localDate(e.created_at, tz) }));
+  const planSince = plans.map((p) => ({ p, since: localDate(p.created_at, tz) }));
+
   const days: { date: string; expected: number; done: number; percent: number | null }[] = [];
   let totalExpected = 0;
   let totalDone = 0;
@@ -221,13 +225,13 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
     for (const day of eachDay(from, last)) {
       let expected = 0;
       let done = 0;
-      for (const e of equipment) {
-        if (localDate(e.created_at, tz) > day) continue;
+      for (const { e, since } of equipmentSince) {
+        if (since > day) continue;
         expected += e.checks_per_day;
         done += Math.min(tempMap.get(`${day}|${e.id}`) ?? 0, e.checks_per_day);
       }
-      for (const p of plans) {
-        if (localDate(p.created_at, tz) > day || !isDue(p, day)) continue;
+      for (const { p, since } of planSince) {
+        if (since > day || !isDue(p, day)) continue;
         expected += 1;
         const start = periodStart(p, day);
         if ((cleanByPlan.get(p.id) ?? []).some((d) => d >= start && d <= day)) done += 1;

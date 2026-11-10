@@ -10,6 +10,7 @@ import { audit } from '../../lib/audit.js';
 import { randomToken } from '../../lib/crypto.js';
 import { keysetAfter, toPage } from '../../lib/pagination.js';
 import { json } from '../../db/index.js';
+import { isWritable } from '../billing/status.js';
 import type { DishesTable } from '../../db/types.js';
 
 export function dishView(d: Selectable<DishesTable>) {
@@ -111,9 +112,10 @@ export async function dishRoutes(app: FastifyInstance): Promise<void> {
     return { publicMenu: menuView(ctx.org) };
   });
 
+  // Desactivar la carta pública se permite SIEMPRE (reduce exposición), también en solo lectura.
   app.patch('/public-menu', async (req) => {
-    const ctx = requireWritable(req);
     const body = parse(S.publicMenuSettingsBody, req.body);
+    const ctx = body.enabled ? requireWritable(req) : orgCtx(req);
     const o = await db
       .updateTable('organizations')
       .set({ public_menu_enabled: body.enabled, updated_at: sql<Date>`now()` })
@@ -148,11 +150,12 @@ export async function publicMenuRoutes(app: FastifyInstance): Promise<void> {
     if (!/^[A-Za-z0-9_-]{22}$/.test(slug)) throw notFound('Carta');
     const org = await db
       .selectFrom('organizations')
-      .select(['id', 'name'])
+      .select(['id', 'name', 'subscription_status', 'trial_ends_at', 'stripe_subscription_id'])
       .where('public_menu_slug', '=', slug)
       .where('public_menu_enabled', '=', true)
       .executeTakeFirst();
-    if (!org) throw notFound('Carta');
+    // En solo lectura (prueba caducada, impago, cancelada) la carta no se sirve; vuelve al reactivarse.
+    if (!org || !isWritable(org)) throw notFound('Carta');
     const dishes = await db
       .selectFrom('dishes')
       .select(['name', 'category', 'description', 'allergens', 'updated_at'])

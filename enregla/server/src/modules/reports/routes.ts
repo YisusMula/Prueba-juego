@@ -4,7 +4,8 @@ import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
 import { orgCtx } from '../../http/guards.js';
-import { badRequest } from '../../lib/errors.js';
+import { AppError, badRequest, rateLimited } from '../../lib/errors.js';
+import { enforce } from '../../lib/rate-limit.js';
 import { audit } from '../../lib/audit.js';
 import { diffDays } from '../../lib/dates.js';
 import { keysetAfter } from '../../lib/pagination.js';
@@ -15,7 +16,6 @@ import { CSV_HEADERS, csvLine, csvRow, type ReportRecord } from './format.js';
 import { createReportPdf } from './pdf.js';
 
 export const MAX_REPORT_DAYS = 366;
-export const MAX_PDF_ROWS = 20_000;
 export const MAX_CSV_ROWS = 500_000;
 const BATCH = 500;
 
@@ -51,8 +51,28 @@ function filename(org: Organization, from: string, to: string, ext: string): str
   return `registros-${slug || 'local'}-${from}-a-${to}.${ext}`;
 }
 
+/** Cuenta (con tope) las filas que entrarían en el informe, sin leerlas. */
+async function countRecords(db: DB, org: Organization, from: string, to: string, types: S.RecordType[], cap: number): Promise<number> {
+  const tz = org.timezone;
+  const r = await db
+    .selectFrom((eb) =>
+      eb
+        .selectFrom('records as r')
+        .select(sql<number>`1`.as('x'))
+        .where('r.organization_id', '=', org.id)
+        .where('r.type', 'in', types)
+        .where('r.created_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)
+        .where('r.created_at', '<', sql<Date>`(${to}::date + 1)::timestamp AT TIME ZONE ${tz}`)
+        .limit(cap)
+        .as('s'),
+    )
+    .select(sql<number>`count(*)::int`.as('n'))
+    .executeTakeFirstOrThrow();
+  return r.n;
+}
+
 export async function reportRoutes(app: FastifyInstance): Promise<void> {
-  const { db, config } = app.deps;
+  const { db, config, rateLimiter } = app.deps;
 
   function parseQuery(query: unknown) {
     const q = parse(S.reportQuery, query);
@@ -60,33 +80,68 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     return q;
   }
 
+  async function limit(kind: 'pdf' | 'csv', orgId: string, userId: string): Promise<void> {
+    const rule = kind === 'pdf' ? config.rateLimits.reportPdf : config.rateLimits.reportCsv;
+    const msg = `Has generado demasiados informes ${kind.toUpperCase()} en poco tiempo. Espera unos minutos.`;
+    await enforce(rateLimiter, `report:${kind}:org:${orgId}`, rule, msg);
+    await enforce(rateLimiter, `report:${kind}:user:${userId}`, rule, msg);
+  }
+
   app.get('/pdf', async (req, reply) => {
     const ctx = orgCtx(req);
     const q = parseQuery(req.query);
-    await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'pdf', from: q.from, to: q.to, types: q.types } });
-    const doc = createReportPdf(
-      {
-        appName: config.appName,
-        org: ctx.org,
-        from: q.from,
-        to: q.to,
-        types: q.types,
-        records: (type) => iterateRecords(db, ctx.org, q.from, q.to, [type]),
-        maxRows: MAX_PDF_ROWS,
-      },
-      (err) => req.log.error({ err }, 'Error generando PDF'),
-    );
-    reply.type('application/pdf').header('Content-Disposition', `attachment; filename="${filename(ctx.org, q.from, q.to, 'pdf')}"`);
-    return reply.send(doc);
+    // Hueco global por proceso: si ya hay N PDF generándose, 429 inmediato (sin cola).
+    const release = app.pdfSlots.tryAcquire();
+    if (!release) {
+      throw rateLimited(config.reports.pdfBusyRetrySeconds, 'Ahora mismo se están generando otros informes PDF. Inténtalo de nuevo en unos segundos.');
+    }
+    try {
+      await limit('pdf', ctx.org.id, ctx.userId);
+      const maxRows = config.reports.maxPdfRows;
+      const n = await countRecords(db, ctx.org, q.from, q.to, q.types, maxRows + 1);
+      if (n > maxRows) {
+        throw new AppError(
+          400,
+          'REPORT_TOO_LARGE',
+          `El informe PDF tendría más de ${maxRows.toLocaleString('es-ES')} registros. Acota el periodo o los tipos de registro, o descarga el CSV (admite muchas más filas).`,
+        );
+      }
+      await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'pdf', from: q.from, to: q.to, types: q.types } });
+      const doc = createReportPdf(
+        {
+          appName: config.appName,
+          org: ctx.org,
+          from: q.from,
+          to: q.to,
+          types: q.types,
+          records: (type) => iterateRecords(db, ctx.org, q.from, q.to, [type]),
+          maxRows,
+        },
+        (err) => req.log.error({ err }, 'Error generando PDF'),
+      );
+      // Se libera el hueco al terminar, fallar o cortarse la descarga.
+      doc.once('close', release);
+      doc.once('error', release);
+      reply.raw.once('close', () => {
+        release();
+        if (!doc.destroyed && !doc.readableEnded) doc.destroy();
+      });
+      reply.type('application/pdf').header('Content-Disposition', `attachment; filename="${filename(ctx.org, q.from, q.to, 'pdf')}"`);
+      return reply.send(doc);
+    } catch (err) {
+      release();
+      throw err;
+    }
   });
 
   app.get('/csv', async (req, reply) => {
     const ctx = orgCtx(req);
     const q = parseQuery(req.query);
+    await limit('csv', ctx.org.id, ctx.userId);
     await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'csv', from: q.from, to: q.to, types: q.types } });
     const tz = ctx.org.timezone;
     async function* generate(): AsyncGenerator<string> {
-      yield '﻿' + csvLine(CSV_HEADERS);
+      yield '\uFEFF' + csvLine(CSV_HEADERS);
       let n = 0;
       for await (const batch of iterateRecords(db, ctx.org, q.from, q.to, q.types)) {
         let chunk = '';

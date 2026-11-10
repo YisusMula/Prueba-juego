@@ -13,6 +13,8 @@ export interface RateLimitResult {
 export interface RateLimiter {
   hit(key: string, rule: RateLimitRule): Promise<RateLimitResult>;
   reset(key: string): Promise<void>;
+  /** Devuelve una unidad reservada con `hit` (p. ej. un intento que resultó correcto). */
+  release(key: string): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -44,13 +46,17 @@ export class PgRateLimiter implements RateLimiter {
     await this.db.deleteFrom('rate_limits').where('key', '=', key).execute();
   }
 
+  async release(key: string): Promise<void> {
+    await sql`UPDATE rate_limits SET count = greatest(count - 1, 0) WHERE key = ${key} AND reset_at > now()`.execute(this.db);
+  }
+
   async cleanup(): Promise<void> {
     await sql`DELETE FROM rate_limits WHERE reset_at < now() - interval '1 hour'`.execute(this.db);
   }
 }
 
 /** Lanza 429 si se supera el límite. */
-export async function enforce(limiter: RateLimiter, key: string, rule: RateLimitRule): Promise<void> {
+export async function enforce(limiter: RateLimiter, key: string, rule: RateLimitRule, message?: string): Promise<void> {
   const r = await limiter.hit(key, rule);
-  if (!r.allowed) throw rateLimited(r.retryAfterSeconds);
+  if (!r.allowed) throw rateLimited(r.retryAfterSeconds, message);
 }

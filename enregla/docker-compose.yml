@@ -31,8 +31,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Solo en la interfaz local: el acceso público debe pasar por un proxy inverso con TLS
+    # (ver docker-compose.prod.yml con Caddy). Publicarlo en todas las interfaces permitiría
+    # saltarse el proxy y falsificar la IP con X-Forwarded-For.
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     read_only: true
     tmpfs:
       - /tmp

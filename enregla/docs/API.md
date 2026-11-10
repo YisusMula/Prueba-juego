@@ -45,9 +45,10 @@ type ErrorResponse = {
 | 409 | `CONFLICT` | Estado incompatible (último propietario, enmienda duplicada, ya miembro, ya suscrito…). |
 | 415 | `BAD_REQUEST` | `Content-Type` no admitido (usa `application/json`). No envíes `Content-Type: application/json` con cuerpo vacío (→ 400). |
 | 413 | `PAYLOAD_TOO_LARGE` | Cuerpo > 256 KiB (1 MiB en el webhook). |
-| 429 | `RATE_LIMITED` | Límite de peticiones. Cabecera `Retry-After` (segundos). |
+| 400 | `REPORT_TOO_LARGE` | Informe PDF con más de 5000 registros: acota fechas/tipos o usa el CSV. |
+| 429 | `RATE_LIMITED` | Límite de peticiones (o servidor ocupado generando PDF). Cabecera `Retry-After` (segundos). Muestra `error.message`, que explica el motivo. |
 | 429 | `PIN_LOCKED` | Kiosko: PIN bloqueado tras 5 fallos (15 min). Cabecera `Retry-After`. |
-| 502 | `BILLING_ERROR` | Fallo al hablar con Stripe. |
+| 502 | `BILLING_ERROR` | Fallo al hablar con Stripe (también al cancelar la suscripción cuando se elimina un local: el local NO se elimina). |
 | 503 | `BILLING_NOT_CONFIGURED` | Stripe no configurado en el servidor. |
 | 500 | `INTERNAL_ERROR` | Error inesperado (sin detalles internos). |
 
@@ -55,7 +56,9 @@ type ErrorResponse = {
 
 - Ids: UUID (string). Un id con formato inválido en la ruta responde **404**, no 400.
 - Fechas-hora: ISO 8601 en UTC (`"2026-11-09T17:03:00.000Z"`). Muéstralas en la zona horaria del local (`organization.timezone`).
-- Fechas sin hora: `"AAAA-MM-DD"` (fecha local del local).
+- Fechas sin hora: `"AAAA-MM-DD"` (fecha local del local). Solo se admiten años **2000–2100** (fuera → 400 `VALIDATION_ERROR`).
+- Zonas horarias: solo nombres IANA de `Intl.supportedValuesOf('timeZone')` más `"UTC"` (p. ej. `"Europe/Madrid"`). Desplazamientos como `"+01:00"` → 400.
+- Ningún texto (cuerpo, query o ruta) puede contener el carácter NUL (`\u0000`) → 400 `VALIDATION_ERROR`. Las entradas raras (fechas imposibles, números gigantes, cursores corruptos) responden 400/404, nunca 500.
 - Todas las horas de los registros son **del servidor**: el cliente no puede fijarlas.
 
 ### 1.3 Paginación
@@ -120,17 +123,31 @@ Tras leer el token, haz `history.replaceState` para quitar el fragmento de la ba
 
 ### 1.6 Límites de peticiones (por defecto)
 
+Todas las respuestas 429 llevan `Retry-After` (segundos) y un `error.message` en español apto para mostrar.
+
 | Clave | Límite |
 |---|---|
 | Login por IP | 30 / 15 min |
-| Login por cuenta (email) | 10 / 15 min (se reinicia tras un login correcto) |
-| Registro y reenvío de verificación por IP | 10 / hora |
+| Login por cuenta **desde una misma IP** | 10 / 15 min (se reinicia tras un login correcto). Un tercero desde su IP no bloquea al titular en la suya |
+| Login por cuenta (todas las IP) | 100 / hora (techo contra fuerza bruta distribuida) |
+| Registro por IP | 10 / hora |
+| Reenvío de verificación por IP | 10 / hora (clave propia, separada de la de recuperación) |
+| Emails de verificación por cuenta (registro, reenvío, login sin verificar) | 3 / hora; el exceso se ignora en silencio (sigue respondiendo 202) |
 | Recuperación de contraseña por IP | 10 / hora |
-| Recuperación / reenvío por cuenta | 3 / hora (por cuenta, el exceso se ignora en silencio: sigue respondiendo 202) |
+| Recuperación por cuenta | 3 / hora (el exceso se ignora en silencio: sigue respondiendo 202) |
 | Verificación de tokens (verify, reset confirm, email-change, invitaciones) por IP | 30 / 15 min |
 | Reautenticación (cambiar contraseña/email, borrar cuenta/local) por usuario | 10 / 15 min |
 | Carta pública por IP | 120 / min |
-| Kiosko por dispositivo | 600 / min; intentos de PIN 30 / 15 min por dispositivo |
+| Kiosko por dispositivo | 600 / min; intentos de PIN 30 / 15 min; **PIN erróneos 20 / 15 min** (todas las personas) |
+| Alta de registros y enmiendas (web) por usuario y local | 120 / min |
+| Alta de registros (kiosko) por dispositivo | 120 / min |
+| Informes PDF | 10 / 10 min por local **y** por usuario |
+| Informes CSV | 20 / 10 min por local y por usuario |
+| Exportación RGPD | 5 / hora por local y por usuario |
+| PDF generándose a la vez en el servidor | 2; si están ocupados → 429 inmediato con `Retry-After` (reintenta después) |
+| Invitaciones al mismo email por local | 3 / día |
+| Invitaciones por local | 20 / día |
+| Invitaciones por usuario (todos sus locales) | 30 / día |
 
 ---
 
@@ -158,7 +175,8 @@ Cuerpo: `{ email: string; password: string; name: string }`
 - `name`: 1–100.
 
 `202 { "message": "Si los datos son correctos, recibirás un email en unos minutos." }`
-Envía el email de verificación (24 h). Si el email ya tenía cuenta verificada, se envía un aviso al dueño (sin token) y la respuesta es idéntica. **No inicia sesión.**
+Envía el email de verificación (24 h). Si el email ya tenía cuenta verificada, se envía un aviso al dueño (sin token) y la respuesta es idéntica. Si ya existía una cuenta **sin verificar** con ese email, **no** se cambian su contraseña ni su nombre: solo se reenvía el enlace (quien no recuerde la contraseña usa "recuperar contraseña"). **No inicia sesión.**
+La cuenta y el email se crean justo después de responder (la respuesta no espera): el email puede tardar unos instantes más.
 Errores: 400 `VALIDATION_ERROR`, 429.
 
 ### POST `/api/auth/verify-email`
@@ -179,11 +197,11 @@ Sin cuerpo. `204`. Borra la sesión actual (si la hay) y la cookie.
 Requiere sesión. `204`. Cierra **todas** las sesiones del usuario (incluida la actual). 401 sin sesión.
 
 ### POST `/api/auth/password-reset/request`
-Cuerpo: `{ email: string }` → `202 { "message": … }` (siempre). Envía enlace de 1 hora, un solo uso.
+Cuerpo: `{ email: string }` → `202 { "message": … }` (siempre, y sin esperar a buscar la cuenta). Envía enlace de 1 hora, un solo uso.
 
 ### POST `/api/auth/password-reset/confirm`
 Cuerpo: `{ token: string; password: string }` → `200 { "message": "Contraseña actualizada. Ya puedes iniciar sesión." }`
-Cierra todas las sesiones del usuario y marca el email como verificado. No inicia sesión.
+Cierra todas las sesiones del usuario, **anula todos sus enlaces pendientes** (cambio de email, otros resets, verificación) y marca el email como verificado. No inicia sesión.
 Errores: 400 `INVALID_TOKEN`, 400 `VALIDATION_ERROR` (política de contraseña; el token **no** se consume en ese caso), 429.
 
 ### POST `/api/auth/email-change/confirm`
@@ -206,15 +224,15 @@ Errores: 400 `INVALID_TOKEN`, 409 `CONFLICT` (el email ya lo usa otra cuenta).
 Cuerpo: `{ name: string }` → `200 { user: User }`.
 
 ### POST `/api/account/password`
-Cuerpo: `{ currentPassword: string; newPassword: string }` → `204`. Cierra las **demás** sesiones (la actual sigue). Email de aviso.
+Cuerpo: `{ currentPassword: string; newPassword: string }` → `204`. Cierra las **demás** sesiones (la actual sigue) y **anula todos los enlaces pendientes** (cambio de email, reset). Email de aviso.
 Errores: 401 `INVALID_CREDENTIALS`, 400 `VALIDATION_ERROR`, 429.
 
 ### POST `/api/account/email`
-Cuerpo: `{ password: string; newEmail: string }` → `202 { "message": "Te hemos enviado un enlace de confirmación al nuevo email." }`. El cambio se aplica al confirmar (`/api/auth/email-change/confirm`). Si el email ya está en uso no se envía nada, pero la respuesta es la misma.
+Cuerpo: `{ password: string; newEmail: string }` → `202 { "message": "Te hemos enviado un enlace de confirmación al nuevo email." }`. El cambio se aplica al confirmar (`/api/auth/email-change/confirm`). Si el email ya está en uso no se envía nada al nuevo, pero la respuesta es la misma. Siempre se envía un **aviso al email actual** ("se ha solicitado cambiar el email…; si no has sido tú, cambia la contraseña"), y otro cuando el cambio se confirma.
 Errores: 401 `INVALID_CREDENTIALS`, 400 (igual al actual), 429.
 
 ### DELETE `/api/account`
-Cuerpo: `{ password: string }` → `204` (borra la cookie). Los registros firmados conservan el nombre del firmante.
+Cuerpo: `{ password: string }` → `204` (borra la cookie). Los registros firmados conservan el nombre del firmante. Se **revocan los dispositivos de cocina que creó** y sus eventos de auditoría se seudonimizan (sin email ni IP). Nunca elimina locales.
 Errores: 401 `INVALID_CREDENTIALS`, 409 `CONFLICT` si es el único propietario de algún local (debe eliminar el local o nombrar otro propietario antes).
 
 ---
@@ -248,7 +266,7 @@ type Organization = {
 
 **Roles.** `owner`: todo. `manager`: todo lo operativo (registros, personal, equipos, limpieza, proveedores, platos/carta, dispositivos, informes, tareas) pero **no**: editar ajustes del local, gestionar miembros/invitaciones, facturación, exportación RGPD, auditoría ni borrar el local (→ 403 `FORBIDDEN`).
 
-**Solo lectura.** Si `subscription.readOnly` es `true`, toda creación/edición responde 402 `READ_ONLY`. Siguen permitidos: todas las lecturas, informes PDF/CSV, exportación, facturación (checkout/portal), revocar dispositivos, quitar miembros/salir, preferencias personales y eliminar el local.
+**Solo lectura.** Si `subscription.readOnly` es `true`, toda creación/edición responde 402 `READ_ONLY`. Siguen permitidos: todas las lecturas, informes PDF/CSV, exportación, facturación (checkout/portal), revocar dispositivos, quitar miembros/salir, preferencias personales, **desactivar la carta pública** y eliminar el local. Mientras está en solo lectura, la carta pública **no se sirve** (404) aunque esté activada; vuelve a servirse al reactivar la suscripción.
 
 **Aislamiento.** Todas las rutas `/api/orgs/{orgId}/…` exigen sesión y pertenencia. Si el usuario no es miembro, o cualquier id de la ruta o del cuerpo pertenece a otro local → **404**.
 
@@ -257,7 +275,7 @@ type Organization = {
 
 ### POST `/api/orgs`
 Cuerpo: `{ name: string (1–120); businessType: BusinessType; timezone?: string (IANA, por defecto "Europe/Madrid") }`
-`201 { organization: Organization }` (rol `owner`). Inicia una prueba de 14 días sin tarjeta y precarga una plantilla orientativa de equipos y planes de limpieza según el tipo (todo editable):
+`201 { organization: Organization }` (rol `owner`). **La prueba es una por cuenta de usuario:** el primer local que crea el usuario inicia 14 días sin tarjeta; los siguientes heredan la misma `trialEndsAt`, y si ya caducó el local nace en solo lectura (`subscription.status: 'trial_expired'`, `readOnly: true`) hasta contratar. En todos los casos precarga una plantilla orientativa de equipos y planes de limpieza según el tipo (todo editable):
 
 - refrigeración (cámaras, vitrinas): `maxTemp: 4`, `minTemp: null`
 - congelación: `maxTemp: -18`, `minTemp: null`
@@ -274,7 +292,7 @@ Errores: 400, 409 (máx. 50 locales por cuenta).
 Cuerpo (al menos un campo): `{ name?: string; timezone?: string; reminderEnabled?: boolean; reminderHour?: 0..23 }` → `200 { organization }`.
 
 ### DELETE `/api/orgs/{orgId}` — owner
-Cuerpo: `{ password: string }` → `204`. Borra el local y **todos** sus datos (irreversible). Errores: 401 `INVALID_CREDENTIALS`, 403, 429.
+Cuerpo: `{ password: string }` → `204`. Borra el local y **todos** sus datos (irreversible). Si el local tiene una suscripción viva en Stripe, **se cancela antes**; si la cancelación falla → 502 `BILLING_ERROR` y el local **no** se borra (si Stripe no está configurado en el servidor → 503 `BILLING_NOT_CONFIGURED`, tampoco se borra). Errores: 401 `INVALID_CREDENTIALS`, 403, 429, 502, 503.
 
 ### GET `/api/orgs/{orgId}/membership`
 `200 { role: 'owner' | 'manager'; dailyReminder: boolean }`
@@ -296,7 +314,7 @@ Descarga JSON (`Content-Disposition: attachment; filename="exportacion-AAAA-MM-D
   auditEvents: { id, event, user_id, ip, metadata, created_at }[];
 }
 ```
-No incluye hashes de contraseñas, PIN ni tokens. Queda auditado.
+No incluye hashes de contraseñas, PIN ni tokens. Queda auditado. Límite: 5 / hora por local y por usuario (429).
 
 ### Miembros e invitaciones
 
@@ -308,10 +326,10 @@ type Invitation = { id: string; email: string; role: 'owner' | 'manager'; expire
 | Método | Ruta | Permiso | Cuerpo | Respuesta |
 |---|---|---|---|---|
 | GET | `/api/orgs/{orgId}/members` | miembro | – | `200 { items: Member[], nextCursor: null }` |
-| PATCH | `/api/orgs/{orgId}/members/{userId}` | owner, escritura | `{ role }` | `200 { userId, role }` · 409 si deja el local sin propietario |
-| DELETE | `/api/orgs/{orgId}/members/{userId}` | owner (o el propio usuario para salir) | – | `204` · 409 último propietario |
+| PATCH | `/api/orgs/{orgId}/members/{userId}` | owner, escritura | `{ role }` | `200 { userId, role }` · 409 si deja el local sin propietario (también con cambios simultáneos) |
+| DELETE | `/api/orgs/{orgId}/members/{userId}` | owner (o el propio usuario para salir) | – | `204` · 409 último propietario. **Revoca los dispositivos de cocina que creó ese miembro** (evento `device.revoked_with_member`) |
 | GET | `/api/orgs/{orgId}/invitations` | owner | – | `200 { items: Invitation[], nextCursor: null }` (solo pendientes) |
-| POST | `/api/orgs/{orgId}/invitations` | owner, escritura | `{ email: string; role?: 'manager' \| 'owner' (por defecto 'manager') }` | `201 { invitation: Invitation }` · 409 ya miembro. Envía email (7 días); revoca invitaciones pendientes previas al mismo email |
+| POST | `/api/orgs/{orgId}/invitations` | owner, escritura | `{ email: string; role?: 'manager' \| 'owner' (por defecto 'manager') }` | `201 { invitation: Invitation }` · 409 ya miembro · 429 límites diarios (3 al mismo email por local, 20 por local, 30 por usuario). Envía email (7 días; asunto fijo sin el nombre del local); revoca invitaciones pendientes previas al mismo email |
 | DELETE | `/api/orgs/{orgId}/invitations/{invitationId}` | owner | – | `204` |
 
 ### Aceptar una invitación — `/api/invitations`
@@ -327,7 +345,7 @@ Query: `limit` (1–200), `cursor` (string numérica = `id` del último). Orden:
 ```ts
 200 { items: { id: string; event: string; user: { id: string; name: string | null } | null; ip: string | null; metadata: object; createdAt: string }[]; nextCursor: string | null }
 ```
-Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
+Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `device.revoked_with_member`, `billing.subscription_canceled`, `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
 
 ---
 
@@ -353,7 +371,11 @@ No se borra personal (los registros lo referencian): se desactiva con `active: f
 ## 7. Dispositivos de cocina — `/api/orgs/{orgId}/devices`
 
 ```ts
-type Device = { id: string; name: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null; active: boolean };
+type Device = {
+  id: string; name: string;
+  createdByName: string | null;   // NUEVO: quien lo dio de alta (null si esa cuenta ya no existe)
+  createdAt: string; lastUsedAt: string | null; revokedAt: string | null; active: boolean;
+};
 ```
 
 | Método | Ruta | Cuerpo | Respuesta |
@@ -361,6 +383,8 @@ type Device = { id: string; name: string; createdAt: string; lastUsedAt: string 
 | GET | `/devices?limit&cursor` | – | `200 Page<Device>` (incluye revocados) |
 | POST | `/devices` (escritura) | `{ name: string (1–100) }` | `201 { device: Device; token: string }` — **el token (`kd_` + 43 caracteres) solo se muestra aquí**; guárdalo en la tablet. Máx. 20 activos (409) |
 | DELETE | `/devices/{deviceId}` | – | `204` revoca (permitido también en solo lectura) |
+
+Los dispositivos creados por un miembro se revocan automáticamente cuando sale o se le quita del local, o cuando borra su cuenta: muestra `createdByName` para que el owner sepa qué tablets dependen de quién.
 
 ---
 
@@ -468,11 +492,11 @@ Query: `type?`, `from?` y `to?` (`AAAA-MM-DD`, fechas locales del local, inclusi
 ### POST `/records` — escritura
 Cuerpo: `{ type: RecordType; data: <entrada del tipo>; staffId?: uuid | null }` → `201 { record: Record }`.
 `staffId` (opcional desde la web) indica qué miembro del personal firma; debe ser del local y estar activo. El usuario autenticado siempre queda registrado en `user`.
-Errores: 400 `VALIDATION_ERROR` (paths con prefijo `data.`), 404 si `equipmentId`/`cleaningPlanId`/`supplierId`/`traineeStaffId`/`staffId` no son del local, 402 `READ_ONLY`.
+Errores: 400 `VALIDATION_ERROR` (paths con prefijo `data.`), 404 si `equipmentId`/`cleaningPlanId`/`supplierId`/`traineeStaffId`/`staffId` no son del local, 402 `READ_ONLY`, 429 (más de 120 altas por minuto del mismo usuario en el local).
 
 ### POST `/records/{recordId}/amendments` — escritura
 Cuerpo: `{ reason: string (1–1000); data: <entrada COMPLETA del tipo del original>; staffId?: uuid | null }` → `201 { record: Record }` (con `amendsRecordId` y `amendmentReason`).
-Errores: 400, 404, 409 `CONFLICT` si el registro ya tiene enmienda.
+Errores: 400, 404, 409 `CONFLICT` si el registro ya tiene enmienda, 429 (comparte el límite de 120/min con las altas).
 
 ---
 
@@ -528,7 +552,7 @@ type Dish = { id: string; name: string; category: string | null; description: st
 | PATCH | `/api/orgs/{orgId}/dishes/{dishId}` (escritura) | subconjunto (si se envía `allergens`, los 14) | `200 { dish }` |
 | DELETE | `/api/orgs/{orgId}/dishes/{dishId}` (escritura) | – | `204` |
 | GET | `/api/orgs/{orgId}/public-menu` | – | `200 { publicMenu: { enabled: boolean; slug: string; apiPath: string } }` |
-| PATCH | `/api/orgs/{orgId}/public-menu` (escritura) | `{ enabled: boolean }` | `200 { publicMenu }` |
+| PATCH | `/api/orgs/{orgId}/public-menu` | `{ enabled: boolean }` | `200 { publicMenu }` — `enabled: true` exige escritura (402 en solo lectura); **`enabled: false` se permite siempre** |
 | POST | `/api/orgs/{orgId}/public-menu/regenerate` (escritura) | – | `200 { publicMenu }` — slug nuevo; el QR anterior deja de funcionar |
 
 ### GET `/api/public/menu/{slug}` (público, sin autenticación)
@@ -543,7 +567,7 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
   notice: string;                                             // aviso para mostrar al cliente
 }
 ```
-404 si el slug no existe o la carta está desactivada. Sin ids ni datos internos. Cabecera `X-Robots-Tag: noindex, nofollow`. Límite 120/min por IP.
+404 si el slug no existe, la carta está desactivada **o el local está en solo lectura** (prueba caducada, impago, cancelada). Sin ids ni datos internos. Cabecera `X-Robots-Tag: noindex, nofollow`. Límite 120/min por IP.
 
 ---
 
@@ -594,12 +618,14 @@ Usa la configuración actual (equipos/planes activos), contando cada uno desde s
 Query común: `from`, `to` (`AAAA-MM-DD`, inclusive, máx. 366 días) y `types` opcional (lista separada por comas de `RecordType`; vacío = todos). Disponibles para owner y manager, también en solo lectura. Quedan auditados.
 
 ### GET `/reports/pdf`
-`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria, periodo y tipos; una tabla por tipo; filas fuera de rango en rojo; enmiendas destacadas con su motivo y referencia cruzada; pie con fecha de generación y número de página. Máximo 20 000 filas (se indica si se trunca). Se genera en streaming.
+`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria, periodo y tipos; una tabla por tipo; filas fuera de rango en rojo; enmiendas destacadas con su motivo y referencia cruzada; pie con fecha de generación y número de página. **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. Se genera en streaming. Límites: 10 / 10 min por local y por usuario; además, como mucho 2 PDF a la vez en el servidor: si están ocupados → 429 con `Retry-After` (reintenta pasados esos segundos).
 
 ### GET `/reports/csv`
 `200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora, firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas`. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
 
-Errores (ambos): 400 si faltan fechas, `from > to`, rango > 1 año o tipo desconocido.
+Límite CSV: 20 / 10 min por local y por usuario.
+
+Errores (ambos): 400 si faltan fechas, `from > to`, rango > 1 año, años fuera de 2000–2100 o tipo desconocido; 429 por los límites anteriores.
 
 ---
 
@@ -658,7 +684,8 @@ Misma respuesta que `GET /api/orgs/{orgId}/tasks/today`.
 
 ### POST `/api/kiosk/records`
 Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tipo> }` → `201 { record: Record }` (`user: null`, `deviceId` del dispositivo).
-- Si el miembro tiene PIN: sin `pin` → 401 `PIN_REQUIRED`; incorrecto → 401 `INVALID_PIN`; al 5.º fallo consecutivo → 429 `PIN_LOCKED` durante 15 min (`Retry-After`). Un encargado puede desbloquear con `POST /staff/{id}/unlock` o cambiando el PIN.
+- Si el miembro tiene PIN: sin `pin` → 401 `PIN_REQUIRED`; incorrecto → 401 `INVALID_PIN`; al 5.º fallo consecutivo → 429 `PIN_LOCKED` durante 15 min (`Retry-After`). El límite es estricto incluso con peticiones simultáneas (nunca se comprueban más de 5 PIN erróneos por ventana). Un encargado puede desbloquear con `POST /staff/{id}/unlock` o cambiando el PIN.
+- Por dispositivo: más de 20 PIN erróneos en 15 min (sumando todas las personas) → 429 `RATE_LIMITED` también para PIN correctos hasta que pase la ventana; más de 120 registros/min → 429 `RATE_LIMITED`.
 - 404 si `staffId` (u otros ids del `data`) no son del local; 400 si está desactivado o los datos no son válidos; 402 `READ_ONLY` si la suscripción no está activa.
 - Las enmiendas no están disponibles desde el kiosko (se hacen desde la web).
 
