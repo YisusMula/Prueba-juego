@@ -116,7 +116,11 @@ Todas están documentadas en [`server/.env.example`](server/.env.example) y se v
 | `TRUST_PROXY` | según despliegue | Nº de proxies delante (`1`) o lista de IP/CIDR del proxy. **`true` está prohibido en producción** (ver «Detrás de un proxy») |
 | `AUDIT_RETENTION_MONTHS` | no (`12`) | Meses que se conservan los eventos de auditoría |
 | `UNVERIFIED_ACCOUNT_DAYS` | no (`7`) | Días tras los que se borran las cuentas que nunca verificaron el email |
-| `PDF_MAX_CONCURRENCY` | no (`2`) | PDF generándose a la vez por proceso (el resto recibe 429) |
+| `PDF_MAX_CONCURRENCY` | no (`2`) | PDF generándose a la vez por proceso (cada uno en un `worker_thread`); el resto espera en cola |
+| `PDF_QUEUE_MAX_WAIT_SECONDS` | no (`20`) | Espera máxima en la cola de PDF (por orden de llegada) antes de responder 429 |
+| `PDF_BUDGET_SECONDS_PER_HOUR` | no (`180`) | Segundos de generación de PDF por local y hora |
+| `PDF_WORKER` | no (`true`) | Generar los PDF en un `worker_thread` (recomendado) |
+| `PAST_DUE_READ_ONLY_DAYS` | no (`21`) | Días en `past_due` (cobro fallido) tras los que el local pasa a solo lectura |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_ANNUAL` | no | Las cuatro o ninguna. Sin ellas la facturación responde 503 |
 | `SESSION_ABSOLUTE_DAYS`, `SESSION_IDLE_HOURS` | no | Caducidad de sesiones (30 días / 168 h) |
 | `SCHEDULER_ENABLED`, `SCHEDULER_INTERVAL_SECONDS` | no | Recordatorio diario, avisos de fin de prueba y limpieza/purga periódica |

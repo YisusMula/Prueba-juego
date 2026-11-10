@@ -146,7 +146,9 @@ Todas las respuestas 429 llevan `Retry-After` (segundos) y un `error.message` en
 | Informes PDF | 10 / 10 min por local **y** por usuario |
 | Informes CSV | 20 / 10 min por local y por usuario |
 | Exportación RGPD | 5 / hora por local y por usuario |
-| PDF generándose a la vez en el servidor | 2; si están ocupados → 429 inmediato con `Retry-After` (reintenta después) |
+| PDF generándose a la vez en el servidor | 2 (`PDF_MAX_CONCURRENCY`). Si están ocupados, la petición **espera en una cola por orden de llegada** hasta 20 s (`PDF_QUEUE_MAX_WAIT_SECONDS`); si no hay hueco a tiempo (o hay 50 esperando) → 429 con `Retry-After` |
+| PDF a la vez por local y por usuario (NUEVO, B-2) | 1 en generación o en cola: un segundo PDF del mismo local (aunque lo pida otro usuario) o del mismo usuario (aunque sea de otro local) → 429 con `Retry-After` y mensaje propio («Ya se está generando un informe PDF de este local…» / «Ya estás generando otro informe PDF…») |
+| Tiempo de generación de PDF por local (NUEVO, B-2) | 180 s por hora (`PDF_BUDGET_SECONDS_PER_HOUR`); agotado → 429 con `Retry-After` hasta que se renueva la ventana («…ha agotado el tiempo de generación de informes PDF de esta hora…») |
 | Invitaciones al mismo email por local | 3 / día |
 | Invitaciones por local | 20 / día |
 | Invitaciones por usuario (todos sus locales) | 30 / día |
@@ -191,7 +193,7 @@ type User = { id: string; email: string; name: string; emailVerified: boolean; c
 ### POST `/api/auth/register`
 Cuerpo: `{ email: string; password: string; name: string }`
 - `email`: se normaliza (trim + minúsculas), máx. 254.
-- `password`: 10–128 caracteres; no puede ser un único carácter repetido ni **coincidir exactamente** (sin distinguir mayúsculas) con una contraseña de la lista de las más usadas, con el email, con la parte del email antes de la @ ni con el nombre. Contener una palabra común está permitido («Contrasena-Larga-77x» es válida). La política está en `schemas/password-policy.ts` (`checkPasswordPolicy`, `passwordRules`) y el frontend usa la misma. El mensaje de error explica el motivo.
+- `password`: 10–128 caracteres; no puede ser un único carácter repetido ni **coincidir exactamente** (sin distinguir mayúsculas) con una contraseña de la lista de las más usadas. **Datos personales (CAMBIO, I-5):** comparando sin mayúsculas, tildes, espacios ni signos, se rechaza si es el email, si **contiene** la parte del email antes de la @ o el nombre (completo o cualquiera de sus palabras) cuando tienen **5 o más** caracteres («juanperez1» con juanperez@…), o si es uno de ellos con **como mucho 7** caracteres añadidos al principio o al final («ana2026xyz» con ana@…). Contener una palabra común está permitido («Contrasena-Larga-77x» es válida). La política está en `schemas/password-policy.ts` (`checkPasswordPolicy`, `passwordRules`) y el frontend usa la misma. El mensaje de error explica el motivo.
 - `name`: 1–100.
 
 `202 { "message": "Si los datos son correctos, recibirás un email en unos minutos." }`
@@ -225,7 +227,7 @@ Cierra todas las sesiones del usuario, **anula todos sus enlaces pendientes** (c
 Errores: 400 `INVALID_TOKEN`, 400 `VALIDATION_ERROR` (política de contraseña; el token **no** se consume en ese caso), 429.
 
 ### POST `/api/auth/email-change/confirm`
-Cuerpo: `{ token: string }` → `200 { "message": "Email actualizado." }`. Se avisa al email anterior.
+Cuerpo: `{ token: string }` → `200 { "message": "Email actualizado." }`. Se avisa al email anterior. **Además (I-7):** se anulan todos los enlaces pendientes del usuario (restablecer contraseña, otros cambios de email, verificación) y se **cierran las demás sesiones**; solo se conserva la sesión desde la que se confirma, si es la del propio titular (si se confirma sin sesión o con otra cuenta, se cierran todas: el frontend debe llevar al login).
 Errores: 400 `INVALID_TOKEN`, 409 `CONFLICT` (el email ya lo usa otra cuenta).
 
 ---
@@ -263,8 +265,9 @@ Errores: 401 `INVALID_CREDENTIALS`, 409 `CONFLICT` si es el único propietario d
 type BusinessType = 'bar' | 'restaurante' | 'cafeteria' | 'obrador' | 'catering' | 'tienda';
 type Subscription = {
   status: 'trialing' | 'trial_expired' | 'active' | 'past_due' | 'unpaid' | 'canceled' | 'incomplete' | 'incomplete_expired' | 'paused';
-  readOnly: boolean;          // true en trial_expired, unpaid, canceled, incomplete_expired, paused o si el local está pendiente de eliminación
+  readOnly: boolean;          // true en trial_expired, unpaid, canceled, incomplete_expired, paused, past_due durante más de 21 días, o si el local está pendiente de eliminación
   paymentFailed: boolean;     // NUEVO: true en 'past_due' (cobro fallido, Stripe reintentando): se puede escribir, pero muestra un aviso
+  pastDueSince: string | null; // NUEVO (I-3): desde cuándo está en 'past_due'. Pasados 21 días (PAST_DUE_READ_ONLY_DAYS) → readOnly: true aunque status siga siendo 'past_due'
   trialEndsAt: string;        // ISO
   plan: 'monthly' | 'annual' | null;
   currentPeriodEnd: string | null;
@@ -321,13 +324,13 @@ Cuerpo: `{ password: string }` → `204`. **Ya no borra al instante**: el local 
 - los owners reciben un email con la fecha de eliminación definitiva;
 - al vencer el plazo, una tarea diaria lo elimina con todos sus datos.
 
-Si el local tiene una suscripción viva en Stripe, **se cancela antes** (y queda `canceled`); si la cancelación falla → 502 `BILLING_ERROR` y el local **no** pasa a pendiente (si Stripe no está configurado en el servidor → 503 `BILLING_NOT_CONFIGURED`). Errores: 401 `INVALID_CREDENTIALS`, 403, 409 (ya pendiente), 429, 502, 503.
+Si el local tiene una suscripción viva en Stripe, **se cancela antes** (y queda `canceled`); si la cancelación falla → 502 `BILLING_ERROR` y el local **no** pasa a pendiente (si Stripe no está configurado en el servidor → 503 `BILLING_NOT_CONFIGURED`). **NUEVO (M-1, B-1):** si hay una sesión de Checkout abierta se **expira** en Stripe (si falla → 502 y no se marca nada), y se **revocan las invitaciones pendientes**. Si después llegara igualmente una suscripción viva para el local (pago completado en el último momento), el webhook la **cancela** en vez de activarla. Errores: 401 `INVALID_CREDENTIALS`, 403, 409 (ya pendiente), 429, 502, 503.
 
 ### POST `/api/orgs/{orgId}/restore` — owner (NUEVO)
-Sin cuerpo → `200 { organization }` (con `deletionScheduledAt: null`). Cancela la eliminación pendiente. **No** reactiva la suscripción cancelada (el local queda en el estado que le corresponda: prueba vigente o solo lectura hasta contratar) ni los dispositivos de cocina (hay que volver a vincularlos). 409 si el local no está pendiente de eliminación; 403 para managers.
+Sin cuerpo → `200 { organization }` (con `deletionScheduledAt: null`). Cancela la eliminación pendiente. **No** reactiva la suscripción cancelada (el local queda en el estado que le corresponda: prueba vigente o solo lectura hasta contratar), ni ninguna suscripción cancelada por el webhook mientras estaba pendiente, ni el Checkout expirado, ni las invitaciones revocadas, ni los dispositivos de cocina (hay que volver a vincularlos). 409 si el local no está pendiente de eliminación; 403 para managers; **404 si la purga diaria (o una eliminación inmediata) lo ha borrado a la vez** (antes podía ser 500).
 
 ### DELETE `/api/orgs/{orgId}/permanent` — owner (NUEVO)
-Cuerpo: `{ password: string }` → `204`. Eliminación **inmediata y definitiva** (derecho de supresión), solo para un local que **ya** está pendiente de eliminación (si no → 409). Irreversible. Errores: 401 `INVALID_CREDENTIALS`, 403, 409, 429.
+Cuerpo: `{ password: string }` → `204`. Eliminación **inmediata y definitiva** (derecho de supresión), solo para un local que **ya** está pendiente de eliminación (si no → 409). Irreversible. **NUEVO (M-1):** antes de borrar se consulta Stripe y, si la suscripción sigue viva, se **cancela** (y se expira cualquier Checkout abierto); si no se puede → 502 `BILLING_ERROR` («…el local NO se ha eliminado…») o 503 `BILLING_NOT_CONFIGURED`, y **no se borra nada**. La purga diaria aplica la misma regla (si falla, lo reintenta al día siguiente). Errores: 401 `INVALID_CREDENTIALS`, 403, 404 (ya borrado), 409, 429, 502, 503.
 
 ### GET `/api/orgs/{orgId}/membership`
 `200 { role: 'owner' | 'manager'; dailyReminder: boolean }`
@@ -373,7 +376,7 @@ type Invitation = { id: string; email: string; role: 'owner' | 'manager'; expire
 `200 { invitation: { organizationName: string; email: string; role: 'owner'|'manager'; invitedBy: string | null; expiresAt: string } }` · 400 `INVALID_TOKEN`.
 
 **POST `/api/invitations/accept`** (con sesión) — Cuerpo `{ token }` → `200 { organizationId: string; role: 'owner'|'manager' }`.
-El email de la sesión debe coincidir con el invitado (403 si no). 400 `INVALID_TOKEN` si ya se usó/caducó/revocó. Flujo para alguien sin cuenta: preview → registro con ese email → verificar → login → accept.
+El email de la sesión debe coincidir con el invitado (403 si no). 400 `INVALID_TOKEN` si ya se usó/caducó/revocó **o si el local está pendiente de eliminación** (B-1: al pedir el borrado se revocan las invitaciones pendientes; `preview` también responde 400). Flujo para alguien sin cuenta: preview → registro con ese email → verificar → login → accept.
 
 ### GET `/api/orgs/{orgId}/audit` — owner
 Query: `limit` (1–200), `cursor` (string numérica = `id` del último). Orden: más recientes primero.
@@ -633,6 +636,7 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
     done: number;            // lecturas vigentes de hoy (máx. required)
     status: 'done' | 'pending';
     countsToday: boolean;    // NUEVO: false si el equipo se dio de alta o se reactivó HOY: se muestra (y lo registrado figura como hecho) pero no es exigible ni cuenta en `summary`
+    correctedLater: number;  // NUEVO (I-1): lecturas de `done` que solo cuentan por correcciones de un día posterior
     lastReading: { value: number; outOfRange: boolean; at: string } | null;   // `at` = effectiveAt
   }[];                       // equipos activos con checksPerDay > 0
   cleaning: {
@@ -640,9 +644,11 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
     status: 'done' | 'pending';
     countsToday: boolean;    // NUEVO: igual que en temperatures
     completedAt: string | null;   // effectiveAt del registro COMPLETO (las parciales no cuentan)
+    correctedLater: boolean;      // NUEVO (I-1): hecha solo gracias a una corrección registrada en un día posterior al del hecho
     partial: { done: number; total: number; at: string; recordId: string } | null; // NUEVO: última limpieza parcial del periodo si aún no hay una completa
   }[];                       // planes activos que tocan hoy
-  summary: { total: number; done: number; pending: number; percent: number };   // solo elementos con countsToday
+  summary: { total: number; done: number; pending: number; percent: number;   // solo elementos con countsToday
+             correctedLater: number };   // NUEVO (I-1): de `done`, cuántas tareas cuentan solo gracias a una CORRECCIÓN registrada en un día posterior al del hecho (informativo; no cambia el cálculo)
   alerts: {
     kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'recepcion_con_incidencia' /* NUEVO: aceptada caducada o por encima de la máxima */ | 'plagas_con_indicios' | 'incidencia_abierta';
     recordId: string; message: string; createdAt: string;
@@ -656,11 +662,12 @@ Rango máximo 92 días; los días futuros se omiten.
 ```ts
 200 {
   from: string; to: string;
-  days: { date: string; expected: number; done: number; percent: number | null }[]; // percent null si no había nada previsto
-  overall: { expected: number; done: number; percent: number | null };
+  days: { date: string; expected: number; done: number; percent: number | null; correctedLater: number }[]; // percent null si no había nada previsto
+  overall: { expected: number; done: number; percent: number | null; correctedLater: number };
 }
 ```
 Lo esperado de cada día sale de la **configuración vigente ese día** (historial de equipos y planes): un equipo/plan se exige un día si estaba activo al empezar el día y sigue activo al terminarlo (o ahora, si es hoy), con la frecuencia vigente al final del día. Así, desactivarlo, reactivarlo o cambiar su frecuencia no reescribe el pasado, y el día de alta (o de reactivación/desactivación) no es exigible. Los registros cuentan por `effectiveAt`.
+**`correctedLater` (NUEVO, I-1):** cuántas de las tareas `done` de ese día solo se cumplen gracias a una enmienda cuya fecha real de registro (`createdAt`, en la zona del local) es de un día **posterior** al del hecho. No cambia `done` ni `percent`; sirve para mostrar, p. ej., «2 cumplidas con corrección posterior» junto al porcentaje del día.
 
 ---
 
@@ -669,7 +676,7 @@ Lo esperado de cada día sale de la **configuración vigente ese día** (histori
 Query común: `from`, `to` (`AAAA-MM-DD`, inclusive, máx. 366 días) y `types` opcional (lista separada por comas de `RecordType`; vacío = todos). Disponibles para owner y manager, también en solo lectura. Quedan auditados.
 
 ### GET `/reports/pdf`
-`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria con nombre legible («Hora peninsular y de Baleares», `timezoneLabel`), periodo y tipos; formatos es-ES (coma decimal, signo «−», «máx./mín.» en vez de «<=/>=»); limpiezas como «Completa (5 de 5)» o «Parcial (2 de 5)»; en el original corregido, «Corregido el … por …» (sin ids internos); una tabla por tipo (ordenada por fecha del hecho); «Fecha y hora» = fecha del **hecho** (`effectiveAt`); filas fuera de rango en rojo; enmiendas destacadas con su motivo, referencia cruzada y **cuándo y por quién** se enmendó; pie con fecha de generación y número de página. Fuente Unicode embebida: los textos salen completos (sin «…»; las celdas largas continúan en la página siguiente) y con cualquier letra latina, griega o cirílica; los caracteres sin glifo (muchos emojis, CJK) salen como `□`. Respuesta con `Content-Length` (el PDF se genera entero antes de enviarse). **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. Se genera en streaming. Límites: 10 / 10 min por local y por usuario; además, como mucho 2 PDF a la vez en el servidor: si están ocupados → 429 con `Retry-After` (reintenta pasados esos segundos).
+`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria con nombre legible («Hora peninsular y de Baleares», `timezoneLabel`), periodo y tipos; formatos es-ES (coma decimal, signo «−», «máx./mín.» en vez de «<=/>=»); limpiezas como «Completa (5 de 5)» o «Parcial (2 de 5)»; en el original corregido, «Corregido el … por …» (sin ids internos); una tabla por tipo (ordenada por fecha del hecho); «Fecha y hora» = fecha del **hecho** (`effectiveAt`); filas fuera de rango en rojo; enmiendas destacadas con su motivo, referencia cruzada y **cuándo y por quién** se enmendó; pie con fecha de generación y número de página. Fuente Unicode embebida: los textos salen completos (sin «…»; las celdas largas continúan en la página siguiente) y con cualquier letra latina, griega o cirílica; los caracteres sin glifo (muchos emojis, CJK) salen como `□`. Respuesta con `Content-Length` (el PDF se genera entero antes de enviarse). **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. **NUEVO (I-1):** si en el periodo hay días con tareas cumplidas mediante una corrección hecha en un día posterior, el PDF incluye tras la cabecera el apartado «Cumplimiento completado con correcciones posteriores», con una nota por día («3 de noviembre de 2026: 1 tarea(s) cumplida(s) mediante una corrección hecha en un día posterior (cumplimiento del día: X de Y)»). Se genera en un `worker_thread` y se envía completo. Límites (B-2, ver 1.6): 10 / 10 min por local y por usuario; **1 PDF a la vez por local y por usuario** (429 propio); 180 s de generación por local y hora (429); y como mucho 2 PDF a la vez en el servidor, con **cola de espera de hasta 20 s** por orden de llegada antes del 429. La petición puede tardar, por tanto, hasta ~20 s más de lo habitual en responder: el frontend debe mostrar «Generando…» sin un timeout corto.
 
 ### GET `/reports/csv`
 `200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora (fecha del HECHO), firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas, fecha_registro, enmendado_por, estado_limpieza, temperatura_maxima_c, caducada` (las cinco últimas añadidas al final, por compatibilidad: hora real de inserción; en enmiendas, quién enmendó; «completa» o «parcial (2 de 5)»; temperatura máxima admisible de la recepción; «sí/no» si la mercancía estaba caducada). En el CSV los números negativos usan el guion ASCII («-18,5») para que Excel los reconozca como números. Orden por fecha del hecho. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
@@ -696,16 +703,17 @@ Precios: 12 €/mes o 120 €/año por local. Prueba de 14 días sin tarjeta al 
 ### POST `/api/orgs/{orgId}/billing/checkout` (owner; permitido en solo lectura)
 Cuerpo: `{ plan: 'monthly' | 'annual' }` → `200 { url: string }`. Redirige el navegador a `url` (`window.location.href = url`). Si quedan ≥ 48 h de prueba, la suscripción empieza a cobrar al terminar la prueba.
 Retorno: `{APP_URL}/locales/{orgId}/facturacion?checkout=ok` o `?checkout=cancelado`. El estado se actualiza por webhook (puede tardar unos segundos): vuelve a pedir `GET /billing` o `GET /api/orgs/{orgId}`.
-Errores: 403 (manager), 409 si ya existe una suscripción (usar el portal), 502 `BILLING_ERROR`, 503 `BILLING_NOT_CONFIGURED`.
+**NUEVO (M-2):** si el local tiene una suscripción `incomplete` (primer pago a medias), se **anula** en Stripe antes de abrir el nuevo Checkout (si Stripe dice que ya se pagó → 409 «espera unos segundos y recarga»; si no se puede anular → 502 «No se ha podido anular el intento de pago anterior…»). Solo hay una sesión de Checkout abierta por local: la anterior se expira al pedir otra.
+Errores: 403 (manager), 409 si ya existe una suscripción (usar el portal) o el local está pendiente de eliminación, 502 `BILLING_ERROR`, 503 `BILLING_NOT_CONFIGURED`.
 
 ### POST `/api/orgs/{orgId}/billing/portal` (owner)
 Sin cuerpo → `200 { url: string }` (portal de cliente de Stripe: cambiar tarjeta, plan, cancelar, facturas). Vuelve a `{APP_URL}/locales/{orgId}/facturacion`.
 Errores: 409 si no hay cliente de Stripe todavía, 502, 503.
 
 ### POST `/api/billing/webhook` (solo Stripe)
-Firma `Stripe-Signature` verificada sobre el cuerpo crudo; idempotente por id de evento. Eventos usados: `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.*` (p. ej. `invoice.paid`, `invoice.payment_failed`). En cada uno se **recupera la suscripción actual de Stripe** y se aplica su estado. Respuesta `200 { received: true, duplicate: boolean }`; 400 si la firma no es válida; **503 sin marcar el evento** (Stripe reintenta) si Stripe falla o el local aún no se puede identificar; 503 `BILLING_NOT_CONFIGURED` sin Stripe. Eventos de un local ya eliminado o de una suscripción que no es la actual del local → 200 sin efecto.
+Firma `Stripe-Signature` verificada sobre el cuerpo crudo; idempotente por id de evento. Eventos usados: `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.*` (p. ej. `invoice.paid`, `invoice.payment_failed`). En cada uno se **recupera la suscripción actual de Stripe** y se aplica su estado. Respuesta `200 { received: true, duplicate: boolean }`; 400 si la firma no es válida; **503 sin marcar el evento** (Stripe reintenta) si Stripe falla o el local aún no se puede identificar; 503 `BILLING_NOT_CONFIGURED` sin Stripe. Eventos de un local ya eliminado o de una suscripción que no es la actual del local → 200 sin efecto. **NUEVO (M-1, M-2, B-6):** (1) una suscripción **viva** de un local ya eliminado o pendiente de eliminación se **cancela** en Stripe (sin reembolso automático; queda en el log y en la auditoría como `billing.subscription_canceled` con `refund: 'manual_review'`); (2) una suscripción viva (`active`/`trialing`/`past_due`) **sustituye** a la actual si esta no está viva (p. ej. `incomplete` o `unpaid`), y la anterior se cancela; (3) nunca dos suscripciones vivas por local: se conserva la más reciente y se cancela la otra (log + auditoría, `reason: 'duplicate_subscription'`); si una cancelación falla → 503 y Stripe reintenta; (4) si el cliente de Stripe ya pertenece a otro local → 200, evento marcado como procesado y aviso en el log (antes 500).
 
-**Estados y solo lectura**: `active`, `trialing`, **`past_due`** (periodo de gracia mientras Stripe reintenta el cobro; `paymentFailed: true` → muestra un aviso «No hemos podido cobrar tu suscripción: actualiza el método de pago» con botón al portal) e `incomplete` (primer pago en curso) permiten escribir. `trial_expired` (prueba local caducada), `unpaid`, `canceled`, `incomplete_expired` y `paused` → solo lectura (402 `READ_ONLY` al escribir). Muestra un banner con un botón a Checkout (o al portal si `hasBillingAccount`). Checkout responde 409 si el local está pendiente de eliminación.
+**Estados y solo lectura**: `active`, `trialing`, **`past_due`** (periodo de gracia mientras Stripe reintenta el cobro, **como mucho 21 días**: pasado ese plazo, `readOnly: true` aunque Stripe no la haya cancelado — ver `pastDueSince`; `paymentFailed: true` → muestra un aviso «No hemos podido cobrar tu suscripción: actualiza el método de pago» con botón al portal) e `incomplete` (primer pago en curso) permiten escribir. `trial_expired` (prueba local caducada), `unpaid`, `canceled`, `incomplete_expired` y `paused` → solo lectura (402 `READ_ONLY` al escribir). Muestra un banner con un botón a Checkout (o al portal si `hasBillingAccount`). Checkout responde 409 si el local está pendiente de eliminación.
 
 ---
 
@@ -793,7 +801,7 @@ Todos son **aditivos** salvo el cambio de comportamiento de `DELETE /api/orgs/{o
 5. **Idempotencia.** Envía `Idempotency-Key: crypto.randomUUID()` (una por registro, reutilizada en reintentos) en `POST /records`, en las enmiendas y, sobre todo, en `POST /api/kiosk/records`. Trata `200` como éxito igual que `201`.
 6. **CSV**: puede responder `400 REPORT_TOO_LARGE` (muestra `error.message`). Tiene dos columnas nuevas al final.
 7. **Auditoría**: nuevos eventos `org.deletion_scheduled` y `org.restored` (añade sus etiquetas).
-8. **Rutas de la SPA**: `GET /` y cualquier ruta de la SPA devuelven `index.html` con cualquier `Accept`; la API, la carta pública y la app privada llevan `X-Robots-Tag: noindex, nofollow` (no hace falta nada en el frontend; la portada y las páginas legales siguen siendo indexables).
+8. **Rutas de la SPA**: `GET /` y cualquier ruta de la SPA devuelven `index.html` con cualquier `Accept`; `X-Robots-Tag: noindex, nofollow` se aplica por **lista blanca** (I-4): solo `/`, `/aviso-legal`, `/privacidad`, `/terminos` y `/cookies` (ruta exacta, con o sin query) son indexables; cualquier otra ruta, incluidas variantes como `/Locales/x`, `//locales/x` o `/locales%2Fx`, lleva `noindex`. Si se añade una página pública nueva que deba indexarse, hay que añadirla a `INDEXABLE_PATHS` (`server/src/app.ts`).
 
 ---
 
