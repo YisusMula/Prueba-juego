@@ -5,9 +5,10 @@ import { cn } from '@/lib/cn';
 const LEVELS = ['Muy débil', 'Débil', 'Aceptable', 'Buena', 'Muy buena'];
 
 /** Medidor de requisitos de contraseña (las reglas coinciden con las del servidor). */
-export function PasswordMeter({ password, email = '' }: { password: string; email?: string }) {
-  const checks = passwordChecks(password, email);
-  const score = passwordScore(password, email);
+export function PasswordMeter({ password, email = '', name = '' }: { password: string; email?: string; name?: string }) {
+  const checks = passwordChecks(password, email, name);
+  const score = passwordScore(password, email, name);
+  const problem = password ? checks.find((c) => !c.ok) : undefined;
   return (
     <div className="rounded-2xl border border-line bg-surface-2/60 p-3.5" aria-live="polite">
       <div className="flex items-center gap-3">
@@ -35,6 +36,7 @@ export function PasswordMeter({ password, email = '' }: { password: string; emai
           </li>
         ))}
       </ul>
+      {problem && password.length >= 10 ? <p className="mt-2 text-sm font-semibold text-bad">{problem.message}</p> : null}
     </div>
   );
 }

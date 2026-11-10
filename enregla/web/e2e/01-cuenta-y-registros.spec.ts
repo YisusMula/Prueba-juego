@@ -12,7 +12,7 @@ test('registro → verificación por email → login → alta guiada del local',
   await page.getByLabel('Tu nombre').fill('Prueba E2E');
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill('corta');
-  await expect(page.getByText('Al menos 10 caracteres')).toBeVisible();
+  await expect(page.getByText('Entre 10 y 128 caracteres')).toBeVisible();
   await page.getByLabel('Contraseña', { exact: true }).fill(password);
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta gratis' }).click();
@@ -28,6 +28,8 @@ test('registro → verificación por email → login → alta guiada del local',
   const link = await lastEmailLink(email, '/verificar-email');
   await page.goto(link);
   await expect(page.getByText('¡Email confirmado!')).toBeVisible();
+  // Sin el texto repetido («¡Email confirmado!» + «Email confirmado.»)
+  await expect(page.getByText('Email confirmado. Ya puedes')).toHaveCount(0);
   // El token se quita de la barra de direcciones
   expect(page.url()).not.toContain('token=');
   await page.getByRole('link', { name: 'Entrar y configurar mi local' }).click();
@@ -36,10 +38,15 @@ test('registro → verificación por email → login → alta guiada del local',
   await page.getByRole('button', { name: 'Entrar', exact: true }).click();
 
   await expect(page).toHaveURL(/\/nuevo-local/);
+  await expect(page.getByText('Son 4 pasos')).toBeVisible();
+  await expect(page.locator('ol[aria-label="Pasos del alta"] > li')).toHaveCount(4);
   await page.getByLabel('Nombre del local').fill('Bar E2E');
   await page.getByText('Bar', { exact: true }).click();
   await page.getByRole('button', { name: 'Crear local y continuar' }).click();
   await expect(page.getByRole('heading', { name: 'Revisa tus equipos' })).toBeVisible();
+  // El segundo paso es paso=2 en la URL.
+  await expect(page).toHaveURL(/paso=2/);
+  await expect(page.getByText('Paso 2 de 4')).toBeVisible();
   await expect(page.getByText(/Cámara|Congelador|Vitrina/).first()).toBeVisible();
   await page.getByRole('button', { name: 'Siguiente' }).click();
   await expect(page.getByRole('heading', { name: 'Revisa la limpieza' })).toBeVisible();
@@ -55,7 +62,12 @@ test('registro → verificación por email → login → alta guiada del local',
   await expect(page.getByRole('heading', { name: '¡Tu local está listo!' })).toBeVisible();
   await page.getByRole('button', { name: 'Ir al panel de hoy' }).click();
   await expect(page).toHaveURL(/\/locales\/[0-9a-f-]+\/hoy/);
-  await expect(page.getByText(/Quedan \d+ de \d+/)).toBeVisible();
+  // Todo se ha dado de alta hoy: se muestra, pero empieza a contar mañana (fuera del progreso).
+  await expect(page.getByRole('heading', { name: 'Nada obligatorio hoy' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Empieza a contar mañana' })).toBeVisible();
+  await expect(page.getByText('Opcional hoy').first()).toBeVisible();
+  // Con todo en orden y más de una semana de prueba, no hay tarjeta de suscripción en Hoy.
+  await expect(page.getByTestId('subscription-card')).toHaveCount(0);
 });
 
 test('temperatura normal y fuera de rango con acción correctora → Hoy → Historial → enmienda', async ({ page }) => {
@@ -94,9 +106,15 @@ test('temperatura normal y fuera de rango con acción correctora → Hoy → His
   await page.getByRole('button', { name: 'Guardar corrección' }).click();
   await expect(page.getByText('Indica el motivo de la corrección')).toBeVisible();
   await page.getByLabel('Motivo de la corrección').fill('Se leyó mal el termómetro');
+  // El valor corregido está en rango: no se pide acción correctora.
+  await expect(page.getByText('¿Qué has hecho para corregirlo?')).toHaveCount(0);
   await page.getByRole('button', { name: 'Guardar corrección' }).click();
+  await expect(page.getByText('Corrección guardada')).toBeVisible();
   await expect(page.getByText('Este registro es una corrección')).toBeVisible();
-  await expect(page.getByText('Motivo: Se leyó mal el termómetro')).toBeVisible();
+  await expect(page.getByText(/Motivo: Se leyó mal el termómetro/)).toBeVisible();
+  // Tras guardar, el formulario queda cerrado y se ve el detalle.
+  await expect(page.getByRole('button', { name: 'Guardar corrección' })).toHaveCount(0);
+  await expect(page.getByText(/Corregido el .+ por Prueba E2E/).first()).toBeVisible();
   await page.getByRole('link', { name: 'Ver el original' }).click();
   await expect(page.getByText('Este registro fue corregido')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Corregir' })).toHaveCount(0);

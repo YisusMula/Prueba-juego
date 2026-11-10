@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { BUSINESS_TYPES, BUSINESS_TYPE_LABELS, createOrgBody } from '@shared/schemas';
+import { BUSINESS_TYPES, BUSINESS_TYPE_LABELS, LIMITS, createOrgBody } from '@shared/schemas';
 import { api, errorMessage } from '@/api/client';
 import { keys, useAccount, useOrg } from '@/api/queries';
 import type { BusinessType, Organization } from '@/api/types';
@@ -15,12 +15,14 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { PRICING } from '@/config/brand';
 import { cn } from '@/lib/cn';
 
-const STEPS = ['Tu local', 'Equipos', 'Limpieza', 'Personal', 'Listo'] as const;
+/** Cuatro pasos (la pantalla final «¡Listo!» no es un paso). En la URL, `paso` va de 1 a 4 (5 = terminado). */
+const STEPS = ['Tu local', 'Equipos', 'Limpieza', 'Personal'] as const;
+const DONE = STEPS.length;
 
 const BUSINESS_ICONS: Record<BusinessType, IconName> = {
   bar: 'utensils',
   restaurante: 'utensils',
-  cafeteria: 'droplet',
+  cafeteria: 'coffee',
   obrador: 'chef',
   catering: 'truck',
   tienda: 'store',
@@ -29,6 +31,7 @@ const BUSINESS_ICONS: Record<BusinessType, IconName> = {
 const TIMEZONES = [
   { value: 'Europe/Madrid', label: 'Península y Baleares' },
   { value: 'Atlantic/Canary', label: 'Canarias' },
+  { value: 'Africa/Ceuta', label: 'Ceuta y Melilla' },
 ];
 
 function Stepper({ step }: { step: number }) {
@@ -40,6 +43,7 @@ function Stepper({ step }: { step: number }) {
           <span className={cn('hidden text-xs font-semibold sm:block', i === step ? 'text-ink' : 'text-ink-muted')}>
             {i + 1}. {s}
           </span>
+          <span className="sr-only">{i < step ? '(hecho)' : i === step ? '(paso actual)' : ''}</span>
         </li>
       ))}
     </ol>
@@ -50,8 +54,9 @@ export function OnboardingPage() {
   useDocumentTitle('Alta del local');
   const [params, setParams] = useSearchParams();
   const orgId = params.get('local');
-  const step = Math.min(Math.max(Number(params.get('paso') ?? 0) || 0, 0), STEPS.length - 1);
-  const go = (n: number, id = orgId) => setParams(id ? { local: id, paso: String(n) } : {}, { replace: false });
+  // `paso` en la URL es 1-based (paso=2 es el segundo paso); internamente se usa el índice 0…4.
+  const step = Math.min(Math.max((Number(params.get('paso') ?? 1) || 1) - 1, 0), DONE);
+  const go = (n: number, id = orgId) => setParams(id ? { local: id, paso: String(n + 1) } : {}, { replace: false });
   const account = useAccount();
   const hasOrgs = (account.data?.organizations.length ?? 0) > 0;
   const effectiveStep = orgId ? Math.max(step, 1) : 0;
@@ -71,6 +76,11 @@ export function OnboardingPage() {
         </div>
       </header>
       <main id="main" tabIndex={-1} className="mx-auto max-w-3xl px-4 pt-6 pb-16 outline-none">
+        {effectiveStep < DONE ? (
+          <p className="mb-2 text-sm font-semibold text-ink-muted">
+            Paso {effectiveStep + 1} de {STEPS.length}
+          </p>
+        ) : null}
         <Stepper step={effectiveStep} />
         <div className="mt-8">
           {effectiveStep === 0 ? (
@@ -186,10 +196,10 @@ function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
     <form onSubmit={onSubmit} noValidate className="space-y-6">
       <div>
         <h1 className="text-3xl font-extrabold">Vamos a dar de alta tu local</h1>
-        <p className="mt-2 text-lg text-ink-muted">Son 4 pasos y se tarda menos de 5 minutos. Todo se puede cambiar después.</p>
+        <p className="mt-2 text-lg text-ink-muted">Son {STEPS.length} pasos y se tarda menos de 5 minutos. Todo se puede cambiar después.</p>
       </div>
       <Field label="Nombre del local" error={errors.name}>
-        <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} placeholder="Ej.: Bar La Esquina" autoComplete="organization" />
+        <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.orgName} placeholder="Ej.: Bar La Esquina" autoComplete="organization" />
       </Field>
       <fieldset>
         <legend className="mb-2 font-semibold">Tipo de negocio</legend>

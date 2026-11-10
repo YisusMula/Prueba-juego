@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router';
-import { ALLERGENS, ALLERGEN_LABELS } from '@shared/schemas';
+import { ALLERGENS, ALLERGEN_LABELS, ALLERGEN_NAMES, compareMenuCategories } from '@shared/schemas';
 import { api, isApiError } from '@/api/client';
 import type { AllergenId, PublicMenu } from '@/api/types';
-import { AllergenIcon, ALLERGEN_SHORT } from '@/components/icons/AllergenIcon';
+import { AllergenIcon } from '@/components/icons/AllergenIcon';
 import { Icon } from '@/components/icons/Icon';
 import { Skeleton } from '@/components/ui/Feedback';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
@@ -44,7 +44,8 @@ export function PublicMenuPage() {
       const key = d.category ?? 'Otros';
       map.set(key, [...(map.get(key) ?? []), d]);
     }
-    return [...map.entries()];
+    // Orden de carta (entrantes → principales → postres → bebidas), no alfabético.
+    return [...map.entries()].sort(([a], [b]) => (a === 'Otros' ? 1 : b === 'Otros' ? -1 : compareMenuCategories(a, b)));
   }, [state]);
 
   const toggle = (a: AllergenId) =>
@@ -85,6 +86,10 @@ export function PublicMenuPage() {
             <header>
               <p className="text-sm font-bold tracking-wide text-brand uppercase">Información de alérgenos</p>
               <h1 className="mt-1 text-[2rem] leading-tight font-extrabold sm:text-4xl">{state.menu.organization.name}</h1>
+              <p className="mt-3 flex gap-2 rounded-2xl border border-warn/40 bg-warn-soft p-3 text-sm text-ink" data-testid="menu-notice">
+                <Icon name="info" size={18} className="mt-0.5 shrink-0 text-warn" />
+                <span>{state.menu.notice}</span>
+              </p>
             </header>
 
             <section aria-labelledby="filtro" className="sticky top-0 z-10 -mx-4 mt-5 border-b border-line bg-paper/95 px-4 py-4 backdrop-blur">
@@ -106,7 +111,7 @@ export function PublicMenuPage() {
                       )}
                     >
                       <AllergenIcon id={a} size={34} />
-                      {ALLERGEN_SHORT[a]}
+                      {ALLERGEN_NAMES[a]}
                       {on ? <Icon name="check" size={16} strokeWidth={3} /> : null}
                     </button>
                   );
@@ -169,14 +174,14 @@ export function PublicMenuPage() {
                                     </span>
                                   ) : (
                                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok-soft px-2.5 py-0.5 text-sm font-bold text-ok">
-                                      <Icon name="check" size={14} strokeWidth={3} /> Sin tus alérgenos
+                                      <Icon name="check" size={14} strokeWidth={3} /> No declara tus alérgenos
                                     </span>
                                   )
                                 ) : null}
                               </div>
                               {d.description ? <p className="mt-1 text-ink-muted">{d.description}</p> : null}
                               {contains.length === 0 && mayContain.length === 0 ? (
-                                <p className="mt-3 text-sm font-semibold text-ok">No contiene ninguno de los 14 alérgenos</p>
+                                <p className="mt-3 text-sm font-semibold text-ink-muted">No se han declarado alérgenos en este plato. Consulta al personal.</p>
                               ) : (
                                 <div className="mt-3 space-y-2">
                                   {contains.length ? (
@@ -185,7 +190,7 @@ export function PublicMenuPage() {
                                       <ul className="mt-1 flex flex-wrap gap-1.5">
                                         {contains.map((a) => (
                                           <li key={a} className={cn('inline-flex items-center gap-1.5 rounded-full py-0.5 pr-3 pl-0.5 text-sm font-semibold', hits.includes(a) ? 'bg-bad-solid text-white' : 'bg-surface-2')}>
-                                            <AllergenIcon id={a} size={26} /> {ALLERGEN_SHORT[a]}
+                                            <AllergenIcon id={a} size={26} /> {ALLERGEN_NAMES[a]}
                                           </li>
                                         ))}
                                       </ul>
@@ -197,7 +202,7 @@ export function PublicMenuPage() {
                                       <ul className="mt-1 flex flex-wrap gap-1.5">
                                         {mayContain.map((a) => (
                                           <li key={a} className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-line-strong py-0.5 pr-3 pl-0.5 text-sm">
-                                            <AllergenIcon id={a} size={26} status="traces" /> {ALLERGEN_SHORT[a]}
+                                            <AllergenIcon id={a} size={26} status="traces" /> {ALLERGEN_NAMES[a]}
                                           </li>
                                         ))}
                                       </ul>
@@ -226,7 +231,7 @@ export function PublicMenuPage() {
                 <ul className="mt-2 grid gap-2 sm:grid-cols-2">
                   {ALLERGENS.map((a) => (
                     <li key={a} className="flex items-center gap-2">
-                      <AllergenIcon id={a} size={28} /> {ALLERGEN_LABELS[a]}
+                      <AllergenIcon id={a} size={28} /> <span><strong>{ALLERGEN_NAMES[a]}</strong>{ALLERGEN_LABELS[a] !== ALLERGEN_NAMES[a] ? ` (${ALLERGEN_LABELS[a].toLowerCase()})` : ''}</span>
                     </li>
                   ))}
                 </ul>

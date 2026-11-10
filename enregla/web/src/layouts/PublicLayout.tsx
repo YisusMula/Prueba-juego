@@ -4,6 +4,7 @@ import { Logo } from '@/components/ui/Logo';
 import { LinkButton } from '@/components/ui/Button';
 import { Icon } from '@/components/icons/Icon';
 import { APP_NAME } from '@/config/brand';
+import { SUPPORT_EMAIL } from '@/config/legal';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 
@@ -107,6 +108,13 @@ export function PublicFooter() {
             <li><Link className={footerLink} to="/registro">Crear cuenta</Link></li>
             <li><Link className={footerLink} to="/entrar">Entrar</Link></li>
             <li><Link className={footerLink} to="/cocina">Modo cocina (tablet)</Link></li>
+            {SUPPORT_EMAIL ? (
+              <li>
+                <a className={footerLink} href={`mailto:${SUPPORT_EMAIL}`}>
+                  Soporte: {SUPPORT_EMAIL}
+                </a>
+              </li>
+            ) : null}
           </ul>
         </nav>
         <nav aria-label="Legal" className="text-sm">

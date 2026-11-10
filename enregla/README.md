@@ -74,11 +74,17 @@ El proxy de Vite mantiene la SPA y la API en el mismo origen: el navegador enví
 | `npm run typecheck` / `npm run lint` | TypeScript estricto / eslint (incluye `jsx-a11y` y prohíbe `dangerouslySetInnerHTML`) |
 | `npm test` | pruebas unitarias (vitest + Testing Library) |
 | `npm run e2e` | build + suite Playwright contra el servidor real (ver abajo) |
-| `npm run screenshots` | capturas en móvil/tablet/escritorio en `docs/capturas/` (necesita el servidor e2e arrancado) |
+| `npm run screenshots` | capturas en móvil/tablet/escritorio, en claro y oscuro, en `docs/capturas/` (necesita el servidor e2e arrancado) |
 | `npm run icons` | regenera los iconos PNG de la PWA desde el logotipo |
+| `npm run og-image` | regenera la imagen social `public/og-image.png` |
 
 - Marca: `VITE_APP_NAME` (por defecto "EnRegla"), leída solo en `src/config/brand.ts` y en `vite.config.ts` (título y manifiesto).
-- Datos legales del titular: **un único fichero**, `web/src/config/legal.ts`. Mientras tengan corchetes (`[NIF]`…) se muestran resaltados como pendientes.
+- **Datos legales del titular y contacto**: variables de entorno de compilación documentadas en [`web/.env.example`](web/.env.example):
+  - Obligatorias para publicar: `VITE_LEGAL_OWNER_NAME` (nombre o razón social), `VITE_LEGAL_TAX_ID` (NIF), `VITE_LEGAL_ADDRESS`, `VITE_LEGAL_CONTACT_EMAIL`, `VITE_LEGAL_HOSTING_PROVIDER`, `VITE_LEGAL_LAST_UPDATED`.
+  - Opcionales: `VITE_LEGAL_REGISTRY_DATA`, `VITE_LEGAL_HOSTING_LOCATION`, `VITE_LEGAL_EMAIL_PROVIDER`, `VITE_LEGAL_JURISDICTION`, `VITE_SUPPORT_EMAIL` (pie de la web, Facturación y pantallas de error) y `VITE_PUBLIC_URL` (canonical, Open Graph y `sitemap.xml`).
+  - En desarrollo, lo que falte se ve como marcador resaltado. **`npm run build` (producción) FALLA** con la lista de variables que faltan, salvo que se pase explícitamente `VITE_ALLOW_PLACEHOLDER_LEGAL=true` (solo para e2e/CI; `npm run e2e` y el workflow de CI lo usan). En Docker se pasan como `--build-arg` (los compose las toman del `--env-file`).
+- **SEO**: el build genera `robots.txt` (portada y legales indexables; app, cocina, carta pública, autenticación y API no) y, con `VITE_PUBLIC_URL`, `sitemap.xml` y el `link rel=canonical`. Imagen social propia `web/public/og-image.png` (1200×630, `npm run og-image` la regenera). `<noscript>` con la descripción, el precio y los enlaces legales.
+- **Cifras**: la fuente de texto (Atkinson Hyperlegible) dibuja el cero con barra; las cifras 0–9 usan las de Bricolage (sin barra) mediante `unicode-range`.
 - Los esquemas zod y constantes se importan directamente de `server/src/schemas` (alias `@shared/schemas`).
 - `localStorage` solo guarda: el token del dispositivo de cocina (la tablet no tiene sesión; solo sirve para `/api/kiosk/*`, viaja en `Authorization` y se borra al recibir 401 o con «Desvincular esta tablet»; se revoca desde Ajustes → Dispositivos de cocina), el último local abierto y un indicador booleano de "hay sesión". La sesión real es la cookie httpOnly.
 - Modo cocina: `/cocina`. Vinculación: `/cocina/vincular#token=…` (el QR que genera Ajustes lleva el token en el fragmento, que no llega al servidor).
@@ -94,7 +100,7 @@ npm run e2e          # = vite build && playwright test --trace off
 
 `e2e/start-server.mjs` arranca un servidor **aislado**: base `enregla_e2e` (se crea si no existe y se recarga con el seed demo), puerto 3100 con `APP_URL=http://localhost:3100`, el build de `web/dist` y `MAIL_TRANSPORT=console`. Los emails (con sus enlaces `#token=`) se escriben en `web/e2e/.runtime/server.log` y las pruebas los leen de ahí: no hace falta ningún cambio en el servidor. Variables opcionales: `E2E_PORT`, `E2E_DATABASE_URL`, `E2E_ADMIN_DATABASE_URL`. Todas las pruebas fallan si aparece un error de JavaScript o una violación de CSP en la consola.
 
-Cobertura: registro → verificación por email → login → alta guiada; temperatura normal y fuera de rango con acción correctora → Hoy → Historial → enmienda; solo lectura (aviso, formularios deshabilitados, informes disponibles); ajustes (equipo, personal con PIN, invitación); modo cocina con PIN incorrecto y correcto, revocación del dispositivo; alérgenos + carta pública con filtro (sin peticiones a terceros) + versión imprimible; descarga de PDF y CSV; 404, sesión caducada con destino conservado y bloqueo de redirección abierta; cierre de sesión.
+Cobertura (además, `e2e/04-lanzamiento.spec.ts`): borrado diferido y restauración de un local y eliminación definitiva; plato pendiente de revisar que no sale en la carta y sí tras revisarlo; limpieza parcial; validación de 999 °C en web y cocina; PIN incorrecto rechazado al identificarse; recuperación de contraseña completa; invitación abierta con otra cuenta; portada (precio en la primera pantalla del móvil), SEO y páginas legales; y una pasada de **axe-core** (`@axe-core/playwright`) sobre las pantallas principales en claro y oscuro que falla con violaciones serias o críticas. Cobertura previa: registro → verificación por email → login → alta guiada; temperatura normal y fuera de rango con acción correctora → Hoy → Historial → enmienda; solo lectura (aviso, formularios deshabilitados, informes disponibles); ajustes (equipo, personal con PIN, invitación); modo cocina con PIN incorrecto y correcto, revocación del dispositivo; alérgenos + carta pública con filtro (sin peticiones a terceros) + versión imprimible; descarga de PDF y CSV; 404, sesión caducada con destino conservado y bloqueo de redirección abierta; cierre de sesión.
 
 ## Variables de entorno
 
@@ -105,6 +111,7 @@ Todas están documentadas en [`server/.env.example`](server/.env.example) y se v
 | `DATABASE_URL` | sí (o `PG*`) | PostgreSQL (contraseña ≥ 12 caracteres, no valores por defecto). Los caracteres especiales de la contraseña deben ir codificados para URL; alternativa: `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` sin codificar (lo que usan los compose) |
 | `APP_URL` | sí (https) | Origen público de la SPA: CSRF, enlaces de emails, retornos de Stripe |
 | `APP_NAME` | no (`EnRegla`) | Nombre comercial visible en emails, PDF y textos |
+| `SUPPORT_EMAIL` | no | Email de soporte que se añade al final de todos los emails |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | sí | Envío de email |
 | `TRUST_PROXY` | según despliegue | Nº de proxies delante (`1`) o lista de IP/CIDR del proxy. **`true` está prohibido en producción** (ver «Detrás de un proxy») |
 | `AUDIT_RETENTION_MONTHS` | no (`12`) | Meses que se conservan los eventos de auditoría |
@@ -208,7 +215,11 @@ Ejemplos:
 - **Borrado diferido de locales**: `DELETE /api/orgs/{id}` cancela antes la suscripción de Stripe (si falla, no hace nada) y deja el local **pendiente de eliminación** 30 días: solo lectura, sin carta pública, dispositivos de cocina revocados, sin recordatorios ni avisos; los miembros siguen viendo y exportando datos e informes, un owner puede restaurarlo (no reactiva la suscripción ni los dispositivos) y se envía un email a los owners con la fecha de eliminación definitiva. La tarea diaria lo purga al vencer. Derecho de supresión: un owner puede pedir la eliminación inmediata y definitiva de un local ya pendiente (`DELETE /api/orgs/{id}/permanent`, con contraseña). Un local pendiente no impide borrar la cuenta.
 - En Checkout, si quedan ≥ 48 h de prueba local se traslada como `trial_end` a Stripe para no perder los días restantes.
 - Rango máximo: informes 1 año (366 días), cumplimiento 92 días. PDF máx. 5000 filas (error claro si se supera), CSV máx. 500 000. Fechas admitidas: años 2000–2100. Zonas horarias: solo nombres IANA (más `UTC`); `+01:00` y similares se rechazan porque PostgreSQL los interpreta con el signo invertido.
-- Los textos de los emails, PDF y errores están en español de España; identificadores en inglés.
+- Los textos de los emails, PDF y errores están en español de España; identificadores en inglés. Los mensajes de validación (zod) salen de un mapa de errores en español compartido por servidor y web (`server/src/schemas/es.ts`).
+- **Alérgenos**: un plato nace sin revisar y no se publica hasta confirmar sus 14 alérgenos (o marcar «no contiene ninguno»). La carta pública nunca afirma «sin alérgenos»: dice «No se han declarado alérgenos en este plato» y muestra siempre el aviso de consultar al personal y de posibles trazas.
+- **Limpieza parcial**: exige al menos una zona; si faltan zonas se pide confirmación y se guarda como «Parcial (2 de 5)», que no cuenta como tarea hecha.
+- **Recepción**: temperatura máxima admisible opcional (atajos 4 °C / −18 °C); aceptar mercancía caducada o demasiado caliente exige motivo y genera alerta.
+- **Kiosko**: el PIN se verifica al identificarse (`/api/kiosk/verify-pin`) y otra vez en cada alta; el PIN solo vive en memoria.
 
 ## Retención de datos
 
@@ -249,6 +260,7 @@ enregla/
     ├── migrations/0002_security_fixes.sql  prueba por usuario, job_runs, índices de purga (aditiva)
     ├── migrations/0003_reliability.sql     effective_at, historial de configuración, idempotencia,
     │                                       bandeja de emails, borrado diferido, avisos de prueba (aditiva)
+    ├── migrations/0004_allergen_review.sql revisión explícita de alérgenos por plato (aditiva)
     ├── assets/fonts/                       DejaVu Sans (regular y negrita) + licencia, para los PDF
     ├── src/
     │   ├── server.ts · app.ts · config.ts · deps.ts

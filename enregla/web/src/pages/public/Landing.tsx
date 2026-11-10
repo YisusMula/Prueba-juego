@@ -8,10 +8,13 @@ import { TilePattern } from '@/layouts/AuthLayout';
 import { APP_NAME, PRICING } from '@/config/brand';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { storage } from '@/lib/storage';
+import { formatNumber, formatPercent } from '@/lib/format';
+import { useCanonical } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/cn';
 
 export function LandingPage() {
   useDocumentTitle();
+  useCanonical('/');
   // El enlace del recordatorio diario apunta a "/": con sesión, se va directo al panel.
   if (storage.hasSessionHint()) return <Navigate to="/app" replace />;
   return (
@@ -31,19 +34,22 @@ export function LandingPage() {
 function Hero() {
   return (
     <section className="relative overflow-hidden">
-      <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 pt-10 pb-16 sm:px-6 lg:grid-cols-[1.1fr_1fr] lg:pt-20 lg:pb-24">
+      <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 pt-6 pb-16 sm:px-6 sm:pt-10 lg:grid-cols-[1.1fr_1fr] lg:pt-20 lg:pb-24">
         <div>
-          <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-brand/25 bg-brand-soft px-3 py-1 text-sm font-bold text-brand-strong dark:text-brand">
-            <Icon name="leaf" size={16} /> Para bares, restaurantes y obradores
+          <p className="mb-3 inline-flex items-center gap-2 rounded-full border border-brand/25 bg-brand-soft px-3 py-1 text-sm font-bold text-brand-strong dark:text-brand">
+            <Icon name="leaf" size={16} /> Para bares, restaurantes, cafeterías y obradores
           </p>
-          <h1 className="text-[2.4rem] leading-[1.05] font-extrabold sm:text-6xl">
+          <h1 className="text-[2.05rem] leading-[1.08] font-extrabold sm:text-6xl">
             Los registros de higiene de tu cocina, <span className="text-brand">al día y sin papeles</span>.
           </h1>
-          <p className="mt-5 max-w-xl text-lg text-ink-muted sm:text-xl">
+          <p className="mt-4 text-lg font-bold sm:text-xl" data-testid="hero-price">
+            {PRICING.monthly} €/mes por local · {PRICING.trialDays} días gratis, sin tarjeta
+          </p>
+          <p className="mt-3 max-w-xl text-lg text-ink-muted sm:text-xl">
             Temperaturas, limpieza, recepción de mercancía, aceite, plagas y alérgenos. Tu equipo los apunta en la tablet de cocina en
             segundos y, cuando llega la inspección, descargas el informe en PDF.
           </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
             <LinkButton to="/registro" size="lg" iconRight="arrowRight">
               Pruébalo {PRICING.trialDays} días gratis
             </LinkButton>
@@ -55,7 +61,7 @@ function Hero() {
             </a>
           </div>
           <p className="mt-4 flex flex-wrap gap-x-5 gap-y-1 text-ink-muted">
-            <span className="inline-flex items-center gap-1.5"><Icon name="check" size={18} className="text-ok" /> Sin tarjeta</span>
+            <span className="inline-flex items-center gap-1.5"><Icon name="check" size={18} className="text-ok" /> IVA no incluido · sin permanencia</span>
             <span className="inline-flex items-center gap-1.5"><Icon name="check" size={18} className="text-ok" /> Listo en 5 minutos</span>
             <span className="inline-flex items-center gap-1.5"><Icon name="check" size={18} className="text-ok" /> Cancela cuando quieras</span>
           </p>
@@ -75,7 +81,7 @@ function HeroMock() {
     { icon: 'sparkles', name: 'Limpieza diaria', value: 'Pendiente', state: 'pending' },
   ];
   return (
-    <div className="relative mx-auto mb-12 w-full max-w-md lg:max-w-none" aria-hidden="true">
+    <div className="relative mx-auto w-full max-w-md lg:max-w-none" aria-hidden="true">
       <div className="absolute -inset-6 -z-10 rounded-[3rem] bg-gradient-to-br from-brand-soft via-transparent to-[color-mix(in_oklab,var(--mint)_40%,transparent)]" />
       <div className="rotate-[-1.5deg] rounded-[2rem] border border-line bg-surface p-5 shadow-pop sm:p-6">
         <div className="flex items-center justify-between">
@@ -88,7 +94,7 @@ function HeroMock() {
               <circle cx="40" cy="40" r="33" fill="none" stroke="var(--surface-3)" strokeWidth="9" />
               <circle cx="40" cy="40" r="33" fill="none" stroke="var(--brand)" strokeWidth="9" strokeLinecap="round" strokeDasharray="207" strokeDashoffset="62" />
             </svg>
-            <span className="font-display text-lg font-bold">70%</span>
+            <span className="font-display text-lg font-bold">{formatPercent(70)}</span>
           </div>
         </div>
         <ul className="mt-5 space-y-2.5">
@@ -119,7 +125,8 @@ function HeroMock() {
           ))}
         </ul>
       </div>
-      <div className="absolute -bottom-16 -left-2 w-56 rotate-[3deg] rounded-2xl border border-line bg-surface p-4 shadow-pop sm:-left-8">
+      {/* Va debajo de la lista (no la tapa): solo se solapa con el margen inferior de la tarjeta. */}
+      <div className="relative z-10 -mt-3 mr-2 ml-auto w-60 rotate-[2deg] rounded-2xl border border-line bg-surface p-4 shadow-pop">
         <p className="text-sm font-bold text-bad">Fuera de rango</p>
         <p className="mt-1 text-sm">¿Qué has hecho?</p>
         <div className="mt-2 flex flex-wrap gap-1.5">
@@ -291,7 +298,7 @@ function Pricing() {
           </p>
           <p className="text-ink-muted">
             IVA no incluido.{' '}
-            {annual ? `Equivale a ${(PRICING.annual / 12).toFixed(0)} € al mes: ahorras ${saving} € al año.` : `O ${PRICING.annual} € al año pagando de una vez.`}
+            {annual ? `Equivale a ${formatNumber(PRICING.annual / 12)} € al mes: ahorras ${saving} € al año.` : `O ${PRICING.annual} € al año pagando de una vez.`}
           </p>
           <ul className="mt-6 space-y-2.5">
             {[
@@ -321,7 +328,7 @@ function Pricing() {
 const FAQ: { q: string; a: string }[] = [
   {
     q: '¿Necesito tarjeta para probarlo?',
-    a: `No. Tienes ${PRICING.trialDays} días con todas las funciones sin dar ningún dato de pago. Si te convence, eliges plan mensual o anual.`,
+    a: `No. Tienes ${PRICING.trialDays} días con todas las funciones sin dar ningún dato de pago (una prueba por cuenta). Si te convence, eliges plan mensual o anual.`,
   },
   {
     q: `¿${APP_NAME} sustituye a mi plan APPCC?`,

@@ -6,13 +6,14 @@ import {
   createEquipmentBody,
   createStaffBody,
   supplierBody,
+  LIMITS,
 } from '@shared/schemas';
 import { api, isApiError, errorMessage } from '@/api/client';
 import type { CleaningPlan, Equipment, EquipmentType, Frequency, Staff, Supplier } from '@/api/types';
 import { Button } from '@/components/ui/Button';
 import { Callout } from '@/components/ui/Feedback';
 import { Dialog } from '@/components/ui/Overlay';
-import { Field, Input, PasswordInput, Select, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
+import { Field, Input, PinInput, Select, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
 import { WEEKDAYS, parseDecimal } from '@/lib/format';
 
@@ -38,7 +39,7 @@ function useSave() {
   return { loading, errors, setErrors, general, run };
 }
 
-const numText = (n: number | null | undefined) => (n == null ? '' : String(n).replace('.', ','));
+const numText = (n: number | null | undefined) => (n == null ? '' : String(n).replace('.', ',').replace('-', '−'));
 
 // ---------------------------------------------------------------------------
 // Equipos
@@ -76,7 +77,7 @@ export function EquipmentDialog({ orgId, open, onClose, initial, onSaved }: Dial
     <Dialog open={open} onClose={onClose} title={initial ? 'Editar equipo' : 'Nuevo equipo'}>
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <Field label="Nombre" error={s.errors.name}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} placeholder="Ej.: Cámara de carnes" />
+          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.equipmentName} placeholder="Ej.: Cámara de carnes" />
         </Field>
         <Field label="Tipo" error={s.errors.type}>
           <Select
@@ -100,13 +101,13 @@ export function EquipmentDialog({ orgId, open, onClose, initial, onSaved }: Dial
         </Field>
         <fieldset>
           <legend className="font-semibold">Límites de temperatura (°C)</legend>
-          <p className="mb-2 text-sm text-ink-muted">Opcionales. Valores orientativos: frío ≤ 4, congelación ≤ −18, caliente ≥ 63. Ajústalos a tu plan.</p>
+          <p className="mb-2 text-sm text-ink-muted">Opcionales, entre −60 y 300 °C. Valores orientativos: frío máx. 4 °C, congelación máx. −18 °C, caliente mín. 63 °C. Ajústalos a tu plan.</p>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Mínima" optional error={s.errors.minTemp}>
-              <Input inputMode="decimal" value={minTemp} onChange={(e) => setMin(e.target.value)} placeholder="—" />
+              <Input inputMode="decimal" value={minTemp} onChange={(e) => setMin(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="—" maxLength={7} />
             </Field>
             <Field label="Máxima" optional error={s.errors.maxTemp}>
-              <Input inputMode="decimal" value={maxTemp} onChange={(e) => setMax(e.target.value)} placeholder="—" />
+              <Input inputMode="decimal" value={maxTemp} onChange={(e) => setMax(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="—" maxLength={7} />
             </Field>
           </div>
         </fieldset>
@@ -163,7 +164,7 @@ export function StaffDialog({ orgId, open, onClose, initial, onSaved }: DialogFo
     <Dialog open={open} onClose={onClose} title={initial ? 'Editar persona' : 'Añadir persona'} description="El personal firma los registros en la tablet de cocina. No necesita cuenta ni email.">
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <Field label="Nombre" error={s.errors.name}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} placeholder="Ej.: Ana Martín" />
+          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.staffName} placeholder="Ej.: Ana Martín" />
         </Field>
         {initial ? (
           <Field label="PIN">
@@ -176,7 +177,7 @@ export function StaffDialog({ orgId, open, onClose, initial, onSaved }: DialogFo
         ) : null}
         {pinMode === 'set' ? (
           <Field label={initial ? 'Nuevo PIN' : 'PIN'} optional={!initial} hint="De 4 a 6 cifras. Evita que alguien firme en nombre de otra persona." error={s.errors.pin}>
-            <PasswordInput inputMode="numeric" autoComplete="off" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))} className="max-w-48 tracking-[0.3em]" />
+            <PinInput value={pin} onChange={setPin} />
           </Field>
         ) : null}
         {initial ? <Switch checked={active} onChange={setActive} label="Activo" description="Las personas desactivadas ya no aparecen en la tablet. Sus registros se conservan." /> : null}
@@ -212,7 +213,17 @@ export function CleaningPlanDialog({ orgId, open, onClose, initial, onSaved }: D
   );
   const s = useSave();
 
-  const update = (key: string, patch: Partial<ItemDraft>) => setItems((list) => list.map((i) => (i.key === key ? { ...i, ...patch } : i)));
+  // El aviso «Añade al menos una zona» desaparece en cuanto se escribe o añade una zona.
+  const clearItemsError = () => {
+    if (s.errors.items) {
+      const { items: _items, ...rest } = s.errors;
+      s.setErrors(rest);
+    }
+  };
+  const update = (key: string, patch: Partial<ItemDraft>) => {
+    clearItemsError();
+    setItems((list) => list.map((i) => (i.key === key ? { ...i, ...patch } : i)));
+  };
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -245,7 +256,7 @@ export function CleaningPlanDialog({ orgId, open, onClose, initial, onSaved }: D
     <Dialog open={open} onClose={onClose} title={initial ? 'Editar plan de limpieza' : 'Nuevo plan de limpieza'} size="lg">
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <Field label="Nombre del plan" error={s.errors.name}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} placeholder="Ej.: Limpieza diaria de cocina" />
+          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.planName} placeholder="Ej.: Limpieza diaria de cocina" />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Frecuencia">
@@ -307,7 +318,10 @@ export function CleaningPlanDialog({ orgId, open, onClose, initial, onSaved }: D
               </li>
             ))}
           </ol>
-          <Button variant="quiet" icon="plus" className="mt-3" onClick={() => setItems((l) => [...l, newDraft()])} disabled={items.length >= 100}>
+          <Button variant="quiet" icon="plus" className="mt-3" onClick={() => {
+              clearItemsError();
+              setItems((l) => [...l, newDraft()]);
+            }} disabled={items.length >= 100}>
             Añadir zona
           </Button>
         </fieldset>
@@ -366,7 +380,7 @@ export function SupplierDialog({ orgId, open, onClose, initial, onSaved }: Dialo
     <Dialog open={open} onClose={onClose} title={initial ? 'Editar proveedor' : 'Nuevo proveedor'}>
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <Field label="Nombre" error={s.errors.name}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={150} />
+          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.supplierName} />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Persona de contacto" optional error={s.errors.contactName}>

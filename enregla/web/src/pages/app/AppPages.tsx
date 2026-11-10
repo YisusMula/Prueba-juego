@@ -11,9 +11,8 @@ import { Card, PageHeader, SectionTitle } from '@/components/ui/Layout';
 import { Checkbox, Field, Input } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
 import { ALERT_LABELS, RECORD_ICON, RECORD_TINT } from '@/features/recordMeta';
-import { STATUS_LABELS } from '@/features/SubscriptionBanner';
 import { DownloadButton } from '@/features/DownloadButton';
-import { addDaysIso, formatLocalDate, formatLongDate, formatRange, formatTemp, formatTime, localDateIn, relativeDays } from '@/lib/format';
+import { addDaysIso, formatLocalDate, formatLongDate, formatPercent, formatRange, formatTemp, formatTime, localDateIn, relativeDays } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
 // ===========================================================================
@@ -62,25 +61,44 @@ export function TodayPage() {
 
 function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const { path } = useOrgContext();
-  const pendingTemps = data.temperatures.filter((t) => t.status === 'pending');
-  const doneTemps = data.temperatures.filter((t) => t.status === 'done');
-  const pendingClean = data.cleaning.filter((c) => c.status === 'pending');
-  const doneClean = data.cleaning.filter((c) => c.status === 'done');
+  // Lo dado de alta (o reactivado) hoy se muestra aparte: no es exigible hasta mañana ni cuenta en el progreso.
+  const counted = { temps: data.temperatures.filter((t) => t.countsToday !== false), clean: data.cleaning.filter((c) => c.countsToday !== false) };
+  const pendingTemps = counted.temps.filter((t) => t.status === 'pending');
+  const doneTemps = counted.temps.filter((t) => t.status === 'done');
+  const pendingClean = counted.clean.filter((c) => c.status === 'pending');
+  const doneClean = counted.clean.filter((c) => c.status === 'done');
+  const notYetTemps = data.temperatures.filter((t) => t.countsToday === false);
+  const notYetClean = data.cleaning.filter((c) => c.countsToday === false);
   const { summary } = data;
   const allDone = summary.total > 0 && summary.pending === 0;
+  const subCard = useSubscriptionNotice();
 
   return (
     <div className="space-y-8">
-      <section aria-labelledby="resumen" className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+      <section aria-labelledby="resumen" className={cn('grid gap-4', subCard && 'lg:grid-cols-[1.4fr_1fr]')}>
         <Card className="flex items-center gap-5">
-          <ProgressRing percent={summary.percent} label={`${summary.percent}% de las tareas de hoy hechas`} />
+          {summary.total > 0 ? (
+            <ProgressRing percent={summary.percent} label={`${formatPercent(summary.percent)} de las tareas de hoy hechas`} />
+          ) : (
+            <span className="grid size-28 shrink-0 place-items-center rounded-full bg-surface-2 text-ink-muted" aria-hidden="true">
+              <Icon name="today" size={40} />
+            </span>
+          )}
           <div className="min-w-0">
             <h2 id="resumen" className="text-2xl font-extrabold">
-              {summary.total === 0 ? 'Sin tareas programadas' : allDone ? '¡Todo hecho por hoy!' : `Quedan ${summary.pending} de ${summary.total}`}
+              {summary.total === 0
+                ? notYetTemps.length + notYetClean.length > 0
+                  ? 'Nada obligatorio hoy'
+                  : 'Sin tareas programadas'
+                : allDone
+                  ? '¡Todo hecho por hoy!'
+                  : `Quedan ${summary.pending} de ${summary.total}`}
             </h2>
             <p className="mt-1 text-ink-muted">
               {summary.total === 0
-                ? 'No hay controles de temperatura ni limpiezas previstos para hoy.'
+                ? notYetTemps.length + notYetClean.length > 0
+                  ? 'Lo dado de alta hoy empieza a contar mañana. Puedes ir registrándolo.'
+                  : 'No hay controles de temperatura ni limpiezas previstos para hoy.'
                 : `${summary.done} ${summary.done === 1 ? 'tarea hecha' : 'tareas hechas'} · ${data.alerts.length === 0 ? 'sin alertas' : `${data.alerts.length} ${data.alerts.length === 1 ? 'alerta' : 'alertas'}`}`}
             </p>
             {allDone ? (
@@ -90,7 +108,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
             ) : null}
           </div>
         </Card>
-        <SubscriptionCard />
+        {subCard ? <SubscriptionCard notice={subCard} /> : null}
       </section>
 
       {data.alerts.length > 0 ? (
@@ -111,7 +129,8 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     <Icon name="alert" size={22} />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="sr-only">{ALERT_LABELS[a.kind]}: </span>
+                    {/* Prefijo para lectores de pantalla, salvo que el mensaje ya lo diga (evita «Incidencia abierta: Incidencia abierta:»). */}
+                    {a.message.toLowerCase().startsWith(ALERT_LABELS[a.kind].toLowerCase()) ? null : <span className="sr-only">{ALERT_LABELS[a.kind]}: </span>}
                     <span className="block font-bold">{a.message}</span>
                     <span className="block text-sm text-ink-muted">
                       {a.kind === 'incidencia_abierta' ? `Desde el ${formatLocalDate(localDateIn(tz, new Date(a.createdAt)))}` : `A las ${formatTime(a.createdAt, tz)}`}
@@ -126,7 +145,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
         </section>
       ) : null}
 
-      {summary.total === 0 ? (
+      {summary.total === 0 && notYetTemps.length + notYetClean.length > 0 ? null : summary.total === 0 ? (
         <EmptyState
           icon="thermometer"
           title="Nada programado para hoy"
@@ -166,6 +185,8 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     type="limpieza"
                     title={c.name}
                     detail={c.frequency === 'daily' ? 'Limpieza de hoy' : c.frequency === 'weekly' ? 'Toca esta semana' : 'Toca este mes'}
+                    extra={c.partial ? `Parcial (${c.partial.done} de ${c.partial.total}) a las ${formatTime(c.partial.at, tz)}: falta completarla` : undefined}
+                    warn={!!c.partial}
                   />
                 ))}
               </ul>
@@ -181,7 +202,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     <span className="min-w-0 flex-1">
                       <span className="block font-semibold">{t.name}</span>
                       <span className="block text-sm text-ink-muted">
-                        {t.done}/{t.required} controles
+                        {t.done} de {t.required} {t.required === 1 ? 'control' : 'controles'}
                         {t.lastReading ? ` · última ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}` : ''}
                       </span>
                     </span>
@@ -204,65 +225,92 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
         </>
       )}
 
+      {notYetTemps.length + notYetClean.length > 0 ? (
+        <section aria-labelledby="manana">
+          <SectionTitle id="manana">Empieza a contar mañana</SectionTitle>
+          <p className="-mt-2 mb-3 text-sm text-ink-muted">Dado de alta o reactivado hoy: puedes registrarlo ya, pero no cuenta en el progreso de hoy.</p>
+          <ul className="grid gap-3 sm:grid-cols-2">
+            {notYetTemps.map((t) => (
+              <TaskCard
+                key={t.equipmentId}
+                to={path(`registrar/temperatura?equipo=${t.equipmentId}`)}
+                type="temperatura"
+                title={t.name}
+                detail={`${t.done} de ${t.required} · ${formatRange(t.minTemp, t.maxTemp)}`}
+                badge="Opcional hoy"
+              />
+            ))}
+            {notYetClean.map((c) => (
+              <TaskCard key={c.cleaningPlanId} to={path(`registrar/limpieza?plan=${c.cleaningPlanId}`)} type="limpieza" title={c.name} detail={c.status === 'done' ? 'Hecha' : 'Sin hacer'} badge="Opcional hoy" />
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }
 
-function TaskCard({ to, type, title, detail, extra, warn }: { to: string; type: RecordType; title: string; detail: string; extra?: string; warn?: boolean }) {
+function TaskCard({ to, type, title, detail, extra, warn, badge = 'Pendiente' }: { to: string; type: RecordType; title: string; detail: string; extra?: string; warn?: boolean; badge?: string }) {
   const { readOnly } = useOrgContext();
   return (
     <li>
       <Link
         to={to}
         aria-disabled={readOnly || undefined}
-        className="group flex min-h-24 items-center gap-3 rounded-2xl border border-line bg-surface p-4 shadow-card transition-[border-color,transform] hover:-translate-y-0.5 hover:border-brand"
+        className="group flex min-h-24 min-w-0 items-center gap-3 rounded-2xl border border-line bg-surface p-4 shadow-card transition-[border-color,transform] hover:-translate-y-0.5 hover:border-brand"
       >
         <span className={cn('grid size-12 shrink-0 place-items-center rounded-2xl', RECORD_TINT[type])}>
           <Icon name={RECORD_ICON[type]} size={26} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block font-bold">{title}</span>
+          <span className="block font-bold [overflow-wrap:anywhere]">{title}</span>
           <span className="block text-sm text-ink-muted">{detail}</span>
           {extra ? <span className={cn('mt-0.5 block text-sm', warn ? 'font-semibold text-bad' : 'text-ink-muted')}>{extra}</span> : null}
         </span>
-        <span className="hidden rounded-full bg-warn-soft px-2.5 py-0.5 text-sm font-bold text-warn min-[420px]:inline">Pendiente</span>
+        <span className={cn('hidden shrink-0 rounded-full px-2.5 py-0.5 text-sm font-bold min-[420px]:inline', badge === 'Pendiente' ? 'bg-warn-soft text-warn' : 'bg-surface-2 text-ink-muted')}>{badge}</span>
         <Icon name="chevronRight" className="shrink-0 text-ink-muted transition-transform group-hover:translate-x-0.5" />
       </Link>
     </li>
   );
 }
 
-function SubscriptionCard() {
-  const { org, path, isOwner } = useOrgContext();
+type SubNotice = { tone: 'warn' | 'bad'; title: string; text: string; cta: string | null };
+
+/**
+ * La tarjeta de suscripción solo aparece cuando hay algo que decir: prueba a punto de acabar,
+ * pago fallido o solo lectura. Si todo está en orden no ocupa sitio en «Hoy».
+ */
+function useSubscriptionNotice(): SubNotice | null {
+  const { org, isOwner } = useOrgContext();
   const sub = org.subscription;
-  const days = relativeDays(sub.trialEndsAt);
-  const tone = sub.readOnly ? 'bad' : sub.status === 'trialing' ? (days <= 3 ? 'warn' : 'info') : 'ok';
+  if (org.deletionScheduledAt) return null; // ya hay un aviso persistente de eliminación
+  if (sub.readOnly) return { tone: 'bad', title: 'Solo lectura', text: 'No se pueden añadir registros hasta activar la suscripción.', cta: isOwner ? 'Elegir plan' : null };
+  if (sub.paymentFailed) return { tone: 'bad', title: 'Pago pendiente', text: 'No hemos podido cobrar la suscripción.', cta: isOwner ? 'Ver facturación' : null };
+  if (sub.status === 'trialing' && !sub.hasBillingAccount) {
+    const days = relativeDays(sub.trialEndsAt);
+    if (days <= 7) {
+      return {
+        tone: 'warn',
+        title: 'Prueba gratuita',
+        text: days > 0 ? `Te ${days === 1 ? 'queda 1 día' : `quedan ${days} días`} de prueba.` : 'La prueba termina hoy.',
+        cta: isOwner ? 'Elegir plan' : null,
+      };
+    }
+  }
+  return null;
+}
+
+function SubscriptionCard({ notice }: { notice: SubNotice }) {
+  const { path } = useOrgContext();
   return (
-    <Card className="flex flex-col justify-between gap-3">
-      <div>
-        <p className="text-sm font-semibold text-ink-muted">Suscripción</p>
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          <Badge tone={tone} icon={sub.readOnly ? 'lock' : sub.status === 'active' ? 'check' : 'clock'}>
-            {STATUS_LABELS[sub.status]}
-          </Badge>
-        </div>
-        <p className="mt-2 text-ink-muted">
-          {sub.status === 'trialing'
-            ? days > 0
-              ? `Te ${days === 1 ? 'queda 1 día' : `quedan ${days} días`} de prueba gratis.`
-              : 'La prueba termina hoy.'
-            : sub.readOnly
-              ? 'Solo lectura: no se pueden añadir registros.'
-              : sub.cancelAtPeriodEnd && sub.currentPeriodEnd
-                ? `Se cancelará el ${formatLocalDate(sub.currentPeriodEnd.slice(0, 10))}.`
-                : sub.plan
-                  ? `Plan ${sub.plan === 'annual' ? 'anual' : 'mensual'}.`
-                  : 'Todo en orden.'}
-        </p>
-      </div>
-      {isOwner ? (
-        <Link to={path('facturacion')} className={buttonClasses(sub.readOnly ? 'danger' : 'secondary', 'md', 'self-start')}>
-          {sub.readOnly || sub.status === 'trialing' ? 'Elegir plan' : 'Ver facturación'}
+    <Card className="flex flex-col justify-center gap-2" data-testid="subscription-card">
+      <Badge tone={notice.tone} icon={notice.tone === 'bad' ? 'lock' : 'clock'} className="self-start">
+        {notice.title}
+      </Badge>
+      <p className="text-ink-muted">{notice.text}</p>
+      {notice.cta ? (
+        <Link to={path('facturacion')} className={buttonClasses(notice.tone === 'bad' ? 'danger' : 'secondary', 'md', 'self-start')}>
+          {notice.cta}
         </Link>
       ) : null}
     </Card>
@@ -461,7 +509,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
     <div>
       <div className="mb-4 flex flex-wrap items-end gap-x-6 gap-y-2">
         <p>
-          <span className="block font-display text-5xl font-extrabold tabular">{overall == null ? '—' : `${Math.round(overall)}%`}</span>
+          <span className="block font-display text-5xl font-extrabold tabular">{formatPercent(overall)}</span>
           <span className="text-ink-muted">
             {data.overall.done} de {data.overall.expected} tareas hechas
           </span>
@@ -471,14 +519,14 @@ export function ComplianceChart({ data }: { data: Compliance }) {
         </p>
       </div>
       <figure>
-        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={`Porcentaje de tareas hechas por día, del ${formatLocalDate(data.from)} al ${formatLocalDate(data.to)}. Media: ${overall == null ? 'sin datos' : `${Math.round(overall)}%`}.`}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={`Porcentaje de tareas hechas por día, del ${formatLocalDate(data.from)} al ${formatLocalDate(data.to)}. Media: ${overall == null ? 'sin datos' : formatPercent(overall)}.`}>
           {[0, 50, 100].map((g) => {
             const y = pad.t + innerH - (g / 100) * innerH;
             return (
               <g key={g}>
                 <line x1={pad.l} x2={W - pad.r} y1={y} y2={y} stroke="var(--line)" strokeDasharray={g === 0 ? undefined : '3 4'} />
                 <text x={pad.l - 6} y={y + 4} textAnchor="end" fontSize="13" fill="var(--ink-muted)">
-                  {g}%
+                  {formatPercent(g)}
                 </text>
               </g>
             );
@@ -494,7 +542,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                   <rect x={x} y={pad.t + innerH - 3} width={bw * 0.7} height={3} rx={1} fill={color} />
                 ) : (
                   <rect x={x} y={pad.t + innerH - h} width={bw * 0.7} height={h} rx={Math.min(3, bw * 0.2)} fill={color}>
-                    <title>{`${formatLocalDate(d.date)}: ${Math.round(p)}% (${d.done}/${d.expected})`}</title>
+                    <title>{`${formatLocalDate(d.date)}: ${formatPercent(p)} (${d.done} de ${d.expected})`}</title>
                   </rect>
                 )}
                 {i % labelEvery === 0 ? (
@@ -507,10 +555,10 @@ export function ComplianceChart({ data }: { data: Compliance }) {
           })}
         </svg>
         <figcaption className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-ink-muted">
-          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-ok-solid" /> 100 %</span>
-          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-brand" /> 75–99 %</span>
-          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-warn-solid" /> 50–74 %</span>
-          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-bad-solid" /> menos del 50 %</span>
+          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-ok-solid" /> {formatPercent(100)}</span>
+          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-brand" /> 75–99{'\u202F'}%</span>
+          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-warn-solid" /> 50–74{'\u202F'}%</span>
+          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-bad-solid" /> menos del {formatPercent(50)}</span>
         </figcaption>
       </figure>
       <button type="button" onClick={() => setShowTable((s) => !s)} aria-expanded={showTable} className="mt-3 min-h-11 font-semibold text-brand-strong underline underline-offset-4 dark:text-brand">
@@ -533,7 +581,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                   <td className="px-3 py-1.5">{formatLocalDate(d.date)}</td>
                   <td className="px-3 py-1.5 tabular">{d.done}</td>
                   <td className="px-3 py-1.5 tabular">{d.expected}</td>
-                  <td className="px-3 py-1.5 tabular">{d.percent == null ? '—' : `${Math.round(d.percent)} %`}</td>
+                  <td className="px-3 py-1.5 tabular">{formatPercent(d.percent)}</td>
                 </tr>
               ))}
             </tbody>

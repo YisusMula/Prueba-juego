@@ -27,9 +27,19 @@ const SIZES = [
 
 const problems = [];
 const browser = await chromium.launch();
+// Un local con un nombre de 100 caracteres sin espacios (para comprobar que nada desborda).
+const LONG_NAME = 'Restaurante' + 'X'.repeat(89);
+let longOrgId = null;
 
-for (const size of SIZES) {
-  const ctx = await browser.newContext({ viewport: { width: size.width, height: size.height }, locale: 'es-ES', timezoneId: 'Europe/Madrid', deviceScaleFactor: 1 });
+for (const scheme of ['claro', 'oscuro']) for (const base of SIZES) {
+  const size = { ...base, name: scheme === 'claro' ? base.name : `${base.name}-oscuro` };
+  const ctx = await browser.newContext({
+    viewport: { width: size.width, height: size.height },
+    locale: 'es-ES',
+    timezoneId: 'Europe/Madrid',
+    deviceScaleFactor: 1,
+    colorScheme: scheme === 'claro' ? 'light' : 'dark',
+  });
   const page = await ctx.newPage();
   page.on('console', (m) => {
     if (m.type() === 'error' && !/status of 4\d\d/.test(m.text())) problems.push(`[${size.name}] ${page.url()} consola: ${m.text()}`);
@@ -82,6 +92,38 @@ for (const size of SIZES) {
   await page.getByRole('button', { name: 'Coma decimal' }).click();
   await page.getByRole('button', { name: '8', exact: true }).click();
   await shot('12-cocina-temperatura');
+  // Validación en el momento: 999 °C no es una temperatura posible.
+  await page.getByRole('button', { name: 'Borrar' }).first().click();
+  await page.getByRole('button', { name: 'Borrar' }).first().click();
+  await page.getByRole('button', { name: 'Borrar' }).first().click();
+  for (const d of '999') await page.getByRole('button', { name: d, exact: true }).click();
+  await shot('13-cocina-temperatura-imposible');
+  // Local con nombre larguísimo, pendiente de eliminación (aviso persistente). La sesión sigue abierta.
+  await page.goto(`${org}/hoy`);
+  if (!longOrgId) {
+    longOrgId = await page.evaluate(async (name) => {
+      const h = { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+      const r = await fetch('/api/orgs', { method: 'POST', headers: h, body: JSON.stringify({ name, businessType: 'cafeteria' }) });
+      const { organization } = await r.json();
+      await fetch(`/api/orgs/${organization.id}`, { method: 'DELETE', headers: h, body: JSON.stringify({ password: 'Demo-EnRegla-2026' }) });
+      return organization.id;
+    }, LONG_NAME);
+  }
+  await page.goto(`${BASE}/locales/${longOrgId}/hoy`);
+  await page.getByTestId('deletion-banner').waitFor();
+  await shot('14-local-nombre-largo-pendiente-de-eliminacion');
+  await page.goto(`${org}/registrar/limpieza`);
+  await page.getByText('Limpieza semanal').first().click();
+  await page.locator('fieldset').filter({ hasText: 'Zonas limpiadas' }).getByRole('checkbox').first().check({ force: true });
+  await shot('15-limpieza-parcial');
+  await page.goto(`${org}/alergenos`);
+  await page.getByRole('button', { name: /Revisar Pulpo a la gallega/ }).click();
+  await shot('16-plato-pendiente-de-revisar');
+  await page.goto(`${org}/registrar/recepcion`);
+  await page.getByLabel(/Temperatura al recibir/).fill('12');
+  await page.getByRole('button', { name: /Refrigerado/ }).click();
+  await page.getByLabel(/Fecha de caducidad/).fill('2026-01-01');
+  await shot('17-recepcion-caducada-y-caliente');
   await ctx.close();
 }
 await browser.close();

@@ -1,3 +1,4 @@
+import { ALLERGEN_NAMES } from '@shared/schemas';
 import type { ReactNode } from 'react';
 import { ALLERGEN_LABELS } from '@shared/schemas';
 import type { AllergenId, AllergenStatus } from '@/api/types';
@@ -174,19 +175,5 @@ export function AllergenIcon({ id, size = 36, status = 'contains', decorative = 
 }
 
 /** Nombres cortos para los chips del filtro (la leyenda oficial completa se muestra abajo). */
-export const ALLERGEN_SHORT: Record<AllergenId, string> = {
-  gluten: 'Gluten',
-  crustaceans: 'Crustáceos',
-  eggs: 'Huevo',
-  fish: 'Pescado',
-  peanuts: 'Cacahuete',
-  soybeans: 'Soja',
-  milk: 'Leche',
-  nuts: 'Frutos de cáscara',
-  celery: 'Apio',
-  mustard: 'Mostaza',
-  sesame: 'Sésamo',
-  sulphites: 'Sulfitos',
-  lupin: 'Altramuces',
-  molluscs: 'Moluscos',
-};
+/** Nombre corto: el mismo en todas las vistas (definido en los esquemas compartidos). */
+export const ALLERGEN_SHORT = ALLERGEN_NAMES;

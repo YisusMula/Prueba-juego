@@ -10,11 +10,13 @@ import { Keypad, keypadDisplay, keypadToNumber } from '@/components/ui/Keypad';
 import { ConfirmDialog } from '@/components/ui/Overlay';
 import { LogoMark } from '@/components/ui/Logo';
 import { Icon } from '@/components/icons/Icon';
-import { RecordForm, TEMP_ACTIONS, type FormContext } from '@/features/RecordForms';
+import { RecordForm, TEMP_ACTIONS, physicallyValidTemp, type FormContext } from '@/features/RecordForms';
+import { TEMP_RANGE_MESSAGE } from '@shared/schemas';
+import { IdempotencyKeys } from '@/lib/idempotency';
 import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, recordSummary } from '@/features/recordMeta';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useOnline } from '@/hooks/useOnline';
-import { formatRange, formatTemp, formatTime, isOutOfRange } from '@/lib/format';
+import { formatPercent, formatRange, formatTemp, formatTime, isOutOfRange } from '@/lib/format';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import { kioskApi } from './kioskApi';
@@ -26,7 +28,7 @@ type Target = { kind: 'temp'; equipmentId: string } | { kind: 'form'; type: Reco
 type Screen =
   | { name: 'home' }
   | { name: 'who'; then: Target | null }
-  | { name: 'pin'; person: Person; then: Target | null; error?: string; retry?: Pending }
+  | { name: 'pin'; person: Person; then: Target | null; error?: string; retry?: Pending; attempt?: number }
   | { name: 'temp'; equipmentId: string }
   | { name: 'pick-equipment' }
   | { name: 'form'; type: RecordType; preset?: Record<string, string> }
@@ -102,7 +104,17 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
   const [serverError, setServerError] = useState<unknown>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [unpairOpen, setUnpairOpen] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const idleTimer = useRef<number | undefined>(undefined);
+  // Clave de idempotencia por registro: se reutiliza en los reintentos (también los automáticos al volver la conexión).
+  const [keys] = useState(() => new IdempotencyKeys());
+  /** Último envío que falló por red o tiempo agotado: se reintenta solo al volver `online`. */
+  const [failed, setFailedState] = useState<{ pending: Pending; who: Person } | null>(null);
+  const failedRef = useRef<{ pending: Pending; who: Person } | null>(null);
+  const setFailed = (f: { pending: Pending; who: Person } | null) => {
+    failedRef.current = f;
+    setFailedState(f);
+  };
 
   const unauthorized = [ctxQ.error, todayQ.error].some((e) => isApiError(e) && e.code === 'UNAUTHENTICATED');
   useEffect(() => {
@@ -148,8 +160,10 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
     if (!who) return setScreen({ name: 'who', then: null });
     setSaving(true);
     setServerError(null);
+    setFailed(null);
     try {
-      const record = await kioskApi.createRecord(token, { staffId: who.id, pin: who.pin, type: pending.type, data: pending.data });
+      const record = await kioskApi.createRecord(token, { staffId: who.id, pin: who.pin, type: pending.type, data: pending.data }, keys.keyFor({ staffId: who.id, ...pending }));
+      keys.reset();
       setPerson(who);
       setScreen({ name: 'result', record });
       void qc.invalidateQueries({ queryKey: ['kiosk', 'today'] });
@@ -171,10 +185,61 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
         if (err.code === 'READ_ONLY') {
           void qc.invalidateQueries({ queryKey: ['kiosk', 'context'] });
         }
+        if (err.retryable) setFailed({ pending, who });
       }
       setServerError(err);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Al volver la conexión: se refrescan los datos y se reintenta el registro que falló (misma clave).
+  const submitRef = useRef(submit);
+  useEffect(() => {
+    submitRef.current = submit;
+  });
+  useEffect(() => {
+    const onOnline = () => {
+      void qc.invalidateQueries({ queryKey: ['kiosk'] });
+      const f = failedRef.current;
+      failedRef.current = null;
+      setFailedState(null);
+      if (f) void submitRef.current(f.pending, f.who);
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [qc]);
+
+  /** Identificación con PIN: se comprueba en el servidor ANTES de dejar registrar. */
+  const verify = async (p: Person, pin: string, then: Target | null, retry?: Pending) => {
+    setVerifying(true);
+    try {
+      await kioskApi.verifyPin(token, { staffId: p.id, pin });
+      const who = { ...p, pin };
+      if (retry) {
+        setVerifying(false);
+        void submit(retry, who);
+        return;
+      }
+      setPerson(who);
+      goTarget(then);
+    } catch (err) {
+      if (isApiError(err) && err.code === 'UNAUTHENTICATED') return onRevoked();
+      if (isApiError(err) && err.code === 'PIN_LOCKED') {
+        setNotice(`El PIN de ${p.name} está bloqueado por demasiados intentos.${err.retryAfter ? ` Inténtalo en ${formatWait(err.retryAfter)}` : ''} o pide a un encargado que lo desbloquee.`);
+        setScreen({ name: 'home' });
+      } else {
+        setScreen((s) => ({
+          name: 'pin',
+          person: p,
+          then,
+          retry,
+          error: isApiError(err) && err.code === 'INVALID_PIN' ? 'PIN incorrecto. Prueba otra vez.' : errorMessage(err),
+          attempt: (s.name === 'pin' ? (s.attempt ?? 0) : 0) + 1,
+        }));
+      }
+    } finally {
+      setVerifying(false);
     }
   };
 
@@ -185,10 +250,13 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
       <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur sm:px-6">
-        <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 items-center gap-3 rounded-2xl pr-3" aria-label="Inicio del modo cocina">
+        <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 min-w-0 items-center gap-3 rounded-2xl pr-3">
+          <span className="sr-only">Inicio del modo cocina: </span>
           <LogoMark size={40} />
           <span className="text-left">
-            <span className="block text-xl leading-tight font-extrabold">{ctx?.organization.name ?? 'Modo cocina'}</span>
+            <span className="block max-w-[50vw] truncate text-xl leading-tight font-extrabold" title={ctx?.organization.name}>
+              {ctx?.organization.name ?? 'Modo cocina'}
+            </span>
             <span className="block text-sm text-ink-muted tabular">
               {now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: ctx?.organization.timezone })} · {ctx?.device.name ?? ''}
             </span>
@@ -229,7 +297,8 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
 
       {!online ? (
         <div role="status" className="bg-ink px-4 py-3 text-center text-lg font-semibold text-paper">
-          <Icon name="wifiOff" size={22} className="mr-2 inline" /> Sin internet: no se puede guardar. Anótalo y regístralo cuando vuelva.
+          <Icon name="wifiOff" size={22} className="mr-2 inline" />
+          {failed ? 'Sin internet: el último registro se guardará solo en cuanto vuelva la conexión.' : 'Sin internet: no se puede guardar. Anótalo y regístralo cuando vuelva.'}
         </div>
       ) : null}
       {readOnly ? (
@@ -275,6 +344,7 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
             ctx={ctx}
             onBack={() => setScreen({ name: 'home' })}
             onPick={(s) => {
+              setNotice(null);
               const p: Person = { id: s.id, name: s.name, hasPin: s.hasPin };
               if (s.hasPin) setScreen({ name: 'pin', person: p, then: screen.then });
               else {
@@ -285,19 +355,12 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
           />
         ) : screen.name === 'pin' ? (
           <PinScreen
-            key={`${screen.person.id}-${screen.error ?? ''}`}
+            key={`${screen.person.id}-${screen.attempt ?? 0}-${screen.error ?? ''}`}
             person={screen.person}
             error={screen.error}
-            busy={saving}
+            busy={saving || verifying}
             onBack={() => setScreen({ name: 'home' })}
-            onDone={(pin) => {
-              const p = { ...screen.person, pin };
-              if (screen.retry) void submit(screen.retry, p);
-              else {
-                setPerson(p);
-                goTarget(screen.then);
-              }
-            }}
+            onDone={(pin) => void verify(screen.person, pin, screen.then, screen.retry)}
           />
         ) : screen.name === 'pick-equipment' ? (
           <PickEquipment ctx={ctx} onBack={() => setScreen({ name: 'home' })} onPick={(id) => setScreen({ name: 'temp', equipmentId: id })} />
@@ -348,9 +411,11 @@ function BackButton({ onClick, label = 'Volver' }: { onClick: () => void; label?
 
 function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskContext; today: TodayTasks; readOnly: boolean; onStart: (t: Target) => void; onUnpair: () => void }) {
   const tz = ctx.organization.timezone;
-  const pendingTemps = today.temperatures.filter((t) => t.status === 'pending');
-  const pendingClean = today.cleaning.filter((c) => c.status === 'pending');
+  const pendingTemps = today.temperatures.filter((t) => t.status === 'pending' && t.countsToday !== false);
+  const pendingClean = today.cleaning.filter((c) => c.status === 'pending' && c.countsToday !== false);
   const { summary } = today;
+  const [allAlerts, setAllAlerts] = useState(false);
+  const shownAlerts = allAlerts ? today.alerts : today.alerts.slice(0, 4);
   return (
     <div className="space-y-7">
       <section aria-labelledby="khoy" className="flex flex-wrap items-center gap-4 rounded-3xl bg-brand-strong p-5 text-white dark:bg-[#0a2f33]">
@@ -363,7 +428,7 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
           </p>
         </div>
         <div className="font-display text-5xl font-extrabold tabular" aria-hidden="true">
-          {summary.percent}%
+          {formatPercent(summary.percent)}
         </div>
       </section>
 
@@ -373,10 +438,15 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
             <Icon name="alert" /> {today.alerts.length === 1 ? 'Hay 1 alerta' : `Hay ${today.alerts.length} alertas`}
           </h2>
           <ul className="mt-2 space-y-1 text-lg">
-            {today.alerts.slice(0, 4).map((a) => (
-              <li key={a.recordId}>• {a.message}</li>
+            {shownAlerts.map((a) => (
+              <li key={`${a.kind}-${a.recordId}`}>• {a.message}</li>
             ))}
           </ul>
+          {today.alerts.length > 4 ? (
+            <button type="button" onClick={() => setAllAlerts((v) => !v)} className="mt-2 min-h-12 font-bold text-bad underline underline-offset-4" aria-expanded={allAlerts}>
+              {allAlerts ? 'Ver menos' : `Ver las ${today.alerts.length} alertas`}
+            </button>
+          ) : null}
         </section>
       ) : null}
 
@@ -393,7 +463,7 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
                   onClick={() => onStart({ kind: 'temp', equipmentId: t.equipmentId })}
                   type="temperatura"
                   title={t.name}
-                  subtitle={`${t.done}/${t.required} · ${formatRange(t.minTemp, t.maxTemp)}`}
+                  subtitle={`${t.done} de ${t.required} · ${formatRange(t.minTemp, t.maxTemp)}`}
                   extra={t.lastReading ? `Última: ${formatTemp(t.lastReading.value)} (${formatTime(t.lastReading.at, tz)})` : undefined}
                 />
               </li>
@@ -405,7 +475,7 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
                   onClick={() => onStart({ kind: 'form', type: 'limpieza', preset: { cleaningPlanId: c.cleaningPlanId } })}
                   type="limpieza"
                   title={c.name}
-                  subtitle="Limpieza pendiente"
+                  subtitle={c.partial ? `Parcial (${c.partial.done} de ${c.partial.total}): falta completarla` : 'Limpieza pendiente'}
                 />
               </li>
             ))}
@@ -463,7 +533,7 @@ function BigTile({ onClick, type, title, subtitle, extra, disabled }: { onClick:
         <Icon name={RECORD_ICON[type]} size={34} />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-xl font-extrabold">{title}</span>
+        <span className="block text-xl font-extrabold [overflow-wrap:anywhere]">{title}</span>
         <span className="block text-ink-muted">{subtitle}</span>
         {extra ? <span className="block text-sm text-ink-muted">{extra}</span> : null}
       </span>
@@ -586,8 +656,12 @@ function TempScreen({
   const eq = ctx.equipment.find((e) => e.id === eqId);
   if (!eq) return <PickEquipment ctx={ctx} onBack={onBack} onPick={setEqId} />;
   const num = keypadToNumber(value);
-  const out = num != null && isOutOfRange(num, eq.minTemp, eq.maxTemp);
+  // Rango físico admitido (−60…300 °C): fuera de él no se evalúa «dentro/fuera de rango» y no se puede guardar.
+  const valid = physicallyValidTemp(num);
+  const invalid = num != null && !valid;
+  const out = valid && isOutOfRange(num!, eq.minTemp, eq.maxTemp);
   const err = serverError ? errorMessage(serverError) : null;
+  const retryable = isApiError(serverError) && serverError.retryable;
 
   if (step === 'action') {
     return (
@@ -619,7 +693,7 @@ function TempScreen({
           ))}
         </div>
         <label className="mt-4 block text-lg font-semibold" htmlFor="kother">
-          U otra cosa:
+          O escribe otra cosa
         </label>
         <input
           id="kother"
@@ -629,7 +703,7 @@ function TempScreen({
           className="mt-1 min-h-16 w-full rounded-2xl border-2 border-line-strong bg-surface px-4 text-lg"
         />
         {err ? (
-          <Callout tone="bad" className="mt-4" live="assertive">
+          <Callout tone="bad" className="mt-4" live="assertive" action={retryable ? <Button variant="secondary" icon="refresh" loading={saving} onClick={() => num != null && onSubmit({ equipmentId: eq.id, value: num, correctiveAction: action.trim() })}>Reintentar</Button> : undefined}>
             {err}
           </Callout>
         ) : null}
@@ -663,13 +737,17 @@ function TempScreen({
           aria-label="Temperatura escrita"
           className={cn(
             'mt-6 flex min-h-28 items-center justify-end rounded-3xl border-4 px-6 font-display text-6xl font-extrabold tabular transition-colors',
-            num == null ? 'border-line bg-surface' : out ? 'border-bad-solid bg-bad-soft text-bad' : 'border-ok-solid bg-ok-soft text-ok',
+            num == null ? 'border-line bg-surface' : invalid ? 'border-warn-solid bg-warn-soft text-warn' : out ? 'border-bad-solid bg-bad-soft text-bad' : 'border-ok-solid bg-ok-soft text-ok',
           )}
         >
           {value ? `${keypadDisplay(value)} °C` : <span className="text-ink-muted/50">— °C</span>}
         </output>
         <p className="mt-3 min-h-8 text-xl font-bold" aria-live="polite">
-          {num == null ? '' : out ? (
+          {num == null ? '' : invalid ? (
+            <span className="text-warn" role="alert">
+              <Icon name="alert" className="mr-1 inline" /> {TEMP_RANGE_MESSAGE}
+            </span>
+          ) : out ? (
             <span className="text-bad">
               <Icon name="alert" className="mr-1 inline" /> Fuera de rango
             </span>
@@ -680,7 +758,12 @@ function TempScreen({
           )}
         </p>
         {err ? (
-          <Callout tone="bad" className="mt-2" live="assertive">
+          <Callout
+            tone="bad"
+            className="mt-2"
+            live="assertive"
+            action={retryable && num != null && !out ? <Button variant="secondary" icon="refresh" loading={saving} onClick={() => onSubmit({ equipmentId: eq.id, value: num, correctiveAction: null })}>Reintentar</Button> : undefined}
+          >
             {err}
           </Callout>
         ) : null}
@@ -692,11 +775,11 @@ function TempScreen({
           block
           className="mt-3"
           variant={out ? 'danger' : 'ok'}
-          disabled={num == null || disabled}
+          disabled={num == null || invalid || disabled}
           loading={saving}
           icon={out ? 'arrowRight' : 'check'}
           onClick={() => {
-            if (num == null) return;
+            if (num == null || invalid) return;
             if (out) setStep('action');
             else onSubmit({ equipmentId: eq.id, value: num, correctiveAction: null });
           }}
@@ -719,10 +802,10 @@ function ResultScreen({ record, tz, onDone }: { record: AppRecord; tz: string; o
       <span className={cn('mx-auto grid size-32 animate-pop place-items-center rounded-[2.5rem] text-white shadow-pop', record.alert ? 'bg-bad-solid' : 'bg-ok-solid')}>
         <Icon name={record.alert ? 'alert' : 'check'} size={72} strokeWidth={3} />
       </span>
-      <h1 className="mt-6 text-5xl font-extrabold">{record.alert ? 'Guardado con alerta' : 'Hecho'}</h1>
+      <h1 className="mt-6 text-5xl font-extrabold">{record.alert ? 'Guardado con alerta' : record.type === 'limpieza' && !record.data.completed ? 'Guardado como parcial' : 'Hecho'}</h1>
       <p className="mt-3 text-2xl font-semibold">{s.title}</p>
       <p className="text-xl text-ink-muted">
-        {s.detail} · {formatTime(record.createdAt, tz)}
+        {s.detail} · {formatTime(record.effectiveAt, tz)}
       </p>
       <Button size="xl" className="mt-8" onClick={onDone}>
         Volver al inicio

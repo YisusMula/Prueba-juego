@@ -46,7 +46,7 @@ describe('Keypad', () => {
 describe('PasswordMeter', () => {
   it('anuncia cada requisito con texto', () => {
     render(<PasswordMeter password="corta" email="a@b.es" />);
-    expect(screen.getByText('Al menos 10 caracteres')).toBeInTheDocument();
+    expect(screen.getByText('Entre 10 y 128 caracteres')).toBeInTheDocument();
     expect(screen.getAllByText(/: pendiente/).length).toBeGreaterThan(0);
   });
 });

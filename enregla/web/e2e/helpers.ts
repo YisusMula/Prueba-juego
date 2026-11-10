@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { test as base, expect, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const runtime = path.join(here, '.runtime');
@@ -76,3 +77,30 @@ export const test = base.extend<{ consoleGuard: void }>({
   ],
 });
 export { expect };
+
+/** Cabeceras para llamar a la API desde page.request (CSRF de la SPA). */
+export const apiHeaders = (page: Page) => ({ 'X-Requested-With': 'XMLHttpRequest', Origin: new URL(page.url() || 'http://localhost:3100').origin });
+
+/** Crea, verifica (por el enlace del email) y deja lista una cuenta nueva. */
+export async function createVerifiedAccount(page: Page, email: string, password: string, name: string) {
+  const origin = `http://localhost:${process.env.E2E_PORT ?? '3100'}`;
+  const res = await page.request.post(`${origin}/api/auth/register`, {
+    data: { email, password, name },
+    headers: { 'X-Requested-With': 'XMLHttpRequest', Origin: origin },
+  });
+  expect(res.status()).toBe(202);
+  const link = await lastEmailLink(email, '/verificar-email');
+  const token = link.split('#token=')[1]!;
+  const v = await page.request.post(`${origin}/api/auth/verify-email`, { data: { token }, headers: { 'X-Requested-With': 'XMLHttpRequest', Origin: origin } });
+  expect(v.status()).toBe(200);
+}
+
+/**
+ * Pasada de axe-core: falla con violaciones serias o críticas (WCAG 2.x A/AA).
+ */
+export async function expectNoSeriousA11yViolations(page: Page, label: string) {
+  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice']).analyze();
+  const serious = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+  const summary = serious.map((v) => `${label}: [${v.impact}] ${v.id} — ${v.help}\n   ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join('\n   ')}`).join('\n');
+  expect(serious, summary).toEqual([]);
+}

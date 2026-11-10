@@ -12,6 +12,22 @@ RUN npm run build && npm prune --omit=dev
 # --- Build del frontend (solo si existe web/) --------------------------------
 FROM node:22-bookworm-slim AS web-build
 WORKDIR /src
+# Datos legales y públicos que se incrustan en la web (ver web/.env.example). El build de producción
+# FALLA si faltan los obligatorios: pásalos con --build-arg (o en web/.env.production).
+ARG VITE_APP_NAME
+ARG VITE_PUBLIC_URL
+ARG VITE_SUPPORT_EMAIL
+ARG VITE_LEGAL_OWNER_NAME
+ARG VITE_LEGAL_TAX_ID
+ARG VITE_LEGAL_ADDRESS
+ARG VITE_LEGAL_CONTACT_EMAIL
+ARG VITE_LEGAL_HOSTING_PROVIDER
+ARG VITE_LEGAL_LAST_UPDATED
+ARG VITE_LEGAL_REGISTRY_DATA
+ARG VITE_LEGAL_HOSTING_LOCATION
+ARG VITE_LEGAL_EMAIL_PROVIDER
+ARG VITE_LEGAL_JURISDICTION
+ARG VITE_ALLOW_PLACEHOLDER_LEGAL
 # Se copia el contexto (filtrado por .dockerignore) para poder comprobar si web/ existe.
 COPY . .
 RUN mkdir -p /app/web/dist && \

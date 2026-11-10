@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { formatRange, formatTemp, isOutOfRange, parseDecimal, addDaysIso, localDateIn, formatLocalDate } from '../format';
 import { safeNext } from '../redirect';
-import { passwordAcceptable, passwordChecks, passwordScore } from '../password';
+import { passwordProblem, passwordAcceptable, passwordChecks, passwordScore } from '../password';
 import { takeHashToken } from '../hashToken';
 import { filenameFromDisposition } from '../download';
 import { storage } from '../storage';
@@ -59,7 +59,13 @@ describe('requisitos de contraseña', () => {
   it('coinciden con la política del servidor', () => {
     expect(passwordAcceptable('corta')).toBe(false);
     expect(passwordAcceptable('aaaaaaaaaaaa')).toBe(false);
-    expect(passwordAcceptable('ana.martin2', 'ana.martin@x.es')).toBe(false);
+    // Solo coincidencia EXACTA (sin distinguir mayúsculas) con comunes, email o nombre.
+    expect(passwordAcceptable('ana.martin', 'ana.martin@x.es')).toBe(false);
+    expect(passwordAcceptable('ana.martin2', 'ana.martin@x.es')).toBe(true);
+    expect(passwordAcceptable('Contrasena-Larga-77x')).toBe(true);
+    expect(passwordAcceptable('CONTRASENA123')).toBe(false);
+    expect(passwordAcceptable('Pepa Ruiz Gil', '', 'pepa ruiz gil')).toBe(false);
+    expect(passwordProblem('qwertyuiop')).toMatch(/más usadas/);
     expect(passwordAcceptable('Cocina-Limpia-2026')).toBe(true);
     expect(passwordChecks('').every((c) => !c.ok)).toBe(true);
     expect(passwordScore('Cocina-Limpia-2026!')).toBeGreaterThanOrEqual(3);

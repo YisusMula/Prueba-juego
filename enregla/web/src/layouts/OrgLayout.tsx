@@ -13,6 +13,7 @@ import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import { PageLoader } from './PageLoader';
 import { SubscriptionBanner } from '@/features/SubscriptionBanner';
+import { APP_NAME } from '@/config/brand';
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean };
 
@@ -67,8 +68,14 @@ function OrgSwitcher({ compact }: { compact?: boolean }) {
         <Icon name="store" size={20} className="shrink-0 text-brand" />
         <span className="min-w-0 flex-1">
           <span className="sr-only">Local actual: </span>
-          <span className="block truncate font-bold">{org.name}</span>
-          {!compact ? <span className="block text-xs text-ink-muted">{org.role === 'owner' ? 'Propietario' : 'Encargado'} · cambiar</span> : null}
+          <span className="block truncate font-bold" title={org.name}>
+            {org.name}
+          </span>
+          {!compact ? (
+            <span className="block truncate text-xs text-ink-muted">
+              {org.deletionScheduledAt ? 'Pendiente de eliminación' : org.role === 'owner' ? 'Propietario' : 'Encargado'} · cambiar
+            </span>
+          ) : null}
         </span>
         <Icon name="chevronDown" size={18} className="shrink-0 text-ink-muted" />
       </button>
@@ -85,9 +92,18 @@ function OrgSwitcher({ compact }: { compact?: boolean }) {
                   o.id === org.id ? 'border-brand bg-brand-soft' : 'border-line hover:bg-surface-2',
                 )}
               >
-                <Icon name="store" size={20} />
-                <span className="flex-1 truncate">{o.name}</span>
-                {o.id === org.id ? <Icon name="check" size={20} /> : null}
+                <Icon name="store" size={20} className="shrink-0" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate" title={o.name}>
+                    {o.name}
+                  </span>
+                  {o.deletionScheduledAt ? (
+                    <span className="block text-sm font-normal text-bad">Pendiente de eliminación · solo lectura</span>
+                  ) : o.subscription.readOnly ? (
+                    <span className="block text-sm font-normal text-ink-muted">Solo lectura</span>
+                  ) : null}
+                </span>
+                {o.id === org.id ? <Icon name="check" size={20} className="shrink-0" /> : null}
               </Link>
             </li>
           ))}
@@ -106,7 +122,7 @@ function Sidebar() {
   const logout = useLogout();
   return (
     <aside className="sticky top-0 hidden h-dvh w-72 shrink-0 flex-col border-r border-line bg-surface/70 px-4 py-5 lg:flex">
-      <Link to={path('hoy')} className="mb-5 px-2" aria-label="Ir a Hoy">
+      <Link to={path('hoy')} className="mb-5 px-2" aria-label={`${APP_NAME}: ir a Hoy`}>
         <Logo />
       </Link>
       <OrgSwitcher />

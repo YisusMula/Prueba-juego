@@ -20,7 +20,24 @@ services:
     # Sin puertos publicados: solo accesible desde la red interna de compose.
 
   app:
-    build: .
+    build:
+      context: .
+      # Datos de la web (VITE_*): el build falla si faltan los legales obligatorios (web/.env.example).
+      args:
+        VITE_APP_NAME: ${VITE_APP_NAME:-}
+        VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-}
+        VITE_SUPPORT_EMAIL: ${VITE_SUPPORT_EMAIL:-}
+        VITE_LEGAL_OWNER_NAME: ${VITE_LEGAL_OWNER_NAME:-}
+        VITE_LEGAL_TAX_ID: ${VITE_LEGAL_TAX_ID:-}
+        VITE_LEGAL_ADDRESS: ${VITE_LEGAL_ADDRESS:-}
+        VITE_LEGAL_CONTACT_EMAIL: ${VITE_LEGAL_CONTACT_EMAIL:-}
+        VITE_LEGAL_HOSTING_PROVIDER: ${VITE_LEGAL_HOSTING_PROVIDER:-}
+        VITE_LEGAL_LAST_UPDATED: ${VITE_LEGAL_LAST_UPDATED:-}
+        VITE_LEGAL_REGISTRY_DATA: ${VITE_LEGAL_REGISTRY_DATA:-}
+        VITE_LEGAL_HOSTING_LOCATION: ${VITE_LEGAL_HOSTING_LOCATION:-}
+        VITE_LEGAL_EMAIL_PROVIDER: ${VITE_LEGAL_EMAIL_PROVIDER:-}
+        VITE_LEGAL_JURISDICTION: ${VITE_LEGAL_JURISDICTION:-}
+        VITE_ALLOW_PLACEHOLDER_LEGAL: ${VITE_ALLOW_PLACEHOLDER_LEGAL:-}
     restart: unless-stopped
     env_file: server/.env
     environment:

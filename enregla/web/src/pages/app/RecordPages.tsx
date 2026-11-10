@@ -10,7 +10,7 @@ import { Button, LinkButton } from '@/components/ui/Button';
 import { ErrorState, LoadingBlock } from '@/components/ui/Feedback';
 import { Card, PageHeader } from '@/components/ui/Layout';
 import { Field, Select } from '@/components/ui/Form';
-import { useToast } from '@/components/ui/Overlay';
+import { useIdempotencyKeys } from '@/lib/idempotency';
 import { Icon } from '@/components/icons/Icon';
 import { RecordForm, type FormContext } from '@/features/RecordForms';
 import { RECORD_HELP, RECORD_ICON, RECORD_SHORT, RECORD_TINT, RECORD_TYPE_LABELS, isRecordType, recordSummary } from '@/features/recordMeta';
@@ -72,8 +72,9 @@ export function RegisterTypePage() {
   const [params] = useSearchParams();
   const { orgId, path } = useOrgContext();
   const qc = useQueryClient();
-  const toast = useToast();
   const navigate = useNavigate();
+  const keys = useIdempotencyKeys();
+  const [lastData, setLastData] = useState<unknown>(undefined);
   const { ctx, error, retry } = useFormContext();
   const [staffId, setStaffId] = useState('');
   const [saving, setSaving] = useState(false);
@@ -93,11 +94,15 @@ export function RegisterTypePage() {
   const submit = async (data: unknown) => {
     setSaving(true);
     setServerError(null);
+    setLastData(data);
+    const body = { type, data, staffId: staffId || null };
     try {
-      const record = await orgApi(orgId).createRecord({ type, data, staffId: staffId || null });
+      // Misma clave en los reintentos de este mismo registro: el servidor no lo duplica (200 = ya guardado).
+      const record = await orgApi(orgId).createRecord(body, keys.keyFor(body));
+      keys.reset();
       await qc.invalidateQueries({ queryKey: ['org', orgId] });
+      // La confirmación es el propio panel (sin aviso flotante que se quede en la pantalla siguiente).
       setSaved(record);
-      toast.show(record.alert ? 'Registro guardado con alerta' : 'Registro guardado', record.alert ? 'bad' : 'ok');
       window.scrollTo({ top: 0 });
     } catch (err) {
       setServerError(err);
@@ -143,6 +148,7 @@ export function RegisterTypePage() {
               ctx={ctx}
               preset={preset}
               onSubmit={(d) => void submit(d)}
+              onRetry={lastData !== undefined ? () => void submit(lastData) : undefined}
               submitting={saving}
               serverError={serverError}
               footer={
@@ -172,16 +178,22 @@ export function RegisterTypePage() {
 function SavedPanel({ record, onAnother }: { record: AppRecord; onAnother: () => void }) {
   const { path } = useOrgContext();
   const s = recordSummary(record);
+  const partial = record.type === 'limpieza' && !record.data.completed;
   return (
     <div
       role="status"
-      className={cn('max-w-3xl animate-fade-up rounded-3xl border-2 p-6 text-center sm:p-10', record.alert ? 'border-bad/50 bg-bad-soft' : 'border-ok/40 bg-ok-soft')}
+      className={cn(
+        'max-w-3xl animate-fade-up rounded-3xl border-2 p-6 text-center sm:p-10',
+        record.alert ? 'border-bad/50 bg-bad-soft' : partial ? 'border-warn/50 bg-warn-soft' : 'border-ok/40 bg-ok-soft',
+      )}
       data-testid="record-saved"
     >
-      <span className={cn('mx-auto grid size-20 animate-pop place-items-center rounded-3xl text-white shadow-pop', record.alert ? 'bg-bad-solid' : 'bg-ok-solid')}>
-        <Icon name={record.alert ? 'alert' : 'check'} size={44} strokeWidth={3} />
+      <span className={cn('mx-auto grid size-20 animate-pop place-items-center rounded-3xl text-white shadow-pop', record.alert ? 'bg-bad-solid' : partial ? 'bg-warn-solid' : 'bg-ok-solid')}>
+        <Icon name={record.alert ? 'alert' : partial ? 'clock' : 'check'} size={44} strokeWidth={3} />
       </span>
-      <h2 className="mt-5 text-3xl font-extrabold">{record.alert ? 'Guardado, con alerta' : 'Hecho'}</h2>
+      <h2 className="mt-5 text-3xl font-extrabold">
+        {record.alert ? 'Guardado, con alerta' : record.type === 'limpieza' && !record.data.completed ? 'Guardado como parcial' : 'Hecho'}
+      </h2>
       <p className="mt-2 text-lg font-semibold">{s.title}</p>
       <p className="text-ink-muted">{s.detail}</p>
       <div className="mx-auto mt-7 grid max-w-md gap-3 sm:grid-cols-2">

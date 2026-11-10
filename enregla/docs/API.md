@@ -28,11 +28,13 @@ type ErrorResponse = {
 
 `path` usa notación con puntos relativa al cuerpo o query (p. ej. `email`, `data.correctiveAction`, `items.0.area`).
 
+**Mensajes en español, con el campo.** Todos los mensajes de validación (también los de zod) salen de un mapa de errores en español compartido con el frontend (`schemas/es.ts`, se activa al importar `schemas/index.ts`): «Escribe el nombre», «La temperatura debe estar entre −60 y 300 °C», «El nombre es demasiado largo (máximo 100 caracteres)»… Nunca aparecen textos de zod en inglés ni códigos internos. En `VALIDATION_ERROR`, `error.message` es el mensaje del primer campo (que ya lo nombra) y, si hay más, «Hay N datos más por revisar.»; antes era el genérico «Los datos enviados no son válidos».
+
 | HTTP | `code` | Cuándo |
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | Cuerpo/query no válidos (zod) o regla de negocio de validación (p. ej. falta acción correctora). Incluye `details`. |
 | 400 | `BAD_REQUEST` | JSON malformado, rango de fechas excesivo, petición incoherente. |
-| 400 | `INVALID_TOKEN` | Token de email/invitación inválido, caducado o ya usado. |
+| 400 | `INVALID_TOKEN` | Token de email/invitación inválido, caducado o ya usado. Mensaje: «Este enlace no es válido: puede que haya caducado o que ya se haya usado.» (muéstralo tal cual, sin añadir más texto). |
 | 401 | `UNAUTHENTICATED` | Falta sesión (o token de kiosko) o ha caducado. |
 | 401 | `INVALID_CREDENTIALS` | Email/contraseña incorrectos, o contraseña de reautenticación incorrecta. |
 | 401 | `PIN_REQUIRED` | Kiosko: el miembro del personal tiene PIN y no se ha enviado. |
@@ -189,7 +191,7 @@ type User = { id: string; email: string; name: string; emailVerified: boolean; c
 ### POST `/api/auth/register`
 Cuerpo: `{ email: string; password: string; name: string }`
 - `email`: se normaliza (trim + minúsculas), máx. 254.
-- `password`: 10–128 caracteres; se rechazan contraseñas muy comunes, un único carácter repetido o basadas en el email.
+- `password`: 10–128 caracteres; no puede ser un único carácter repetido ni **coincidir exactamente** (sin distinguir mayúsculas) con una contraseña de la lista de las más usadas, con el email, con la parte del email antes de la @ ni con el nombre. Contener una palabra común está permitido («Contrasena-Larga-77x» es válida). La política está en `schemas/password-policy.ts` (`checkPasswordPolicy`, `passwordRules`) y el frontend usa la misma. El mensaje de error explica el motivo.
 - `name`: 1–100.
 
 `202 { "message": "Si los datos son correctos, recibirás un email en unos minutos." }`
@@ -378,7 +380,7 @@ Query: `limit` (1–200), `cursor` (string numérica = `id` del último). Orden:
 ```ts
 200 { items: { id: string; event: string; user: { id: string; name: string | null } | null; ip: string | null; metadata: object; createdAt: string }[]; nextCursor: string | null }
 ```
-Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.deletion_scheduled`, `org.restored`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `device.revoked_with_member`, `billing.subscription_canceled`, `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
+Etiquetas legibles de TODOS los eventos que emite el servidor: `AUDIT_EVENT_LABELS` en `schemas/index.ts` (un test comprueba que no falta ninguno). Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.deletion_scheduled`, `org.restored`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `device.revoked_with_member`, `billing.subscription_canceled`, `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
 
 ---
 
@@ -495,12 +497,13 @@ Si el valor queda fuera de `[minTemp, maxTemp]` del equipo, `correctiveAction` e
 Almacenado: `{ equipmentId, equipmentName, value, minTemp, maxTemp, outOfRange: boolean, correctiveAction: string | null }`. `alert = outOfRange`.
 
 **limpieza** — entrada `{ cleaningPlanId: uuid; items: { itemId: string; done: boolean }[]; observations?: string }`.
-Los `itemId` deben pertenecer al plan, sin duplicados; los ítems no enviados cuentan como no hechos.
-Almacenado: `{ cleaningPlanId, planName, items: { itemId, area, done }[], completed: boolean, observations }`. `alert = false`.
+Los `itemId` deben pertenecer al plan, sin duplicados; los ítems no enviados cuentan como no hechos. **Al menos una zona debe estar hecha** (si no → 400 `data.items`: «Marca al menos una zona hecha»).
+Almacenado: `{ cleaningPlanId, planName, items: { itemId, area, done }[], completed: boolean, observations }`. `alert = false`. Una limpieza con `completed: false` es **parcial**: se guarda, pero **no cuenta como tarea hecha** en Hoy ni en el cumplimiento (muéstrala como «Parcial (2 de 5)»).
 
-**recepcion** — entrada `{ supplierId?: uuid; supplierName?: string; product: string; lot?: string; temperature?: number; expiryDate?: "AAAA-MM-DD"; accepted: boolean; rejectionReason?: string }`.
+**recepcion** — entrada `{ supplierId?: uuid; supplierName?: string; product: string; lot?: string; temperature?: number (−60…100); maxTemperature?: number (−60…100); expiryDate?: "AAAA-MM-DD"; accepted: boolean; rejectionReason?: string; correctiveAction?: string }`.
 Hace falta `supplierId` o `supplierName`; si `accepted = false`, `rejectionReason` es obligatorio. Con `supplierId`, el nombre se toma del proveedor.
-Almacenado: `{ supplierId, supplierName, product, lot, temperature, expiryDate, accepted, rejectionReason }`. `alert = !accepted`.
+`maxTemperature` (NUEVO, opcional) es la temperatura máxima admisible del producto (atajos orientativos: refrigerado 4 °C, congelado −18 °C; `RECEPTION_MAX_TEMP_PRESETS`). Si se **acepta** mercancía con `temperature > maxTemperature` o con `expiryDate` anterior a hoy (fecha local del local), `correctiveAction` (motivo / acción) es obligatoria (400 `data.correctiveAction`) y el registro queda con alerta.
+Almacenado: `{ supplierId, supplierName, product, lot, temperature, maxTemperature, temperatureOutOfRange, expiryDate, expired, accepted, rejectionReason, correctiveAction }`. `alert = !accepted || expired || temperatureOutOfRange`.
 
 **aceite** — entrada `{ equipmentId: uuid (de tipo 'freidora'); action: 'revisado' | 'cambiado'; polarCompounds?: number (0–100, %); correctiveAction?: string }`.
 Si `polarCompounds > 25` (umbral de referencia `POLAR_COMPOUNDS_LIMIT`), `correctiveAction` es obligatoria.
@@ -512,7 +515,7 @@ Almacenado igual. `alert = result === 'con_indicios'`.
 **incidencia** — entrada `{ description: string (1–2000); correctiveAction?: string; closed: boolean }`.
 Almacenado igual. `alert = !closed`. Para **cerrar** una incidencia: crea una enmienda con `closed: true`.
 
-**formacion** (formación de manipuladores) — entrada `{ traineeStaffId: uuid; course: string (1–300); trainingDate: "AAAA-MM-DD"; trainer?: string; hours?: number }`.
+**formacion** (formación de manipuladores) — entrada `{ traineeStaffId: uuid; course: string (1–300); trainingDate: "AAAA-MM-DD" (no futura, según la fecha local del local); trainer?: string; hours?: number (0–1000) }`.
 Almacenado: `{ traineeStaffId, traineeName, course, trainingDate, trainer, hours }`. `alert = false`.
 
 En la entrada, los textos opcionales vacíos se guardan como `null`.
@@ -575,7 +578,17 @@ Estado por alérgeno: `'contains'` (Contiene) · `'traces'` (Puede contener traz
 
 ```ts
 type AllergenMap = Record<'gluten' | 'crustaceans' | … | 'molluscs', 'contains' | 'traces' | 'no'>; // los 14, obligatorios
-type Dish = { id: string; name: string; category: string | null; description: string | null; allergens: AllergenMap; visible: boolean; createdAt: string; updatedAt: string };
+type Dish = {
+  id: string; name: string; category: string | null; description: string | null; allergens: AllergenMap;
+  allergensReviewed: boolean;        // NUEVO: revisión explícita de los 14 alérgenos
+  allergensReviewedAt: string | null; // NUEVO
+  visible: boolean; createdAt: string; updatedAt: string;
+};
+```
+
+**Revisión de alérgenos (NUEVO, migración 0004).** Un plato nace **sin revisar** (`allergensReviewed: false`, valor por defecto en `POST`) y **no aparece en la carta pública** hasta que alguien envía `allergensReviewed: true` (en `POST` o `PATCH`), es decir, hasta que confirma que ha decidido los 14 alérgenos (o que no contiene ninguno). En la migración, los platos existentes quedan revisados solo si tienen algún alérgeno marcado («contiene» o «trazas»); los que tenían los 14 en «no» pasan a pendientes. Nombres cortos de los alérgenos, iguales en todas las vistas: `ALLERGEN_NAMES` (p. ej. «Gluten», «Sulfitos»); `ALLERGEN_LABELS` sigue siendo la denominación completa del Reglamento.
+
+```ts
 ```
 
 | Método | Ruta | Cuerpo | Respuesta |
@@ -594,13 +607,14 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
 ```ts
 200 {
   organization: { name: string };
-  allergens: { id: AllergenId; label: string }[];          // leyenda, en el orden oficial
+  allergens: { id: AllergenId; label: string; name: string }[]; // leyenda, en el orden oficial (name = nombre corto, NUEVO)
   statuses: { contains: 'Contiene'; traces: 'Puede contener trazas'; no: 'No contiene' };
-  dishes: { name: string; category: string | null; description: string | null; allergens: AllergenMap }[]; // solo visibles, por categoría y nombre
+  dishes: { name: string; category: string | null; description: string | null; allergens: AllergenMap }[]; // solo visibles Y revisados, en orden de carta (entrantes → principales → otras → postres → bebidas → sin categoría; `compareMenuCategories`) y nombre
   updatedAt: string | null;
   notice: string;                                             // aviso para mostrar al cliente
 }
 ```
+`notice` advierte siempre de consultar al personal y de posibles trazas por contaminación cruzada: muéstralo siempre visible y no digas nunca «Sin alérgenos» de forma tajante (usa «No se han declarado alérgenos en este plato»).
 404 si el slug no existe, la carta está desactivada **o el local está en solo lectura** (prueba caducada, impago definitivo, cancelada, pendiente de eliminación). Sin ids ni datos internos. Cabecera `X-Robots-Tag: noindex, nofollow`. Límite 120/min por IP.
 
 ---
@@ -625,16 +639,17 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
     cleaningPlanId: string; name: string; frequency: 'daily' | 'weekly' | 'monthly';
     status: 'done' | 'pending';
     countsToday: boolean;    // NUEVO: igual que en temperatures
-    completedAt: string | null;   // effectiveAt del registro
+    completedAt: string | null;   // effectiveAt del registro COMPLETO (las parciales no cuentan)
+    partial: { done: number; total: number; at: string; recordId: string } | null; // NUEVO: última limpieza parcial del periodo si aún no hay una completa
   }[];                       // planes activos que tocan hoy
   summary: { total: number; done: number; pending: number; percent: number };   // solo elementos con countsToday
   alerts: {
-    kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'plagas_con_indicios' | 'incidencia_abierta';
+    kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'recepcion_con_incidencia' /* NUEVO: aceptada caducada o por encima de la máxima */ | 'plagas_con_indicios' | 'incidencia_abierta';
     recordId: string; message: string; createdAt: string;
   }[];                       // alertas de hoy + incidencias abiertas de cualquier fecha (máx. 50 + 50)
 }
 ```
-Reglas: un plan semanal toca el `weekday` indicado; uno mensual, el `monthDay`. Se considera hecho si hay un registro de limpieza del plan (por `effectiveAt`) desde el inicio de su periodo (lunes de la semana / día 1 del mes / hoy) hasta hoy. Las lecturas sustituidas por una enmienda no cuentan; la enmienda cuenta en el día del original. Las alertas «de hoy» son las de registros cuyo hecho es de hoy; `createdAt` de cada alerta = `effectiveAt`.
+Los mensajes de las alertas usan formato es-ES («3,5 °C», «−18 °C», «al 27 %»). Reglas: un plan semanal toca el `weekday` indicado; uno mensual, el `monthDay`. Se considera hecho si hay un registro de limpieza **completo** del plan (por `effectiveAt`) desde el inicio de su periodo (lunes de la semana / día 1 del mes / hoy) hasta hoy. Las lecturas sustituidas por una enmienda no cuentan; la enmienda cuenta en el día del original. Las alertas «de hoy» son las de registros cuyo hecho es de hoy; `createdAt` de cada alerta = `effectiveAt`.
 
 ### GET `/tasks/compliance?from=AAAA-MM-DD&to=AAAA-MM-DD`
 Rango máximo 92 días; los días futuros se omiten.
@@ -654,10 +669,10 @@ Lo esperado de cada día sale de la **configuración vigente ese día** (histori
 Query común: `from`, `to` (`AAAA-MM-DD`, inclusive, máx. 366 días) y `types` opcional (lista separada por comas de `RecordType`; vacío = todos). Disponibles para owner y manager, también en solo lectura. Quedan auditados.
 
 ### GET `/reports/pdf`
-`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria, periodo y tipos; una tabla por tipo (ordenada por fecha del hecho); «Fecha y hora» = fecha del **hecho** (`effectiveAt`); filas fuera de rango en rojo; enmiendas destacadas con su motivo, referencia cruzada y **cuándo y por quién** se enmendó; pie con fecha de generación y número de página. Fuente Unicode embebida: los textos salen completos (sin «…»; las celdas largas continúan en la página siguiente) y con cualquier letra latina, griega o cirílica; los caracteres sin glifo (muchos emojis, CJK) salen como `□`. Respuesta con `Content-Length` (el PDF se genera entero antes de enviarse). **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. Se genera en streaming. Límites: 10 / 10 min por local y por usuario; además, como mucho 2 PDF a la vez en el servidor: si están ocupados → 429 con `Retry-After` (reintenta pasados esos segundos).
+`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria con nombre legible («Hora peninsular y de Baleares», `timezoneLabel`), periodo y tipos; formatos es-ES (coma decimal, signo «−», «máx./mín.» en vez de «<=/>=»); limpiezas como «Completa (5 de 5)» o «Parcial (2 de 5)»; en el original corregido, «Corregido el … por …» (sin ids internos); una tabla por tipo (ordenada por fecha del hecho); «Fecha y hora» = fecha del **hecho** (`effectiveAt`); filas fuera de rango en rojo; enmiendas destacadas con su motivo, referencia cruzada y **cuándo y por quién** se enmendó; pie con fecha de generación y número de página. Fuente Unicode embebida: los textos salen completos (sin «…»; las celdas largas continúan en la página siguiente) y con cualquier letra latina, griega o cirílica; los caracteres sin glifo (muchos emojis, CJK) salen como `□`. Respuesta con `Content-Length` (el PDF se genera entero antes de enviarse). **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. Se genera en streaming. Límites: 10 / 10 min por local y por usuario; además, como mucho 2 PDF a la vez en el servidor: si están ocupados → 429 con `Retry-After` (reintenta pasados esos segundos).
 
 ### GET `/reports/csv`
-`200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora (fecha del HECHO), firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas, fecha_registro, enmendado_por` (las dos últimas son NUEVAS, al final: hora real de inserción y, en enmiendas, quién enmendó). Orden por fecha del hecho. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
+`200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora (fecha del HECHO), firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas, fecha_registro, enmendado_por, estado_limpieza, temperatura_maxima_c, caducada` (las cinco últimas añadidas al final, por compatibilidad: hora real de inserción; en enmiendas, quién enmendó; «completa» o «parcial (2 de 5)»; temperatura máxima admisible de la recepción; «sí/no» si la mercancía estaba caducada). En el CSV los números negativos usan el guion ASCII («-18,5») para que Excel los reconozca como números. Orden por fecha del hecho. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
 
 Límite CSV: 20 / 10 min por local y por usuario. Máximo 500 000 filas: si se superarían → 400 `REPORT_TOO_LARGE` **antes** de empezar (antes se cortaba en silencio).
 
@@ -718,6 +733,9 @@ Flujo recomendado:
 ### GET `/api/kiosk/tasks/today`
 Misma respuesta que `GET /api/orgs/{orgId}/tasks/today`.
 
+### POST `/api/kiosk/verify-pin` (NUEVO)
+Cuerpo: `{ staffId: uuid; pin: string }` → `200 { staff: { id, name, hasPin } }`. Comprueba el PIN **al identificarse** en la tablet, antes de registrar nada, con los **mismos contadores atómicos** de fallos y bloqueo que el alta (5 fallos → 429 `PIN_LOCKED` 15 min; nunca se comprueban más de 5 PIN erróneos por ventana aunque lleguen en ráfaga) y los mismos límites por dispositivo (30 intentos / 15 min; 20 erróneos / 15 min). Errores: 401 `PIN_REQUIRED` (pin vacío), 401 `INVALID_PIN`, 429 `PIN_LOCKED`/`RATE_LIMITED`, 404, 400 (personal desactivado), 401 `UNAUTHENTICATED` (dispositivo revocado). Para personal sin PIN responde 200 directamente. El alta (`POST /records`) **sigue exigiendo y verificando** el PIN.
+
 ### POST `/api/kiosk/records`
 Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tipo> }` → `201 { record: Record }` (`user: null`, `deviceId` del dispositivo). Admite `Idempotency-Key` (§1.7; muy recomendable en la tablet, que reintenta con mala cobertura): una repetición devuelve `200` con el mismo registro.
 - Si el miembro tiene PIN: sin `pin` → 401 `PIN_REQUIRED`; incorrecto → 401 `INVALID_PIN`; al 5.º fallo consecutivo → 429 `PIN_LOCKED` durante 15 min (`Retry-After`). El límite es estricto incluso con peticiones simultáneas (nunca se comprueban más de 5 PIN erróneos por ventana). Un encargado puede desbloquear con `POST /staff/{id}/unlock` o cambiando el PIN.
@@ -757,7 +775,7 @@ Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tip
 | GET | `/api/orgs/{orgId}/reports/pdf` · `/reports/csv` | miembro |
 | GET · POST | `/api/orgs/{orgId}/billing` · `/billing/checkout`, `/billing/portal` | miembro · owner |
 | POST | `/api/billing/webhook` | firma Stripe |
-| GET · POST | `/api/kiosk/context`, `/api/kiosk/tasks/today` · `/api/kiosk/records` | Bearer de dispositivo |
+| GET · POST | `/api/kiosk/context`, `/api/kiosk/tasks/today` · `/api/kiosk/records`, `/api/kiosk/verify-pin` | Bearer de dispositivo |
 | GET | `/api/public/menu/{slug}` | – |
 
 "miembro" = owner o manager. Las rutas que crean o modifican datos exigen además que la suscripción permita escritura (§5).
@@ -776,3 +794,22 @@ Todos son **aditivos** salvo el cambio de comportamiento de `DELETE /api/orgs/{o
 6. **CSV**: puede responder `400 REPORT_TOO_LARGE` (muestra `error.message`). Tiene dos columnas nuevas al final.
 7. **Auditoría**: nuevos eventos `org.deletion_scheduled` y `org.restored` (añade sus etiquetas).
 8. **Rutas de la SPA**: `GET /` y cualquier ruta de la SPA devuelven `index.html` con cualquier `Accept`; la API, la carta pública y la app privada llevan `X-Robots-Tag: noindex, nofollow` (no hace falta nada en el frontend; la portada y las páginas legales siguen siendo indexables).
+
+---
+
+## 19. Cambios de la ronda previa al lanzamiento
+
+Todos aditivos salvo donde se indica (reglas de validación más estrictas).
+
+1. **Mensajes de validación en español** en todos los 400 (zod incluido), con el nombre del campo; `error.message` resume el primer error (§1.1).
+2. **Contraseñas**: solo se rechaza la coincidencia exacta con comunes / email / nombre; mensajes que explican el motivo (§3).
+3. **Limpieza** (más estricta): al menos una zona hecha; una limpieza parcial no cuenta como hecha (`tasks/today` → `partial`; cumplimiento) (§10, §13).
+4. **Recepción**: `maxTemperature`, `expired`, `temperatureOutOfRange`, `correctiveAction` obligatoria al aceptar mercancía caducada o demasiado caliente; nueva alerta `recepcion_con_incidencia` (§10, §13).
+5. **Formación** (más estricta): sin fechas futuras; horas no negativas.
+6. **Alérgenos**: `allergensReviewed`/`allergensReviewedAt`; la carta pública solo muestra platos revisados, en orden de carta, con aviso de trazas; `ALLERGEN_NAMES` (§12). Migración `0004_allergen_review.sql`.
+7. **Kiosko**: `POST /api/kiosk/verify-pin` (§16).
+8. **Emails**: si se configura `SUPPORT_EMAIL` en el servidor (opcional), todos los emails terminan con «¿Necesitas ayuda? Escríbenos a …».
+9. **PDF/CSV**: textos sin ids internos, zona horaria legible, formatos es-ES, columnas CSV nuevas al final (§14).
+10. **`INVALID_TOKEN`**: un único mensaje completo y bien puntuado (§1.1).
+11. **Auditoría**: `AUDIT_EVENT_LABELS` con la etiqueta de todos los eventos (§5).
+

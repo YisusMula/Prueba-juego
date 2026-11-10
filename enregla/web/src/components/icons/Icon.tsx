@@ -221,6 +221,12 @@ const PATHS = {
     </>
   ),
   utensils: <path d="M7 3v8M4.5 3v5a2.5 2.5 0 005 0V3M7 11v10M17 21V3c-2.5 1.5-3.5 4-3.5 7.5V13H17" />,
+  coffee: (
+    <>
+      <path d="M4 9h12v5a5 5 0 01-5 5H9a5 5 0 01-5-5z" />
+      <path d="M16 10.5h1.5a2.5 2.5 0 010 5H16M3 21h14M8 3.5c-.6.8-.6 1.7 0 2.5M12 3.5c-.6.8-.6 1.7 0 2.5" />
+    </>
+  ),
 } as const;
 
 export type IconName = keyof typeof PATHS;

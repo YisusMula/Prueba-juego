@@ -81,6 +81,10 @@ jobs:
     env:
       E2E_ADMIN_DATABASE_URL: postgres://enregla:enregla@localhost:5432/postgres
       E2E_DATABASE_URL: postgres://enregla:enregla@localhost:5432/enregla_e2e
+      # CI compila sin los datos legales reales del titular: se permiten los marcadores a propósito.
+      # (Un build de producción real sin VITE_LEGAL_* falla; ver web/.env.example.)
+      VITE_ALLOW_PLACEHOLDER_LEGAL: 'true'
+      VITE_PUBLIC_URL: http://localhost:3100
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

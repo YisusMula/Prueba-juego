@@ -13,9 +13,9 @@ export function PageHeader({ title, subtitle, actions, eyebrow }: { title: React
   return (
     <header className="mb-5 flex flex-col gap-3 sm:mb-7 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
-        {eyebrow ? <p className="mb-1 text-sm font-bold tracking-wide text-brand uppercase">{eyebrow}</p> : null}
+        {eyebrow ? <p className="mb-1 line-clamp-2 text-sm font-bold tracking-wide text-brand uppercase [overflow-wrap:anywhere]">{eyebrow}</p> : null}
         <h1 className="text-[1.75rem] font-extrabold sm:text-4xl">{title}</h1>
-        {subtitle ? <p className="mt-1 text-ink-muted">{subtitle}</p> : null}
+        {subtitle ? <p className="mt-1 text-ink-muted [overflow-wrap:anywhere]">{subtitle}</p> : null}
       </div>
       {actions ? <div className="flex flex-wrap gap-2 sm:shrink-0 [&>*]:whitespace-nowrap">{actions}</div> : null}
     </header>
@@ -40,7 +40,7 @@ export function DetailList({ items }: { items: { label: ReactNode; value: ReactN
       {items.map((it, i) => (
         <div key={i} className="min-w-0">
           <dt className="text-sm text-ink-muted">{it.label}</dt>
-          <dd className="font-semibold break-words">{it.value}</dd>
+          <dd className="font-semibold [overflow-wrap:anywhere]">{it.value}</dd>
         </div>
       ))}
     </dl>

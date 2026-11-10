@@ -11,13 +11,13 @@ import { Button } from '@/components/ui/Button';
 import { Badge, Callout, EmptyState, ErrorState, LoadingBlock } from '@/components/ui/Feedback';
 import { Card, DetailList, PageHeader } from '@/components/ui/Layout';
 import { Field, Input, Select, Switch, Textarea } from '@/components/ui/Form';
-import { useToast } from '@/components/ui/Overlay';
 import { Icon } from '@/components/icons/Icon';
-import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, isRecordType, recordSummary, signer } from '@/features/recordMeta';
+import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, cleaningResult, isRecordType, recordSummary, signer } from '@/features/recordMeta';
 import { RecordForm } from '@/features/RecordForms';
 import { WriteGuard } from '@/features/SubscriptionBanner';
 import { useFormContext } from './RecordPages';
-import { formatDateTime, formatLocalDate, formatLongDate, formatNumber, formatRange, formatTemp, formatTime, localDateIn } from '@/lib/format';
+import { formatDateTime, formatLocalDate, formatLongDate, formatNumber, formatPercent, formatRange, formatTemp, formatTime, localDateIn } from '@/lib/format';
+import { useIdempotencyKeys } from '@/lib/idempotency';
 import { cn } from '@/lib/cn';
 
 // ===========================================================================
@@ -45,7 +45,8 @@ export function HistoryPage() {
   const groups = useMemo(() => {
     const m = new Map<string, AppRecord[]>();
     for (const r of items) {
-      const d = localDateIn(tz, new Date(r.createdAt));
+      // Se agrupa por la fecha del HECHO (effectiveAt), no por cuándo se insertó o corrigió.
+      const d = localDateIn(tz, new Date(r.effectiveAt));
       m.set(d, [...(m.get(d) ?? []), r]);
     }
     return [...m.entries()];
@@ -147,7 +148,7 @@ function RecordRow({ record: r, tz, to }: { record: AppRecord; tz: string; to: s
         <span className="min-w-0 flex-1">
           <span className="block font-semibold break-words">{s.title}</span>
           <span className="block text-sm text-ink-muted">
-            {formatTime(r.createdAt, tz)} · {RECORD_SHORT[r.type]} · {signer(r)}
+            {formatTime(r.effectiveAt, tz)} · {RECORD_SHORT[r.type]} · {signer(r)}
           </span>
           <span className={cn('block text-sm', r.alert ? 'font-semibold text-bad' : 'text-ink-muted')}>{s.detail}</span>
         </span>
@@ -180,7 +181,10 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
     case 'limpieza':
       items.push(
         { label: 'Plan', value: r.data.planName },
-        { label: 'Estado', value: r.data.completed ? <Badge tone="ok" icon="check">Completa</Badge> : <Badge tone="warn">Incompleta</Badge> },
+        {
+          label: 'Estado',
+          value: r.data.completed ? <Badge tone="ok" icon="check">{cleaningResult(r.data.items)}</Badge> : <Badge tone="warn" icon="clock">{cleaningResult(r.data.items)}</Badge>,
+        },
         {
           label: 'Zonas',
           value: (
@@ -203,17 +207,37 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
         { label: 'Proveedor', value: r.data.supplierName },
         { label: 'Producto', value: r.data.product },
         { label: 'Lote', value: r.data.lot ?? '—' },
-        { label: 'Temperatura', value: formatTemp(r.data.temperature) },
-        { label: 'Caducidad', value: r.data.expiryDate ? formatLocalDate(r.data.expiryDate) : '—' },
-        { label: 'Resultado', value: r.data.accepted ? <Badge tone="ok" icon="check">Aceptada</Badge> : <Badge tone="bad" icon="x">Rechazada</Badge> },
+        {
+          label: 'Temperatura',
+          value: (
+            <>
+              {formatTemp(r.data.temperature)}
+              {r.data.maxTemperature != null ? <span className="font-normal text-ink-muted"> (máx. {formatTemp(r.data.maxTemperature)})</span> : null}
+              {r.data.temperatureOutOfRange ? <Badge tone="bad" icon="alert" className="ml-2">Por encima</Badge> : null}
+            </>
+          ),
+        },
+        {
+          label: 'Caducidad',
+          value: r.data.expiryDate ? (
+            <>
+              {formatLocalDate(r.data.expiryDate)}
+              {r.data.expired ? <Badge tone="bad" icon="alert" className="ml-2">Caducada</Badge> : null}
+            </>
+          ) : (
+            '—'
+          ),
+        },
+        { label: 'Resultado', value: r.data.accepted ? <Badge tone={r.alert ? 'warn' : 'ok'} icon="check">{r.alert ? 'Aceptada con incidencia' : 'Aceptada'}</Badge> : <Badge tone="bad" icon="x">Rechazada</Badge> },
         ...(r.data.accepted ? [] : [{ label: 'Motivo del rechazo', value: r.data.rejectionReason ?? '—' }]),
+        ...(r.data.accepted && r.data.correctiveAction ? [{ label: 'Motivo / acción al aceptarla', value: r.data.correctiveAction }] : []),
       );
       break;
     case 'aceite':
       items.push(
         { label: 'Freidora', value: r.data.fryerName },
         { label: 'Acción', value: r.data.action === 'cambiado' ? 'Aceite cambiado' : 'Aceite revisado' },
-        { label: 'Compuestos polares', value: r.data.polarCompounds != null ? `${formatNumber(r.data.polarCompounds)} %` : '—' },
+        { label: 'Compuestos polares', value: r.data.polarCompounds != null ? formatPercent(r.data.polarCompounds) : '—' },
         { label: 'Resultado', value: r.data.overLimit ? <Badge tone="bad" icon="alert">Por encima del límite</Badge> : <Badge tone="ok" icon="check">Correcto</Badge> },
         { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
       );
@@ -247,7 +271,15 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
 
 export function RecordDetailPage() {
   const { recordId = '' } = useParams();
+  // Al navegar a otro registro (p. ej. tras guardar una corrección) la página empieza de cero:
+  // formulario cerrado y vista de detalle.
+  return <RecordDetail key={recordId} recordId={recordId} />;
+}
+
+function RecordDetail({ recordId }: { recordId: string }) {
   const { orgId, tz, path } = useOrgContext();
+  const [params, setParams] = useSearchParams();
+  const justAmended = params.get('corregido');
   const q = useRecord(orgId, recordId);
   const [mode, setMode] = useState<'view' | 'amend' | 'close'>('view');
   useDocumentTitle('Detalle del registro');
@@ -275,7 +307,7 @@ export function RecordDetailPage() {
       <PageHeader
         eyebrow={RECORD_TYPE_LABELS[r.type]}
         title={s.title}
-        subtitle={`${formatDateTime(r.createdAt, tz)} · ${signer(r)}`}
+        subtitle={`${formatDateTime(r.effectiveAt, tz)} · ${signer(r)}`}
         actions={
           mode === 'view' && !r.amendedByRecordId ? (
             <>
@@ -292,6 +324,20 @@ export function RecordDetailPage() {
         }
       />
       <div className="space-y-4">
+        {justAmended && mode === 'view' ? (
+          <Callout
+            tone="ok"
+            title={justAmended === 'cierre' ? 'Incidencia cerrada' : 'Corrección guardada'}
+            live="polite"
+            action={
+              <Button variant="ghost" size="sm" onClick={() => setParams({}, { replace: true })}>
+                Cerrar
+              </Button>
+            }
+          >
+            El registro original se conserva enlazado. Esta es la versión vigente.
+          </Callout>
+        ) : null}
         {amendedBy ? (
           <Callout
             tone="warn"
@@ -303,7 +349,7 @@ export function RecordDetailPage() {
               </Link>
             }
           >
-            Motivo: {amendedBy.amendmentReason} · {formatDateTime(amendedBy.createdAt, tz)} · {signer(amendedBy)}
+            Corregido el {formatDateTime(amendedBy.createdAt, tz)} por {signer(amendedBy)}. Motivo: {amendedBy.amendmentReason}
           </Callout>
         ) : null}
         {amends ? (
@@ -317,7 +363,7 @@ export function RecordDetailPage() {
               </Link>
             }
           >
-            Motivo: {r.amendmentReason}. Original del {formatDateTime(amends.createdAt, tz)}: {recordSummary(amends).title}.
+            Corregido el {formatDateTime(r.createdAt, tz)} por {signer(r)}. Motivo: {r.amendmentReason}. Valor original: {recordSummary(amends).title}.
           </Callout>
         ) : null}
         {mode === 'view' ? (
@@ -339,9 +385,17 @@ export function RecordDetailPage() {
                 <dd className="font-semibold">{r.user?.name ?? (r.deviceId ? 'Tablet de cocina' : '—')}</dd>
               </div>
               <div>
-                <dt className="text-ink-muted">Hora del servidor</dt>
-                <dd className="font-semibold">{formatDateTime(r.createdAt, tz)}</dd>
+                <dt className="text-ink-muted">Fecha del registro</dt>
+                <dd className="font-semibold">{formatDateTime(r.effectiveAt, tz)}</dd>
               </div>
+              {r.amendsRecordId ? (
+                <div className="sm:col-span-3">
+                  <dt className="text-ink-muted">Corrección</dt>
+                  <dd className="font-semibold">
+                    Corregido el {formatDateTime(r.createdAt, tz)} por {signer(r)}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           </Card>
         ) : (
@@ -356,8 +410,9 @@ function AmendForm({ record, close, onCancel }: { record: AppRecord; close: bool
   const { orgId, path } = useOrgContext();
   const { ctx, error, retry } = useFormContext();
   const qc = useQueryClient();
-  const toast = useToast();
   const navigate = useNavigate();
+  const keys = useIdempotencyKeys();
+  const [lastData, setLastData] = useState<unknown>(undefined);
   const [reason, setReason] = useState(close ? 'Incidencia resuelta' : '');
   const [reasonError, setReasonError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -372,11 +427,14 @@ function AmendForm({ record, close, onCancel }: { record: AppRecord; close: bool
     setReasonError(null);
     setSaving(true);
     setServerError(null);
+    setLastData(data);
+    const body = { reason: reason.trim(), data, staffId: record.staff?.id ?? null };
     try {
-      const amended = await orgApi(orgId).amend(record.id, { reason: reason.trim(), data, staffId: record.staff?.id ?? null });
+      const amended = await orgApi(orgId).amend(record.id, body, keys.keyFor(body));
+      keys.reset();
       await qc.invalidateQueries({ queryKey: ['org', orgId] });
-      toast.show(close ? 'Incidencia cerrada' : 'Corrección guardada');
-      navigate(path(`historial/${amended.id}`));
+      // Se abre el detalle de la versión corregida, con el formulario cerrado y la confirmación.
+      navigate(path(`historial/${amended.id}?corregido=${close ? 'cierre' : '1'}`));
     } catch (err) {
       setServerError(err);
       if (isApiError(err)) {
@@ -417,6 +475,7 @@ function AmendForm({ record, close, onCancel }: { record: AppRecord; close: bool
             initial={record.data as never}
             forceClosed={close}
             onSubmit={(d) => void submit(d)}
+            onRetry={lastData !== undefined ? () => void submit(lastData) : undefined}
             submitting={saving}
             serverError={serverError}
             submitLabel={close ? 'Cerrar incidencia' : 'Guardar corrección'}

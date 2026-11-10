@@ -1,7 +1,13 @@
 import { RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
 import type { IconName } from '@/components/icons/Icon';
 import type { AlertKind, AppRecord, RecordType } from '@/api/types';
-import { formatLocalDate, formatNumber, formatTemp } from '@/lib/format';
+import { formatLocalDate, formatPercent, formatTemp } from '@/lib/format';
+
+/** «Completa» o «Parcial (2 de 5)»: el mismo texto en confirmación, Hoy, historial e informes. */
+export function cleaningResult(items: { done: boolean }[]): string {
+  const done = items.filter((i) => i.done).length;
+  return done === items.length ? `Completa (${done} de ${items.length})` : `Parcial (${done} de ${items.length})`;
+}
 
 export { RECORD_TYPES, RECORD_TYPE_LABELS };
 
@@ -53,6 +59,7 @@ export const ALERT_LABELS: Record<AlertKind, string> = {
   temperatura_fuera_de_rango: 'Temperatura fuera de rango',
   aceite_fuera_de_limite: 'Aceite por encima del límite',
   recepcion_rechazada: 'Mercancía rechazada',
+  recepcion_con_incidencia: 'Mercancía aceptada con incidencia',
   plagas_con_indicios: 'Indicios de plagas',
   incidencia_abierta: 'Incidencia abierta',
 };
@@ -66,14 +73,20 @@ export function recordSummary(r: AppRecord): { title: string; detail: string } {
         detail: r.data.outOfRange ? `Fuera de rango${r.data.correctiveAction ? ` · ${r.data.correctiveAction}` : ''}` : 'Dentro de rango',
       };
     case 'limpieza': {
-      const done = r.data.items.filter((i) => i.done).length;
-      return { title: r.data.planName, detail: r.data.completed ? 'Todo limpio' : `${done} de ${r.data.items.length} zonas hechas` };
+      return { title: r.data.planName, detail: cleaningResult(r.data.items) };
     }
     case 'recepcion':
       return {
         title: `${r.data.product} · ${r.data.supplierName}`,
         detail: r.data.accepted
-          ? `Aceptada${r.data.temperature != null ? ` · ${formatTemp(r.data.temperature)}` : ''}`
+          ? [
+              'Aceptada',
+              r.data.temperature != null ? formatTemp(r.data.temperature) : null,
+              r.data.temperatureOutOfRange && r.data.maxTemperature != null ? `por encima de ${formatTemp(r.data.maxTemperature)}` : null,
+              r.data.expired ? 'caducada' : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')
           : `Rechazada · ${r.data.rejectionReason ?? ''}`,
       };
     case 'aceite':
@@ -81,7 +94,7 @@ export function recordSummary(r: AppRecord): { title: string; detail: string } {
         title: `${r.data.fryerName}: aceite ${r.data.action}`,
         detail:
           r.data.polarCompounds != null
-            ? `${formatNumber(r.data.polarCompounds)} % compuestos polares${r.data.overLimit ? ' · por encima del límite' : ''}`
+            ? `${formatPercent(r.data.polarCompounds)} de compuestos polares${r.data.overLimit ? ' · por encima del límite' : ''}`
             : 'Sin medición',
       };
     case 'plagas':

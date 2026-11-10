@@ -3,7 +3,8 @@ import { Link } from 'react-router';
 import { PublicLayout } from '@/layouts/PublicLayout';
 import { LEGAL, type LegalKey } from '@/config/legal';
 import { APP_NAME, PRICING } from '@/config/brand';
-import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { useCanonical, useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { useLocation } from 'react-router';
 
 /** Dato del titular: si no se ha configurado, se resalta como marcador pendiente. */
 function L({ k }: { k: LegalKey }) {
@@ -18,6 +19,7 @@ function L({ k }: { k: LegalKey }) {
 
 function LegalShell({ title, children }: { title: string; children: ReactNode }) {
   useDocumentTitle(title);
+  useCanonical(useLocation().pathname);
   return (
     <PublicLayout>
       <article className="prose-legal mx-auto max-w-3xl px-4 py-10 sm:px-6 sm:py-14">

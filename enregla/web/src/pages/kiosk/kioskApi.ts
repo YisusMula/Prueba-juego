@@ -10,6 +10,10 @@ const auth = (token: string) => ({ headers: { Authorization: `Bearer ${token}` }
 export const kioskApi = {
   context: (token: string) => api.get<KioskContext>('/api/kiosk/context', auth(token)),
   today: (token: string) => api.get<TodayTasks>('/api/kiosk/tasks/today', auth(token)),
-  createRecord: (token: string, body: { staffId: string; pin?: string; type: RecordType; data: unknown }) =>
-    api.post<{ record: AppRecord }>('/api/kiosk/records', body, auth(token)).then((r) => r.record),
+  /** `idempotencyKey`: la misma en todos los reintentos del mismo registro (cola con mala cobertura). */
+  createRecord: (token: string, body: { staffId: string; pin?: string; type: RecordType; data: unknown }, idempotencyKey?: string) =>
+    api.post<{ record: AppRecord }>('/api/kiosk/records', body, { ...auth(token), idempotencyKey }).then((r) => r.record),
+  /** Comprueba el PIN al identificarse (mismos bloqueos que el alta). */
+  verifyPin: (token: string, body: { staffId: string; pin: string }) =>
+    api.post<{ staff: { id: string; name: string; hasPin: boolean } }>('/api/kiosk/verify-pin', body, auth(token)),
 };

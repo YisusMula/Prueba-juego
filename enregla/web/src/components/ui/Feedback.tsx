@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 import { Icon, type IconName } from '@/components/icons/Icon';
 import { errorMessage, isApiError } from '@/api/client';
+import { formatPercent } from '@/lib/format';
+import { SUPPORT_EMAIL } from '@/config/legal';
 
 export function Spinner({ size = 20, label }: { size?: number; label?: string }) {
   return (
@@ -124,14 +126,17 @@ export function EmptyState({
 }
 
 export function ErrorState({ error, onRetry, title = 'No hemos podido cargar esto' }: { error: unknown; onRetry?: () => void; title?: string }) {
-  const offline = isApiError(error) && error.code === 'NETWORK_ERROR';
+  const offline = isApiError(error) && (error.code === 'NETWORK_ERROR' || error.code === 'TIMEOUT');
   return (
     <div role="alert" className="flex flex-col items-center rounded-2xl border border-bad/30 bg-bad-soft/50 px-6 py-10 text-center">
       <span className="mb-3 grid size-14 place-items-center rounded-2xl bg-bad-soft text-bad">
         <Icon name={offline ? 'wifiOff' : 'alert'} size={28} />
       </span>
-      <h3 className="text-lg font-bold">{offline ? 'Sin conexión' : title}</h3>
+      <h3 className="text-lg font-bold">{offline ? (isApiError(error) && error.code === 'TIMEOUT' ? 'El servidor no responde' : 'Sin conexión') : title}</h3>
       <p className="mt-1 max-w-md text-ink-muted">{errorMessage(error)}</p>
+      {SUPPORT_EMAIL && !offline && isApiError(error) && error.status >= 500 ? (
+        <p className="mt-1 max-w-md text-sm text-ink-muted">Si se repite, escríbenos a {SUPPORT_EMAIL}.</p>
+      ) : null}
       {onRetry ? (
         <button
           type="button"
@@ -169,7 +174,7 @@ export function ProgressRing({ percent, size = 112, stroke = 12, label }: { perc
         />
       </svg>
       <div className="absolute inset-0 grid place-items-center text-center">
-        <span className="font-display text-2xl font-bold tabular">{Math.round(p)}%</span>
+        <span className="font-display text-2xl font-bold tabular">{formatPercent(p)}</span>
       </div>
       {label ? <span className="sr-only">{label}</span> : null}
     </div>

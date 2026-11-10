@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { ALLERGENS, ALLERGEN_LABELS, ALLERGEN_STATUS_LABELS, dishBody } from '@shared/schemas';
+import { ALLERGENS, ALLERGEN_LABELS, ALLERGEN_NAMES, ALLERGEN_STATUS_LABELS, LIMITS, compareMenuCategories, dishBody } from '@shared/schemas';
 import { api, errorMessage, isApiError } from '@/api/client';
 import { keys, useDishes, usePublicMenuSettings } from '@/api/queries';
 import type { AllergenId, AllergenMap, AllergenStatus, Dish, PublicMenuSettings } from '@/api/types';
@@ -10,16 +10,22 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { Button, LinkButton, buttonClasses } from '@/components/ui/Button';
 import { Badge, Callout, EmptyState, ErrorState, LoadingBlock, Skeleton } from '@/components/ui/Feedback';
 import { Card, PageHeader, SectionTitle } from '@/components/ui/Layout';
-import { Field, Input, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
+import { Checkbox, Field, Input, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
 import { ConfirmDialog, Dialog, useToast } from '@/components/ui/Overlay';
 import { QrCode } from '@/components/ui/QrCode';
-import { AllergenIcon, ALLERGEN_SHORT } from '@/components/icons/AllergenIcon';
+import { AllergenIcon } from '@/components/icons/AllergenIcon';
 import { Icon } from '@/components/icons/Icon';
 import { WriteGuard } from '@/features/SubscriptionBanner';
 import { formatDateTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
-const emptyMap = (): AllergenMap => Object.fromEntries(ALLERGENS.map((a) => [a, 'no'])) as AllergenMap;
+type Draft = Record<AllergenId, AllergenStatus | null>;
+/** Plato nuevo o sin revisar: los «no contiene» no cuentan como decididos (eran el valor por defecto). */
+const draftFrom = (dish: Dish | null): Draft =>
+  Object.fromEntries(ALLERGENS.map((a) => [a, dish ? (dish.allergensReviewed ? dish.allergens[a] : dish.allergens[a] === 'no' ? null : dish.allergens[a]) : null])) as Draft;
+/** Orden de carta: entrantes → principales → postres → bebidas; sin categoría al final. */
+export const sortDishes = <T extends { category: string | null; name: string }>(list: T[]) =>
+  [...list].sort((a, b) => compareMenuCategories(a.category, b.category) || a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
 export const publicMenuUrl = (slug: string) => `${window.location.origin}/carta/${slug}`;
 
 export function AllergensPage() {
@@ -32,9 +38,11 @@ export function AllergensPage() {
   const qc = useQueryClient();
   const toast = useToast();
 
+  const pendingCount = (dishes.data ?? []).filter((d) => !d.allergensReviewed).length;
+  const categories = useMemo(() => [...new Set((dishes.data ?? []).map((d) => d.category).filter((c): c is string => !!c))].sort(compareMenuCategories), [dishes.data]);
   const grouped = useMemo(() => {
     const m = new Map<string, Dish[]>();
-    for (const d of [...(dishes.data ?? [])].sort((a, b) => (a.category ?? '').localeCompare(b.category ?? '') || a.name.localeCompare(b.name))) {
+    for (const d of sortDishes(dishes.data ?? [])) {
       const k = d.category ?? 'Sin categoría';
       m.set(k, [...(m.get(k) ?? []), d]);
     }
@@ -75,11 +83,16 @@ export function AllergensPage() {
         }
       />
       <div className="grid gap-6 xl:grid-cols-[1fr_22rem]">
-        <section aria-labelledby="platos">
+        <section aria-labelledby="platos" className="min-w-0">
           <h2 id="platos" className="sr-only">
             Platos
           </h2>
           {readOnly ? <WriteGuard what="añadir ni cambiar platos">{null}</WriteGuard> : null}
+          {pendingCount > 0 ? (
+            <Callout tone="warn" className="mb-4" title={pendingCount === 1 ? '1 plato pendiente de revisar' : `${pendingCount} platos pendientes de revisar`}>
+              No se muestran en la carta pública hasta que alguien revise sus 14 alérgenos.
+            </Callout>
+          ) : null}
           {dishes.isPending ? (
             <LoadingBlock rows={4} />
           ) : dishes.isError ? (
@@ -98,21 +111,33 @@ export function AllergensPage() {
                       const contains = ALLERGENS.filter((a) => d.allergens[a] === 'contains');
                       const traces = ALLERGENS.filter((a) => d.allergens[a] === 'traces');
                       return (
-                        <li key={d.id} className={cn('rounded-2xl border border-line bg-surface p-4 shadow-card', !d.visible && 'opacity-75')}>
+                        <li
+                          key={d.id}
+                          data-testid="dish"
+                          className={cn('rounded-2xl border bg-surface p-4 shadow-card', d.allergensReviewed ? 'border-line' : 'border-2 border-warn-solid', !d.visible && 'opacity-75')}
+                        >
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
                             <div className="min-w-0 flex-1">
-                              <p className="text-lg font-bold">{d.name}</p>
+                              <p className="text-lg font-bold [overflow-wrap:anywhere]">{d.name}</p>
                               {d.description ? <p className="text-ink-muted">{d.description}</p> : null}
                               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                                {contains.length === 0 && traces.length === 0 ? <Badge tone="ok" icon="check">Sin alérgenos</Badge> : null}
+                                {!d.allergensReviewed ? (
+                                  <Badge tone="warn" icon="alert" className="whitespace-normal">
+                                    Pendiente de revisar · no se muestra en la carta
+                                  </Badge>
+                                ) : contains.length === 0 && traces.length === 0 ? (
+                                  <Badge tone="neutral" icon="check">
+                                    No se han declarado alérgenos
+                                  </Badge>
+                                ) : null}
                                 {contains.map((a) => (
                                   <span key={a} className="inline-flex items-center gap-1 rounded-full bg-surface-2 py-0.5 pr-2.5 pl-0.5 text-sm font-semibold" title={ALLERGEN_LABELS[a]}>
-                                    <AllergenIcon id={a} size={24} /> {ALLERGEN_SHORT[a]}
+                                    <AllergenIcon id={a} size={24} /> {ALLERGEN_NAMES[a]}
                                   </span>
                                 ))}
                                 {traces.map((a) => (
                                   <span key={a} className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong py-0.5 pr-2.5 pl-0.5 text-sm" title={`Trazas: ${ALLERGEN_LABELS[a]}`}>
-                                    <AllergenIcon id={a} size={24} status="traces" /> Trazas: {ALLERGEN_SHORT[a].toLowerCase()}
+                                    <AllergenIcon id={a} size={24} status="traces" /> Trazas de {ALLERGEN_NAMES[a]}
                                   </span>
                                 ))}
                                 {!d.visible ? <Badge icon="eyeOff">Oculto en la carta</Badge> : null}
@@ -120,8 +145,8 @@ export function AllergensPage() {
                             </div>
                             {readOnly ? null : (
                               <div className="flex shrink-0 gap-2">
-                                <Button variant="secondary" icon="pencil" onClick={() => setEditing(d)} aria-label={`Editar ${d.name}`}>
-                                  Editar
+                                <Button variant={d.allergensReviewed ? 'secondary' : 'primary'} icon="pencil" onClick={() => setEditing(d)} aria-label={`${d.allergensReviewed ? 'Editar' : 'Revisar'} ${d.name}`}>
+                                  {d.allergensReviewed ? 'Editar' : 'Revisar'}
                                 </Button>
                                 <Button variant="ghost" icon="trash" onClick={() => setDeleting(d)} aria-label={`Eliminar ${d.name}`}>
                                   <span className="sr-only sm:not-sr-only">Eliminar</span>
@@ -145,10 +170,11 @@ export function AllergensPage() {
         <DishDialog
           key={editing?.id ?? 'new'}
           dish={editing}
+          categories={categories}
           onClose={() => setEditing(undefined)}
           onSaved={(d) => {
             setEditing(undefined);
-            toast.show(`«${d.name}» guardado`);
+            toast.show(d.allergensReviewed ? `«${d.name}» guardado` : `«${d.name}» guardado como pendiente de revisar: no sale en la carta`, d.allergensReviewed ? 'ok' : 'info');
             void qc.invalidateQueries({ queryKey: keys.orgScoped(orgId, 'dishes') });
           }}
         />
@@ -166,20 +192,24 @@ const STATUS_OPTIONS: { v: AllergenStatus; short: string }[] = [
   { v: 'no', short: 'No' },
 ];
 
-function DishDialog({ dish, onClose, onSaved }: { dish: Dish | null; onClose: () => void; onSaved: (d: Dish) => void }) {
+function DishDialog({ dish, categories, onClose, onSaved }: { dish: Dish | null; categories: string[]; onClose: () => void; onSaved: (d: Dish) => void }) {
   const { orgId } = useOrgContext();
   const [name, setName] = useState(dish?.name ?? '');
   const [category, setCategory] = useState(dish?.category ?? '');
   const [description, setDescription] = useState(dish?.description ?? '');
   const [visible, setVisible] = useState(dish?.visible ?? true);
-  const [allergens, setAllergens] = useState<AllergenMap>(dish?.allergens ?? emptyMap());
+  const [allergens, setAllergens] = useState<Draft>(() => draftFrom(dish));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [general, setGeneral] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const decided = ALLERGENS.filter((a) => allergens[a] != null).length;
+  const reviewed = decided === ALLERGENS.length;
+  const noneChecked = reviewed && ALLERGENS.every((a) => allergens[a] === 'no');
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const body = { name: name.trim(), category: category.trim() || null, description: description.trim() || null, allergens, visible };
+    const map = Object.fromEntries(ALLERGENS.map((a) => [a, allergens[a] ?? 'no'])) as AllergenMap;
+    const body = { name: name.trim(), category: category.trim() || null, description: description.trim() || null, allergens: map, allergensReviewed: reviewed, visible };
     const parsed = dishBody.safeParse(body);
     if (!parsed.success) return setErrors(zodToFieldErrors(parsed.error.issues));
     setErrors({});
@@ -197,28 +227,60 @@ function DishDialog({ dish, onClose, onSaved }: { dish: Dish | null; onClose: ()
   };
 
   return (
-    <Dialog open onClose={onClose} title={dish ? 'Editar plato' : 'Nuevo plato'} size="lg">
+    <Dialog open onClose={onClose} title={dish ? (dish.allergensReviewed ? 'Editar plato' : 'Revisar plato') : 'Nuevo plato'} size="lg">
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Nombre del plato" error={errors.name}>
-            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={150} />
+            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.dishName} />
           </Field>
-          <Field label="Categoría" optional error={errors.category} hint="Entrantes, principales, postres…">
-            <Input value={category} onChange={(e) => setCategory(e.target.value)} maxLength={100} />
+          <Field label="Categoría" optional error={errors.category} hint="Entrantes, principales, postres, bebidas… La carta se ordena así.">
+            <Input value={category} onChange={(e) => setCategory(e.target.value)} maxLength={LIMITS.dishCategory} list="dish-categories" />
+            <datalist id="dish-categories">
+              {['Entrantes', 'Principales', 'Postres', 'Bebidas', ...categories].filter((c, i, l) => l.indexOf(c) === i).map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
           </Field>
         </div>
         <Field label="Descripción" optional error={errors.description}>
-          <Textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={1000} rows={2} />
+          <Textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={LIMITS.dishDescription} rows={2} />
         </Field>
         <fieldset>
           <legend className="font-semibold">Alérgenos</legend>
-          <p className="mb-2 text-sm text-ink-muted">Para cada uno: contiene, puede contener trazas o no contiene.</p>
+          <p className="mb-2 text-sm text-ink-muted">
+            Decide cada uno según la ficha técnica de los ingredientes: contiene, puede contener trazas o no contiene. Mientras falte alguno, el plato
+            queda <strong>pendiente de revisar</strong> y no aparece en la carta pública.
+          </p>
+          <div className="mb-2 rounded-xl bg-surface-2 p-2">
+            <Checkbox
+              checked={noneChecked}
+              onChange={(v) => setAllergens(Object.fromEntries(ALLERGENS.map((a) => [a, v ? 'no' : null])) as Draft)}
+              label={<span className="font-semibold">He revisado los ingredientes y este plato no contiene ninguno de los 14 alérgenos</span>}
+            />
+          </div>
+          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <p className={cn('text-sm font-semibold', reviewed ? 'text-ok' : 'text-warn')} aria-live="polite" data-testid="allergen-progress">
+              {reviewed ? 'Revisión completa: los 14 alérgenos decididos.' : `Decididos ${decided} de 14. Faltan ${14 - decided}.`}
+            </p>
+            {!reviewed && decided > 0 ? (
+              <Button
+                size="sm"
+                variant="quiet"
+                onClick={() => setAllergens((m) => Object.fromEntries(ALLERGENS.map((a) => [a, m[a] ?? 'no'])) as Draft)}
+              >
+                Marcar los que faltan como «No contiene»
+              </Button>
+            ) : null}
+          </div>
           <ul className="divide-y divide-line rounded-2xl border border-line">
             {ALLERGENS.map((a: AllergenId) => (
-              <li key={a} className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
+              <li key={a} className={cn('flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center', allergens[a] == null && 'bg-warn-soft/40')}>
                 <span className="flex min-w-0 flex-1 items-center gap-2.5" id={`al-${a}`}>
-                  <AllergenIcon id={a} size={34} status={allergens[a]} />
-                  <span className="font-semibold">{ALLERGEN_LABELS[a]}</span>
+                  <AllergenIcon id={a} size={34} status={allergens[a] ?? 'no'} />
+                  <span>
+                    <span className="block font-semibold">{ALLERGEN_NAMES[a]}</span>
+                    {ALLERGEN_LABELS[a] !== ALLERGEN_NAMES[a] ? <span className="block text-xs text-ink-muted">{ALLERGEN_LABELS[a]}</span> : null}
+                  </span>
                 </span>
                 <div role="radiogroup" aria-labelledby={`al-${a}`} className="grid shrink-0 grid-cols-3 gap-1 rounded-xl bg-surface-2 p-1">
                   {STATUS_OPTIONS.map((o) => {
@@ -229,7 +291,7 @@ function DishDialog({ dish, onClose, onSaved }: { dish: Dish | null; onClose: ()
                         type="button"
                         role="radio"
                         aria-checked={on}
-                        aria-label={`${ALLERGEN_LABELS[a]}: ${ALLERGEN_STATUS_LABELS[o.v]}`}
+                        aria-label={`${ALLERGEN_NAMES[a]}: ${ALLERGEN_STATUS_LABELS[o.v]}`}
                         onClick={() => setAllergens((m) => ({ ...m, [a]: o.v }))}
                         className={cn(
                           'min-h-11 rounded-lg px-3 text-sm font-bold transition-colors',
@@ -248,14 +310,17 @@ function DishDialog({ dish, onClose, onSaved }: { dish: Dish | null; onClose: ()
             ))}
           </ul>
         </fieldset>
-        <Switch checked={visible} onChange={setVisible} label="Mostrar en la carta pública" />
+        <Switch checked={visible} onChange={setVisible} label="Mostrar en la carta pública" description="Solo se muestra si los alérgenos están revisados." />
+        {!reviewed ? (
+          <Callout tone="warn">Se guardará como pendiente de revisar y no se mostrará en la carta hasta que decidas los {14 - decided} alérgenos que faltan.</Callout>
+        ) : null}
         {general ? <Callout tone="bad" live="assertive">{general}</Callout> : null}
         <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
           <Button variant="secondary" onClick={onClose}>
             Cancelar
           </Button>
           <Button type="submit" loading={loading}>
-            Guardar plato
+            {reviewed ? 'Guardar plato' : 'Guardar sin revisar'}
           </Button>
         </div>
       </form>
@@ -367,7 +432,8 @@ export function AllergensPrintPage() {
   useDocumentTitle('Tabla de alérgenos');
   const dishes = useDishes(orgId);
   const menu = usePublicMenuSettings(orgId);
-  const list = [...(dishes.data ?? [])].filter((d) => d.visible).sort((a, b) => (a.category ?? '').localeCompare(b.category ?? '') || a.name.localeCompare(b.name));
+  const list = sortDishes((dishes.data ?? []).filter((d) => d.visible && d.allergensReviewed));
+  const pending = (dishes.data ?? []).filter((d) => d.visible && !d.allergensReviewed).length;
   return (
     <div className="mx-auto max-w-[1100px] bg-surface p-4 sm:p-8 print:max-w-none print:p-0">
       <div className="no-print mb-6 flex flex-wrap gap-3">
@@ -383,7 +449,7 @@ export function AllergensPrintPage() {
           <h1 className="text-3xl font-extrabold">Información de alérgenos</h1>
           <p className="text-lg">{org.name}</p>
           <p className="text-sm text-ink-muted">
-            ● Contiene · ◐ Puede contener trazas · vacío: no contiene. Actualizado el {formatDateTime(new Date().toISOString(), tz)}.
+            ● Contiene · ◐ Puede contener trazas · vacío: no declarado. Actualizado el {formatDateTime(new Date().toISOString(), tz)}.
           </p>
         </div>
         {menu.data?.enabled ? (
@@ -411,7 +477,7 @@ export function AllergensPrintPage() {
                   <th key={a} scope="col" className="w-12 border border-line-strong p-1 align-bottom">
                     <div className="flex flex-col items-center gap-1">
                       <AllergenIcon id={a} size={28} />
-                      <span className="text-[10px] leading-tight font-semibold">{ALLERGEN_LABELS[a].replace('Cereales que contienen ', '').replace('Dióxido de azufre y ', '')}</span>
+                      <span className="text-[10px] leading-tight font-semibold">{ALLERGEN_NAMES[a]}</span>
                     </div>
                   </th>
                 ))}
@@ -431,7 +497,7 @@ export function AllergensPrintPage() {
                       ) : d.allergens[a] === 'traces' ? (
                         <span aria-label="Puede contener trazas">◐</span>
                       ) : (
-                        <span className="sr-only">No contiene</span>
+                        <span className="sr-only">No declarado</span>
                       )}
                     </td>
                   ))}
@@ -441,8 +507,14 @@ export function AllergensPrintPage() {
           </table>
         </div>
       )}
+      {pending > 0 ? (
+        <p className="no-print mt-4 text-sm font-semibold text-warn">
+          {pending === 1 ? '1 plato está pendiente de revisar y no aparece' : `${pending} platos están pendientes de revisar y no aparecen`} en esta tabla.
+        </p>
+      ) : null}
       <p className="mt-4 text-xs text-ink-muted">
-        Si tienes alguna alergia o intolerancia, consulta al personal antes de pedir. Información elaborada por el establecimiento.
+        Si tienes alguna alergia o intolerancia, consulta siempre al personal antes de pedir: aunque un plato no declare alérgenos, puede haber trazas por
+        contaminación cruzada en la cocina. Información elaborada por el establecimiento.
       </p>
     </div>
   );

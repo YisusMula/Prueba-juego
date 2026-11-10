@@ -171,8 +171,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   // confirman justo la acción que ha provocado la navegación).
   const { pathname } = useLocation();
   useEffect(() => {
-    const now = Date.now();
-    setItems((list) => (list.some((t) => now - t.at > 1000) ? list.filter((t) => now - t.at <= 1000) : list));
+    const id = window.setTimeout(() => {
+      const now = Date.now();
+      setItems((list) => (list.some((t) => now - t.at > 1000) ? list.filter((t) => now - t.at <= 1000) : list));
+    }, 0);
+    return () => window.clearTimeout(id);
   }, [pathname]);
   const show = useCallback(
     (message: string, tone: ToastTone = 'ok') => {

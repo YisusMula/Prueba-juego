@@ -18,7 +18,10 @@ test('ajustes clave: equipo, personal e invitación', async ({ page }) => {
   await page.getByRole('button', { name: 'Añadir persona' }).click();
   dlg = page.getByRole('dialog');
   await dlg.getByLabel('Nombre').fill('Rocío E2E');
-  await dlg.getByLabel(/PIN/).fill('2468');
+  await dlg.getByLabel(/PIN/).fill('24a68');
+  // Las letras no se descartan en silencio: se avisa.
+  await expect(dlg.getByText('El PIN solo admite números (0–9).')).toBeVisible();
+  await expect(dlg.getByLabel(/PIN/)).toHaveValue('2468');
   await dlg.getByRole('button', { name: 'Guardar' }).click();
   await expect(page.locator('li').filter({ hasText: 'Rocío E2E' })).toContainText('Con PIN');
 
@@ -56,17 +59,25 @@ test('modo cocina: crear dispositivo, PIN incorrecto y correcto, revocar', async
 
   await k.getByRole('button', { name: 'Temperatura', exact: true }).click();
   await k.getByRole('button', { name: /Ana Martín/ }).click();
+  // PIN incorrecto: se rechaza AL IDENTIFICARSE, antes de registrar nada.
   for (const d of '9999') await k.getByRole('button', { name: d, exact: true }).click();
   await k.getByRole('button', { name: 'Entrar' }).click();
+  await expect(k.getByText('PIN incorrecto. Prueba otra vez.')).toBeVisible();
+  await expect(k.getByRole('heading', { name: '¿Qué equipo?' })).toHaveCount(0);
+  for (const d of '1234') await k.getByRole('button', { name: d, exact: true }).click();
+  await k.getByRole('button', { name: 'Entrar' }).click();
   await k.getByRole('button', { name: /Cámara de carnes/ }).click();
+  // 999 °C: fuera del rango físico admitido → aviso y Guardar deshabilitado.
+  for (const d of '999') await k.getByRole('button', { name: d, exact: true }).click();
+  await expect(k.getByText('La temperatura debe estar entre −60 y 300 °C')).toBeVisible();
+  await expect(k.getByText(/Dentro de rango|Fuera de rango/)).toHaveCount(0);
+  await expect(k.getByRole('button', { name: 'Guardar' })).toBeDisabled();
+  for (let i = 0; i < 3; i++) await k.getByRole('button', { name: 'Borrar' }).first().click();
   for (const d of '3') await k.getByRole('button', { name: d, exact: true }).click();
   await k.getByRole('button', { name: 'Coma decimal' }).click();
   await k.getByRole('button', { name: '1', exact: true }).click();
   await expect(k.getByLabel('Temperatura escrita')).toContainText('3,1 °C');
   await k.getByRole('button', { name: 'Guardar' }).click();
-  await expect(k.getByText('PIN incorrecto. Prueba otra vez.')).toBeVisible();
-  for (const d of '1234') await k.getByRole('button', { name: d, exact: true }).click();
-  await k.getByRole('button', { name: 'Entrar' }).click();
   await expect(k.getByTestId('kiosk-result')).toContainText('Hecho');
   await expect(k.getByTestId('kiosk-result')).toContainText('3,1 °C');
   // El token nunca viaja en la URL

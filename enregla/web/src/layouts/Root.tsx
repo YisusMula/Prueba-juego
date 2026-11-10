@@ -9,6 +9,7 @@ import { storage } from '@/lib/storage';
 import { loginPath } from '@/lib/redirect';
 import { buttonClasses } from '@/components/ui/Button';
 import { Logo } from '@/components/ui/Logo';
+import { SUPPORT_EMAIL } from '@/config/legal';
 
 /** Rutas que requieren sesión: si caduca, se vuelve al login conservando el destino. */
 const PRIVATE = /^\/(app|nuevo-local|locales)(\/|$)/;
@@ -92,6 +93,15 @@ export function RouteError() {
       <p className="mt-2 text-ink-muted">
         {chunk ? 'Recarga la página para usar la última versión.' : 'Prueba a recargar la página. Si se repite, vuelve al inicio.'}
       </p>
+      {SUPPORT_EMAIL && !chunk ? (
+        <p className="mt-2 text-ink-muted">
+          Si el problema continúa, escríbenos a{' '}
+          <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold underline underline-offset-4">
+            {SUPPORT_EMAIL}
+          </a>
+          .
+        </p>
+      ) : null}
       <div className="mt-6 flex flex-wrap justify-center gap-3">
         <button type="button" className={buttonClasses('primary')} onClick={() => window.location.reload()}>
           <Icon name="refresh" size={20} /> Recargar

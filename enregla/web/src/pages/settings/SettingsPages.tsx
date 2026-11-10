@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { changeEmailBody, createDeviceBody, inviteBody, updateAccountBody } from '@shared/schemas';
+import { AUDIT_EVENT_LABELS, LIMITS, TIMEZONE_LABELS, changeEmailBody, createDeviceBody, inviteBody, timezoneLabel, updateAccountBody } from '@shared/schemas';
 import { api, errorMessage, isApiError } from '@/api/client';
 import { keys, useAccount, useAudit, useBilling, useDevices, useInvitations, useMembers, useMembership } from '@/api/queries';
 import type { Billing, Device, Organization, Role } from '@/api/types';
@@ -18,9 +18,10 @@ import { Icon, type IconName } from '@/components/icons/Icon';
 import { CleaningManager, EquipmentManager, StaffManager, SupplierManager } from '@/features/ConfigLists';
 import { PasswordMeter } from '@/features/PasswordMeter';
 import { DownloadButton } from '@/features/DownloadButton';
-import { STATUS_LABELS, WriteGuard } from '@/features/SubscriptionBanner';
+import { STATUS_LABELS, WriteGuard, deletionDate } from '@/features/SubscriptionBanner';
+import { SUPPORT_EMAIL } from '@/config/legal';
 import { formatDateTime, formatEuros, formatLocalDate, relativeDays } from '@/lib/format';
-import { passwordAcceptable } from '@/lib/password';
+import { checkPasswordPolicy } from '@shared/schemas';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 
@@ -138,13 +139,10 @@ export function SettingsHubPage() {
 // ===========================================================================
 // DATOS DEL LOCAL
 // ===========================================================================
-const COMMON_TIMEZONES = [
-  ['Europe/Madrid', 'Península y Baleares (Europe/Madrid)'],
-  ['Atlantic/Canary', 'Canarias (Atlantic/Canary)'],
-  ['Africa/Ceuta', 'Ceuta y Melilla (Africa/Ceuta)'],
-  ['Europe/Lisbon', 'Portugal (Europe/Lisbon)'],
-  ['Europe/Andorra', 'Andorra (Europe/Andorra)'],
-] as const;
+// Nombres legibles, sin jerga técnica («Europe/Madrid» → «Hora peninsular y de Baleares»).
+const COMMON_TIMEZONES = (['Europe/Madrid', 'Atlantic/Canary', 'Africa/Ceuta', 'Europe/Lisbon', 'Europe/Andorra'] as const).map(
+  (tz) => [tz, TIMEZONE_LABELS[tz] ?? timezoneLabel(tz)] as const,
+);
 
 export function OrgSettingsPage() {
   const { org, orgId, isOwner, readOnly } = useOrgContext();
@@ -185,7 +183,9 @@ export function OrgSettingsPage() {
     }
   };
 
-  const tzOptions = COMMON_TIMEZONES.some(([v]) => v === org.timezone) ? COMMON_TIMEZONES : [...COMMON_TIMEZONES, [org.timezone, org.timezone] as const];
+  const tzOptions: (readonly [string, string])[] = COMMON_TIMEZONES.some(([v]) => v === org.timezone)
+    ? COMMON_TIMEZONES
+    : [...COMMON_TIMEZONES, [org.timezone, timezoneLabel(org.timezone)] as const];
 
   return (
     <SettingsShell title="Datos y recordatorios">
@@ -198,7 +198,7 @@ export function OrgSettingsPage() {
             <WriteGuard>
               <form onSubmit={save} noValidate className="space-y-4">
                 <Field label="Nombre">
-                  <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
+                  <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.orgName} />
                 </Field>
                 <Field label="Zona horaria" hint="Decide qué es «hoy» para las tareas y cómo se muestran las horas.">
                   <Select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
@@ -429,7 +429,7 @@ export function DevicesSettingsPage() {
       <Dialog open={creating} onClose={() => setCreating(false)} title="Vincular un dispositivo de cocina" size="sm">
         <form onSubmit={create} noValidate className="space-y-4">
           <Field label="Nombre del dispositivo" error={nameError} hint="Para reconocerlo luego, p. ej. «Tablet de la cocina caliente».">
-            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} />
+            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.deviceName} />
           </Field>
           <Button type="submit" block loading={busy}>
             Generar código de vinculación
@@ -577,7 +577,7 @@ export function TeamSettingsPage() {
               {members.data.map((m) => (
                 <li key={m.userId} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center">
                   <div className="min-w-0 flex-1">
-                    <p className="font-bold">
+                    <p className="font-bold [overflow-wrap:anywhere]">
                       {m.name} {m.userId === me ? <span className="font-normal text-ink-muted">(tú)</span> : null}
                     </p>
                     <p className="text-sm break-all text-ink-muted">{m.email}</p>
@@ -673,34 +673,28 @@ export function TeamSettingsPage() {
 // ===========================================================================
 // AUDITORÍA
 // ===========================================================================
-const AUDIT_LABELS: Record<string, string> = {
-  'org.created': 'Local creado',
-  'org.updated': 'Datos del local cambiados',
-  'org.exported': 'Datos exportados',
-  'member.invited': 'Invitación enviada',
-  'member.role_changed': 'Rol cambiado',
-  'member.removed': 'Acceso retirado',
-  'member.joined': 'Se unió al local',
-  'member.invitation_revoked': 'Invitación anulada',
-  'device.created': 'Dispositivo de cocina vinculado',
-  'device.revoked': 'Dispositivo de cocina desvinculado',
-  'device.revoked_with_member': 'Dispositivo desvinculado al salir su creador',
-  'billing.subscription_canceled': 'Suscripción cancelada',
-  'staff.pin_changed': 'PIN cambiado',
-  'staff.pin_failed': 'PIN incorrecto en cocina',
-  'staff.pin_locked': 'PIN bloqueado',
-  'report.generated': 'Informe descargado',
-  'billing.checkout_started': 'Inicio de contratación',
-  'billing.subscription_updated': 'Suscripción actualizada',
-  'public_menu.updated': 'Carta pública cambiada',
-};
+/** Etiqueta legible de cada evento (compartida con el servidor). Nunca se muestra un código interno. */
+const auditLabel = (event: string) => AUDIT_EVENT_LABELS[event] ?? 'Otra acción';
+
+/** Detalle breve para algunos eventos (a quién se invitó, nuevo rol…). */
+function auditDetail(ev: { event: string; metadata: Record<string, unknown> }): string | null {
+  const m = ev.metadata;
+  if (ev.event === 'member.invited' && typeof m.email === 'string') return m.email;
+  if (ev.event === 'member.role_changed' && typeof m.role === 'string') return `nuevo rol: ${m.role === 'owner' ? 'propietario/a' : 'encargado/a'}`;
+  if (ev.event === 'public_menu.updated') return m.regenerated ? 'enlace cambiado' : m.enabled === true ? 'activada' : m.enabled === false ? 'desactivada' : null;
+  if (ev.event === 'report.generated' && typeof m.format === 'string') return m.format.toUpperCase();
+  return null;
+}
 
 export function AuditPage() {
   const { orgId, tz } = useOrgContext();
   const q = useAudit(orgId);
   const items = q.data?.pages.flatMap((p) => p.items) ?? [];
   return (
-    <SettingsShell title="Registro de actividad" subtitle="Acciones importantes en el local: accesos, cambios de configuración, informes y facturación.">
+    <SettingsShell
+      title="Registro de actividad"
+      subtitle="Acciones importantes en el local: datos del local, encargados e invitaciones, dispositivos de cocina, PIN del personal, carta pública, informes, exportaciones, facturación y eliminación. Los inicios de sesión son de cada cuenta y no aparecen aquí; los registros APPCC y sus correcciones están en el historial."
+    >
       <OwnerOnly>
         {q.isPending ? (
           <LoadingBlock rows={6} />
@@ -715,7 +709,8 @@ export function AuditPage() {
                 <li key={ev.id} className="flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
                   <span className="w-44 shrink-0 text-sm text-ink-muted tabular">{formatDateTime(ev.createdAt, tz)}</span>
                   <span className="min-w-0 flex-1">
-                    <span className="font-semibold">{AUDIT_LABELS[ev.event] ?? ev.event}</span>
+                    <span className="font-semibold">{auditLabel(ev.event)}</span>
+                    {auditDetail(ev) ? <span className="text-ink-muted"> ({auditDetail(ev)})</span> : null}
                     <span className="text-ink-muted"> · {ev.user?.name ?? (ev.event.startsWith('staff.') ? 'Tablet de cocina' : 'Sistema')}</span>
                   </span>
                   {ev.ip ? <span className="font-mono text-xs text-ink-muted">{ev.ip}</span> : null}
@@ -740,30 +735,35 @@ export function AuditPage() {
 // EXPORTAR Y ELIMINAR
 // ===========================================================================
 export function DataSettingsPage() {
-  const { orgId, org } = useOrgContext();
+  const { orgId, org, tz } = useOrgContext();
   const qc = useQueryClient();
-  const navigate = useNavigate();
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [confirmName, setConfirmName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const pending = !!org.deletionScheduledAt;
 
   const del = async (e: FormEvent) => {
     e.preventDefault();
-    if (confirmName.trim() !== org.name) return setError('Escribe el nombre del local exactamente');
+    if (confirmName.trim() !== org.name) return setError('Escribe el nombre del local exactamente como aparece');
     if (!password) return setError('Escribe tu contraseña');
     setBusy(true);
     setError(null);
     try {
+      // Borrado DIFERIDO: el local sigue existiendo 30 días (solo lectura) y se puede restaurar.
       await api.del(`/api/orgs/${orgId}`, { password });
-      storage.setLastOrg(null);
+      setOpen(false);
+      setPassword('');
+      setConfirmName('');
+      await qc.invalidateQueries({ queryKey: keys.org(orgId) });
       await qc.invalidateQueries({ queryKey: keys.account });
-      qc.removeQueries({ queryKey: keys.org(orgId) });
-      navigate('/app', { replace: true });
+      toast.show('Eliminación programada: tienes 30 días para restaurarlo');
     } catch (err) {
       const billing = isApiError(err) && (err.code === 'BILLING_ERROR' || err.code === 'BILLING_NOT_CONFIGURED');
-      setError(billing ? `${errorMessage(err)} El local NO se ha eliminado: hay que cancelar antes su suscripción. Inténtalo más tarde o contacta con soporte.` : errorMessage(err));
+      setError(billing ? `${errorMessage(err)} El local NO se ha eliminado: hay que cancelar antes su suscripción. Inténtalo más tarde${SUPPORT_EMAIL ? ` o escríbenos a ${SUPPORT_EMAIL}` : ''}.` : errorMessage(err));
+    } finally {
       setBusy(false);
     }
   };
@@ -776,7 +776,7 @@ export function DataSettingsPage() {
             <SectionTitle>Exportar todo</SectionTitle>
             <p className="text-ink-muted">
               Descarga una copia completa del local en formato JSON: configuración, personal, platos y todos los registros. No incluye contraseñas ni PIN.
-              Disponible también en solo lectura.
+              Disponible también en solo lectura y mientras el local esté pendiente de eliminación.
             </p>
             <DownloadButton url={`/api/orgs/${orgId}/export`} fallbackName="exportacion.json" className="mt-4">
               Descargar exportación
@@ -784,16 +784,33 @@ export function DataSettingsPage() {
           </Card>
           <Card className="border-bad/40">
             <SectionTitle>Eliminar el local</SectionTitle>
-            <p className="text-ink-muted">Borra el local y todos sus registros de forma permanente. No se puede deshacer. Te recomendamos exportar antes. Si tiene una suscripción activa, se cancela automáticamente.</p>
-            <Button variant="danger" icon="trash" className="mt-4" onClick={() => setOpen(true)}>
-              Eliminar «{org.name}»
-            </Button>
+            {pending ? (
+              <p className="text-ink-muted">
+                Ya está pendiente de eliminación: se borrará definitivamente el {deletionDate(org.deletionScheduledAt!, tz)}. Puedes restaurarlo o
+                eliminarlo ya desde el aviso de la parte superior.
+              </p>
+            ) : (
+              <>
+                <p className="text-ink-muted">
+                  El local pasará a <strong>pendiente de eliminación durante 30 días</strong>: en ese tiempo queda en solo lectura (se pueden consultar,
+                  descargar informes y exportar los datos) y puedes restaurarlo. Pasado el plazo se borra definitivamente con todos sus registros. Si
+                  tiene una suscripción activa, se cancela al momento.
+                </p>
+                <Button variant="danger" icon="trash" className="mt-4" onClick={() => setOpen(true)}>
+                  Eliminar «{org.name}»
+                </Button>
+              </>
+            )}
           </Card>
         </div>
       </OwnerOnly>
-      <Dialog open={open} onClose={() => setOpen(false)} title="Eliminar el local definitivamente" size="sm">
+      <Dialog open={open} onClose={() => setOpen(false)} title="Eliminar el local" size="sm">
         <form onSubmit={del} noValidate className="space-y-4">
-          <Callout tone="bad">Se borrarán todos los datos y registros de «{org.name}». Esta acción no se puede deshacer.</Callout>
+          <Callout tone="warn" title="Tendrás 30 días para arrepentirte">
+            «{org.name}» quedará pendiente de eliminación: en solo lectura, sin carta pública y con las tablets de cocina desvinculadas. Puedes
+            restaurarlo en cualquier momento durante 30 días; después se borrará definitivamente con todos sus registros. Si tiene suscripción, se
+            cancela ahora.
+          </Callout>
           <Field label={`Escribe «${org.name}» para confirmar`}>
             <Input value={confirmName} onChange={(e) => setConfirmName(e.target.value)} autoComplete="off" />
           </Field>
@@ -802,7 +819,7 @@ export function DataSettingsPage() {
           </Field>
           {error ? <Callout tone="bad" live="assertive">{error}</Callout> : null}
           <Button type="submit" variant="danger" block loading={busy}>
-            Eliminar para siempre
+            Programar la eliminación
           </Button>
         </form>
       </Dialog>
@@ -876,7 +893,7 @@ export function AccountSettingsPage() {
             }}
           >
             <Field label="Tu nombre" error={nameErr}>
-              <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" />
+              <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.userName} autoComplete="name" />
             </Field>
             <Button type="submit" loading={busy === 'name'}>
               Guardar
@@ -930,7 +947,8 @@ export function AccountSettingsPage() {
             onSubmit={(e) => {
               e.preventDefault();
               if (!pw.current) return setPwErr('Escribe tu contraseña actual');
-              if (!passwordAcceptable(pw.next, user.email)) return setPwErr('La nueva contraseña no cumple los requisitos');
+              const policy = checkPasswordPolicy(pw.next, { email: user.email, name: user.name });
+              if (policy) return setPwErr(policy);
               setPwErr(null);
               void run(
                 'pw',
@@ -949,7 +967,7 @@ export function AccountSettingsPage() {
             <Field label="Nueva contraseña" error={pwErr}>
               <PasswordInput value={pw.next} onChange={(e) => setPw((s) => ({ ...s, next: e.target.value }))} autoComplete="new-password" maxLength={128} />
             </Field>
-            <PasswordMeter password={pw.next} email={user.email} />
+            <PasswordMeter password={pw.next} email={user.email} name={user.name} />
             <Button type="submit" loading={busy === 'pw'}>
               Cambiar contraseña
             </Button>
@@ -1034,7 +1052,7 @@ function isSafeExternal(url: string): boolean {
 }
 
 export function BillingPage() {
-  const { orgId, isOwner, tz } = useOrgContext();
+  const { orgId, isOwner, tz, org } = useOrgContext();
   useDocumentTitle('Facturación');
   const [params, setParams] = useSearchParams();
   const q = useBilling(orgId);
@@ -1090,13 +1108,14 @@ export function BillingPage() {
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : (
-        <BillingContent billing={q.data} plan={plan} setPlan={setPlan} go={go} busy={busy} error={error} tz={tz} />
+        <BillingContent pendingDeletion={!!org.deletionScheduledAt} billing={q.data} plan={plan} setPlan={setPlan} go={go} busy={busy} error={error} tz={tz} />
       )}
     </>
   );
 }
 
 function BillingContent({
+  pendingDeletion,
   billing,
   plan,
   setPlan,
@@ -1105,6 +1124,7 @@ function BillingContent({
   error,
   tz,
 }: {
+  pendingDeletion: boolean;
   billing: Billing;
   plan: 'monthly' | 'annual';
   setPlan: (p: 'monthly' | 'annual') => void;
@@ -1158,10 +1178,15 @@ function BillingContent({
       </Card>
       <Card>
         <SectionTitle>{hasSubscription ? 'Tu plan' : 'Elige tu plan'}</SectionTitle>
-        {!billing.billingEnabled ? (
+        {pendingDeletion ? (
+          <Callout tone="warn" icon="lock" title="Local pendiente de eliminación">
+            Mientras el local esté pendiente de eliminación no se puede contratar. Si quieres seguir usándolo, restáuralo primero desde el aviso de
+            la parte superior.
+          </Callout>
+        ) : !billing.billingEnabled ? (
           <Callout tone="info" icon="card" title="Los pagos online aún no están disponibles">
-            Este servidor todavía no tiene configurada la pasarela de pago. Tus datos y la prueba siguen funcionando con normalidad; contacta con
-            soporte para activar tu suscripción.
+            Este servidor todavía no tiene configurada la pasarela de pago. Tus datos y la prueba siguen funcionando con normalidad;
+            {SUPPORT_EMAIL ? ` escríbenos a ${SUPPORT_EMAIL} para activar tu suscripción.` : ' contacta con soporte para activar tu suscripción.'}
           </Callout>
         ) : hasSubscription ? (
           <p className="text-ink-muted">Para cambiar de plan, actualizar la tarjeta, descargar facturas o cancelar, usa «Gestionar pago».</p>
@@ -1198,6 +1223,20 @@ function BillingContent({
           <Callout tone={error.notConfigured ? 'info' : 'bad'} className="mt-4" live="assertive" title={error.notConfigured ? 'Pagos no disponibles todavía' : undefined}>
             {error.notConfigured ? 'La pasarela de pago no está configurada en este servidor. Inténtalo más tarde o contacta con soporte.' : error.message}
           </Callout>
+        ) : null}
+        {sub.paymentFailed ? (
+          <Callout tone="warn" icon="card" className="mt-4" title="No hemos podido cobrar la suscripción">
+            Actualiza el método de pago con «Gestionar pago». Mientras tanto puedes seguir registrando.
+          </Callout>
+        ) : null}
+        {SUPPORT_EMAIL ? (
+          <p className="mt-4 text-sm text-ink-muted">
+            ¿Dudas con la factura o el pago? Escríbenos a{' '}
+            <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold underline underline-offset-4">
+              {SUPPORT_EMAIL}
+            </a>
+            .
+          </p>
         ) : null}
       </Card>
     </div>
