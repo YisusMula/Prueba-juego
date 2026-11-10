@@ -9,14 +9,17 @@ export function keysetAfter(opts: {
   table: string;
   alias: string;
   idColumn?: string;
+  /** Columna de orden (por defecto created_at; los registros usan effective_at). */
+  orderColumn?: string;
   cursor: string;
   orgId: string;
   direction: 'asc' | 'desc';
 }): Expression<SqlBool> {
   const idCol = opts.idColumn ?? 'id';
+  const orderCol = opts.orderColumn ?? 'created_at';
   const op = sql.raw(opts.direction === 'asc' ? '>' : '<');
-  return sql<SqlBool>`(${sql.ref(`${opts.alias}.created_at`)}, ${sql.ref(`${opts.alias}.${idCol}`)}) ${op} (
-    SELECT c.created_at, c.${sql.ref(idCol)} FROM ${sql.table(opts.table)} c
+  return sql<SqlBool>`(${sql.ref(`${opts.alias}.${orderCol}`)}, ${sql.ref(`${opts.alias}.${idCol}`)}) ${op} (
+    SELECT c.${sql.ref(orderCol)}, c.${sql.ref(idCol)} FROM ${sql.table(opts.table)} c
     WHERE c.${sql.ref(idCol)} = ${opts.cursor} AND c.organization_id = ${opts.orgId}
   )`;
 }

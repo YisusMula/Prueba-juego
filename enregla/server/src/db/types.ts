@@ -59,6 +59,12 @@ export interface OrganizationsTable {
   current_period_end: TimestampNullable;
   cancel_at_period_end: Generated<boolean>;
   stripe_event_at: TimestampNullable;
+  trial_notice_soon_sent_at: TimestampNullable;
+  trial_notice_end_sent_at: TimestampNullable;
+  /** Borrado diferido: cuándo se pidió y cuándo se purgará definitivamente. */
+  deletion_requested_at: TimestampNullable;
+  deletion_scheduled_at: TimestampNullable;
+  deletion_requested_by: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -171,6 +177,8 @@ export interface RecordsTable {
   amendment_reason: string | null;
   alert: Generated<boolean>;
   created_at: Timestamp;
+  /** Fecha del hecho: la del registro raíz en una enmienda. La rellena un trigger. */
+  effective_at: ColumnType<Date, never, never>;
 }
 
 export interface DishesTable {
@@ -212,6 +220,48 @@ export interface StripeEventsTable {
   processed_at: Timestamp;
 }
 
+export interface EquipmentConfigHistoryTable {
+  id: Generated<string>;
+  equipment_id: string;
+  organization_id: string;
+  valid_from: Timestamp;
+  checks_per_day: number;
+  active: boolean;
+}
+
+export interface CleaningPlanConfigHistoryTable {
+  id: Generated<string>;
+  cleaning_plan_id: string;
+  organization_id: string;
+  valid_from: Timestamp;
+  frequency: 'daily' | 'weekly' | 'monthly';
+  weekday: number | null;
+  month_day: number | null;
+  active: boolean;
+}
+
+export interface IdempotencyKeysTable {
+  organization_id: string;
+  key: string;
+  request_hash: string;
+  record_id: string | null;
+  created_at: Timestamp;
+}
+
+export interface EmailOutboxTable {
+  id: Generated<string>;
+  to_address: string;
+  subject: string;
+  text_body: string;
+  html_body: string;
+  status: Generated<'pending' | 'sent' | 'failed'>;
+  attempts: Generated<number>;
+  next_attempt_at: Timestamp;
+  last_error: string | null;
+  created_at: Timestamp;
+  sent_at: TimestampNullable;
+}
+
 export interface Database {
   users: UsersTable;
   sessions: SessionsTable;
@@ -230,6 +280,10 @@ export interface Database {
   rate_limits: RateLimitsTable;
   stripe_events: StripeEventsTable;
   job_runs: JobRunsTable;
+  equipment_config_history: EquipmentConfigHistoryTable;
+  cleaning_plan_config_history: CleaningPlanConfigHistoryTable;
+  idempotency_keys: IdempotencyKeysTable;
+  email_outbox: EmailOutboxTable;
 }
 
 export type User = Selectable<UsersTable>;

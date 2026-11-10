@@ -159,6 +159,8 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
     await enforce(rateLimiter, `invite:org:${ctx.org.id}`, config.rateLimits.inviteOrg, limitMsg);
     await enforce(rateLimiter, `invite:user:${ctx.userId}`, config.rateLimits.inviteUser, limitMsg);
     const token = randomToken();
+    const inviter = requireUser(req).user.name;
+    let mailId = '';
     const inv = await db.transaction().execute(async (trx) => {
       await trx
         .updateTable('invitations')
@@ -168,7 +170,7 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
         .where('accepted_at', 'is', null)
         .where('revoked_at', 'is', null)
         .execute();
-      return trx
+      const created = await trx
         .insertInto('invitations')
         .values({
           organization_id: ctx.org.id,
@@ -180,9 +182,11 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
         })
         .returning(['id', 'email', 'role', 'expires_at', 'created_at'])
         .executeTakeFirstOrThrow();
+      // El email se encola en la misma transacción que la invitación (o ambos o ninguno).
+      mailId = await app.queueMail(trx, emails.invitation(ctxMail, body.email, ctx.org.name, inviter, body.role, token));
+      return created;
     });
-    const inviter = requireUser(req).user.name;
-    app.sendMail(emails.invitation(ctxMail, body.email, ctx.org.name, inviter, body.role, token));
+    app.deliverEmails([mailId]);
     await audit(db, { event: 'member.invited', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { email: body.email, role: body.role } });
     return reply.status(201).send({ invitation: invitationView(inv) });
   });

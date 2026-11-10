@@ -48,6 +48,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
         businessType: o.business_type,
         role: o.role,
         subscription: subscriptionView(o),
+        deletionScheduledAt: o.deletion_scheduled_at?.toISOString() ?? null,
       })),
     };
   });
@@ -72,14 +73,15 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     if (policy) throw policyError(policy);
     if (body.newPassword === body.currentPassword) throw policyError('La nueva contraseña debe ser distinta de la actual');
     const hash = await hashSecret(body.newPassword);
-    await db.transaction().execute(async (trx) => {
+    const mailId = await db.transaction().execute(async (trx) => {
       await trx.updateTable('users').set({ password_hash: hash, updated_at: sql<Date>`now()` }).where('id', '=', user.id).execute();
       // Anula cambios de email y restablecimientos pendientes (pudo pedirlos quien conocía la contraseña antigua).
       await invalidateUserTokens(trx, user.id);
+      return app.queueMail(trx, emails.passwordChanged(ctx, user.email));
     });
     await deleteUserSessions(deps, user.id, auth.sessionId);
     await audit(db, { event: 'auth.password_changed', userId: user.id, ip: req.ip });
-    app.sendMail(emails.passwordChanged(ctx, user.email));
+    app.deliverEmails([mailId]);
     return reply.status(204).send();
   });
 

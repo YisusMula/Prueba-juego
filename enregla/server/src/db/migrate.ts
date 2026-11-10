@@ -15,6 +15,9 @@ export async function runMigrations(pool: pg.Pool, log: (msg: string) => void = 
   const client = await pool.connect();
   const applied: string[] = [];
   try {
+    // Las migraciones pueden ser largas (rellenos) y esperar al bloqueo de otra instancia:
+    // sin los límites por sentencia del pool en esta sesión.
+    await client.query('SET statement_timeout = 0; SET lock_timeout = 0; SET idle_in_transaction_session_timeout = 0');
     await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
     await client.query(
       'CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())',

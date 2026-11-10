@@ -15,5 +15,6 @@ export function createDeps(config: Config, overrides: Partial<AppDeps> = {}): Ap
     mailer: overrides.mailer ?? createMailer(config),
     rateLimiter: overrides.rateLimiter ?? new PgRateLimiter(db),
     billing: overrides.billing !== undefined ? overrides.billing : config.stripe ? new StripeBillingProvider(config.stripe) : null,
+    now: overrides.now ?? (() => new Date()),
   };
 }

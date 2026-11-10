@@ -2,39 +2,59 @@ import { sql } from 'kysely';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AppDeps } from '../../http/context.js';
 import { emails } from '../../lib/emails.js';
-import { localDate } from '../../lib/dates.js';
+import { diffDays, formatDateEs, localDate } from '../../lib/dates.js';
+import { enqueueEmail, processOutbox, purgeOutbox } from '../../lib/outbox.js';
+import { audit } from '../../lib/audit.js';
+import { IDEMPOTENCY_RETENTION_DAYS } from '../records/idempotency.js';
 import { isWritable } from '../billing/status.js';
 import { computeToday, pendingLabels } from '../tasks/service.js';
 
 const REMINDER_LOCK_KEY = 72_017_002;
+const TRIAL_NOTICE_LOCK_KEY = 72_017_004;
 
 export interface TickResult {
   ran: boolean;
   organizationsChecked: number;
+  /** Emails encolados en la bandeja de salida. */
+  emailsQueued: number;
+  /** De ellos, enviados en el primer intento (el resto se reintenta). */
   emailsSent: number;
+}
+
+const mailCtx = (deps: AppDeps) => ({ appName: deps.config.appName, appOrigin: deps.config.appOrigin });
+
+/** Primer intento de envío, fuera de cualquier transacción. Nunca lanza por fallos de SMTP. */
+async function deliverQueued(deps: AppDeps, ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const r = await processOutbox(deps.db, deps.mailer, { ids, limit: ids.length });
+  return r.sent;
 }
 
 /**
  * Una pasada del recordatorio diario. Segura con varias instancias: solo la que obtiene
  * el advisory lock (de transacción) trabaja; `last_reminder_on` evita envíos duplicados.
  * Se envía una vez al día, en cuanto la hora local alcanza `reminder_hour`.
+ * Los emails se ENCOLAN en la misma transacción que marca `last_reminder_on` (o se marcan
+ * ambas cosas o ninguna) y se envían después, sin SMTP dentro de la transacción del lock;
+ * si el SMTP falla, la bandeja de salida los reintenta.
  */
-export async function runReminderTick(deps: AppDeps, now = new Date()): Promise<TickResult> {
-  return deps.db.transaction().execute(async (trx) => {
+export async function runReminderTick(deps: AppDeps, now = deps.now()): Promise<TickResult> {
+  const queued: string[] = [];
+  const res = await deps.db.transaction().execute(async (trx) => {
     const lock = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(${REMINDER_LOCK_KEY}) AS ok`.execute(trx);
-    if (!lock.rows[0]?.ok) return { ran: false, organizationsChecked: 0, emailsSent: 0 };
+    if (!lock.rows[0]?.ok) return { ran: false, organizationsChecked: 0 };
 
     const nowTs = now.toISOString();
     const orgs = await trx
       .selectFrom('organizations')
       .selectAll()
       .where('reminder_enabled', '=', true)
+      .where('deletion_scheduled_at', 'is', null)
       .where(sql<boolean>`extract(hour from (${nowTs}::timestamptz AT TIME ZONE timezone)) >= reminder_hour`)
       .where(sql<boolean>`(last_reminder_on IS NULL OR last_reminder_on < (${nowTs}::timestamptz AT TIME ZONE timezone)::date)`)
       .limit(500)
       .execute();
 
-    let sent = 0;
     for (const org of orgs) {
       const today = localDate(now, org.timezone);
       await trx.updateTable('organizations').set({ last_reminder_on: today }).where('id', '=', org.id).execute();
@@ -50,17 +70,85 @@ export async function runReminderTick(deps: AppDeps, now = new Date()): Promise<
         .where('m.daily_reminder', '=', true)
         .where('u.email_verified_at', 'is not', null)
         .execute();
-      for (const r of recipients) {
-        try {
-          await deps.mailer.send(emails.dailyReminder({ appName: deps.config.appName, appOrigin: deps.config.appOrigin }, r.email, org.name, pending));
-          sent += 1;
-        } catch {
-          // Un fallo de envío no debe impedir el resto; se registra en el log del llamador.
-        }
-      }
+      for (const r of recipients) queued.push(await enqueueEmail(trx, emails.dailyReminder(mailCtx(deps), r.email, org.name, pending)));
     }
-    return { ran: true, organizationsChecked: orgs.length, emailsSent: sent };
+    return { ran: true, organizationsChecked: orgs.length };
   });
+  const sent = await deliverQueued(deps, queued);
+  return { ...res, emailsQueued: queued.length, emailsSent: sent };
+}
+
+export interface TrialNoticeResult {
+  ran: boolean;
+  soon: number;
+  ended: number;
+  emailsQueued: number;
+}
+
+/**
+ * Avisos de fin de prueba a los propietarios: 3 días antes y el día que caduca, una sola vez cada
+ * uno por local (marcas en organizations). Solo locales en prueba local (sin suscripción de
+ * Stripe), no pendientes de eliminación, y a partir de las 9:00 hora local.
+ */
+export async function runTrialNotices(deps: AppDeps, now = deps.now()): Promise<TrialNoticeResult> {
+  const queued: string[] = [];
+  const res = await deps.db.transaction().execute(async (trx) => {
+    const lock = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(${TRIAL_NOTICE_LOCK_KEY}) AS ok`.execute(trx);
+    if (!lock.rows[0]?.ok) return { ran: false, soon: 0, ended: 0 };
+    const nowTs = now.toISOString();
+    const localToday = sql`(${nowTs}::timestamptz AT TIME ZONE timezone)::date`;
+    const localEnd = sql`(trial_ends_at AT TIME ZONE timezone)::date`;
+    const orgs = await trx
+      .selectFrom('organizations')
+      .selectAll()
+      .where('subscription_status', '=', 'trialing')
+      .where('stripe_subscription_id', 'is', null)
+      .where('deletion_scheduled_at', 'is', null)
+      .where(sql<boolean>`extract(hour from (${nowTs}::timestamptz AT TIME ZONE timezone)) >= 9`)
+      .where(
+        sql<boolean>`(
+          (trial_notice_soon_sent_at IS NULL AND trial_ends_at > ${nowTs}::timestamptz
+            AND trial_ends_at <= ${nowTs}::timestamptz + interval '3 days' AND ${localToday} < ${localEnd})
+          OR (trial_notice_end_sent_at IS NULL AND ${localToday} >= ${localEnd}
+            AND trial_ends_at > ${nowTs}::timestamptz - interval '2 days')
+        )`,
+      )
+      .limit(500)
+      .forUpdate()
+      .skipLocked()
+      .execute();
+    let soon = 0;
+    let ended = 0;
+    for (const org of orgs) {
+      const today = localDate(now, org.timezone);
+      const endDay = localDate(org.trial_ends_at, org.timezone);
+      const isEndDay = today >= endDay;
+      const owners = await trx
+        .selectFrom('memberships as m')
+        .innerJoin('users as u', 'u.id', 'm.user_id')
+        .select(['u.email'])
+        .where('m.organization_id', '=', org.id)
+        .where('m.role', '=', 'owner')
+        .where('u.email_verified_at', 'is not', null)
+        .execute();
+      for (const o of owners) {
+        const msg = isEndDay
+          ? emails.trialEndsToday(mailCtx(deps), o.email, org.name, org.id, org.trial_ends_at.getTime() <= now.getTime())
+          : emails.trialEndingSoon(mailCtx(deps), o.email, org.name, org.id, formatDateEs(endDay), Math.max(1, diffDays(today, endDay)));
+        queued.push(await enqueueEmail(trx, msg));
+      }
+      await trx
+        .updateTable('organizations')
+        .set(isEndDay ? { trial_notice_end_sent_at: now, trial_notice_soon_sent_at: org.trial_notice_soon_sent_at ?? now } : { trial_notice_soon_sent_at: now })
+        .where('id', '=', org.id)
+        .execute();
+      if (isEndDay) ended += 1;
+      else soon += 1;
+    }
+    return { ran: true, soon, ended };
+  });
+  await deliverQueued(deps, queued);
+  return { ...res, emailsQueued: queued.length };
 }
 
 /** Limpieza periódica de datos caducados. */
@@ -68,6 +156,7 @@ export async function runCleanup(deps: AppDeps): Promise<void> {
   await deps.rateLimiter.cleanup();
   await sql`DELETE FROM sessions WHERE expires_at < now() OR last_seen_at < now() - make_interval(secs => ${Math.floor(deps.config.sessionIdleMs / 1000)})`.execute(deps.db);
   await sql`DELETE FROM email_tokens WHERE expires_at < now() - interval '7 days'`.execute(deps.db);
+  await purgeOutbox(deps.db);
 }
 
 const RETENTION_LOCK_KEY = 72_017_003;
@@ -81,6 +170,10 @@ export interface RetentionResult {
   emailTokens: number;
   invitations: number;
   rateLimits: number;
+  /** Locales pendientes de eliminación cuyo plazo ha vencido (purgados definitivamente). */
+  organizations: number;
+  idempotencyKeys: number;
+  emailOutbox: number;
 }
 
 /**
@@ -92,7 +185,7 @@ export interface RetentionResult {
  * y filas de rate limit vencidas.
  */
 export async function runRetention(deps: AppDeps, opts: { force?: boolean } = {}): Promise<RetentionResult> {
-  const none: RetentionResult = { ran: false, auditEvents: 0, unverifiedUsers: 0, sessions: 0, emailTokens: 0, invitations: 0, rateLimits: 0 };
+  const none: RetentionResult = { ran: false, auditEvents: 0, unverifiedUsers: 0, sessions: 0, emailTokens: 0, invitations: 0, rateLimits: 0, organizations: 0, idempotencyKeys: 0, emailOutbox: 0 };
   const { auditMonths, unverifiedAccountDays } = deps.config.retention;
   return deps.db.transaction().execute(async (trx) => {
     const lock = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(${RETENTION_LOCK_KEY}) AS ok`.execute(trx);
@@ -135,13 +228,20 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean } = {}
         .execute(),
     );
     const rateLimits = n(await trx.deleteFrom('rate_limits').where('reset_at', '<', sql<Date>`now() - interval '1 hour'`).execute());
+    // Borrado diferido: los locales cuyo plazo de 30 días ha vencido se eliminan con todos sus datos.
+    const purged = await trx.deleteFrom('organizations').where('deletion_scheduled_at', '<=', sql<Date>`now()`).returning(['id', 'name']).execute();
+    for (const o of purged) await audit(trx, { event: 'org.deleted', organizationId: o.id, metadata: { name: o.name, reason: 'scheduled_deletion' } });
+    const idempotencyKeys = n(
+      await trx.deleteFrom('idempotency_keys').where('created_at', '<', sql<Date>`now() - make_interval(days => ${IDEMPOTENCY_RETENTION_DAYS})`).execute(),
+    );
+    const emailOutbox = await purgeOutbox(trx);
 
     await trx
       .insertInto('job_runs')
       .values({ name: RETENTION_JOB, last_run_at: sql<Date>`now()` })
       .onConflict((oc) => oc.column('name').doUpdateSet({ last_run_at: sql<Date>`now()` }))
       .execute();
-    return { ran: true, auditEvents, unverifiedUsers, sessions, emailTokens, invitations, rateLimits };
+    return { ran: true, auditEvents, unverifiedUsers, sessions, emailTokens, invitations, rateLimits, organizations: purged.length, idempotencyKeys, emailOutbox };
   });
 }
 
@@ -153,7 +253,9 @@ export function startScheduler(deps: AppDeps, log: FastifyBaseLogger): () => voi
     running = true;
     try {
       const r = await runReminderTick(deps);
-      if (r.emailsSent > 0) log.info({ emailsSent: r.emailsSent }, 'Recordatorios diarios enviados');
+      if (r.emailsQueued > 0) log.info({ emailsQueued: r.emailsQueued, emailsSent: r.emailsSent }, 'Recordatorios diarios encolados');
+      const t = await runTrialNotices(deps);
+      if (t.emailsQueued > 0) log.info(t, 'Avisos de fin de prueba encolados');
       if (ticks++ % 60 === 0) await runCleanup(deps);
       const ret = await runRetention(deps);
       if (ret.ran) log.info(ret, 'Purga diaria de datos caducados');
@@ -166,5 +268,34 @@ export function startScheduler(deps: AppDeps, log: FastifyBaseLogger): () => voi
   const timer = setInterval(() => void tick(), deps.config.scheduler.intervalSeconds * 1000);
   timer.unref();
   void tick();
+  return () => clearInterval(timer);
+}
+
+/**
+ * Worker de la bandeja de salida: reintenta los emails pendientes cuyo próximo intento ha
+ * vencido. Seguro con varias instancias (FOR UPDATE SKIP LOCKED + arrendamiento).
+ */
+export function startEmailWorker(deps: AppDeps, log: FastifyBaseLogger): () => void {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      for (let i = 0; i < 10; i++) {
+        const r = await processOutbox(deps.db, deps.mailer, {
+          limit: 20,
+          onError: (err) => log.warn({ err: (err as Error).message }, 'Fallo enviando email: se reintentará'),
+        });
+        if (r.failed > 0) log.error({ failed: r.failed }, 'Emails descartados tras agotar los reintentos');
+        if (r.sent + r.retried + r.failed < 20) break;
+      }
+    } catch (err) {
+      log.error({ err }, 'Error en el worker de emails');
+    } finally {
+      running = false;
+    }
+  };
+  const timer = setInterval(() => void tick(), deps.config.mail.worker.intervalSeconds * 1000);
+  timer.unref();
   return () => clearInterval(timer);
 }

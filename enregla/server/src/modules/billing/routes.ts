@@ -6,7 +6,7 @@ import { orgCtx, requireRole, requireUser } from '../../http/guards.js';
 import { AppError, conflict } from '../../lib/errors.js';
 import { audit } from '../../lib/audit.js';
 import type { DB } from '../../db/index.js';
-import type { BillingEvent, BillingProvider } from './provider.js';
+import type { BillingEvent, BillingProvider, SubscriptionState } from './provider.js';
 import { effectiveStatus, subscriptionView } from './status.js';
 
 const notConfigured = () =>
@@ -32,6 +32,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const billing = app.deps.billing;
     if (!billing) throw notConfigured();
     const body = parse(S.checkoutBody, req.body);
+    if (ctx.org.deletion_scheduled_at) throw conflict('Este local está pendiente de eliminación. Restáuralo antes de contratar una suscripción.');
     const status = effectiveStatus(ctx.org);
     if (ctx.org.stripe_subscription_id && ['active', 'past_due', 'unpaid', 'trialing', 'paused'].includes(status)) {
       throw conflict('Este local ya tiene una suscripción. Gestiónala desde el portal de cliente.');
@@ -79,85 +80,141 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const asString = (v: unknown): string | null => (typeof v === 'string' ? v : v && typeof v === 'object' && typeof (v as { id?: unknown }).id === 'string' ? (v as { id: string }).id : null);
+const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
 
-async function findOrgId(db: DB, metadataOrgId: unknown, customerId: string | null): Promise<string | null> {
-  if (typeof metadataOrgId === 'string' && UUID_RE.test(metadataOrgId)) {
-    const o = await db.selectFrom('organizations').select('id').where('id', '=', metadataOrgId).executeTakeFirst();
-    if (o) return o.id;
-  }
-  if (customerId) {
-    const o = await db.selectFrom('organizations').select('id').where('stripe_customer_id', '=', customerId).executeTakeFirst();
-    if (o) return o.id;
-  }
-  return null;
+/** Estados en los que una suscripción ha terminado. */
+const TERMINATED = ['canceled', 'incomplete_expired'];
+
+export interface BillingEventResult {
+  duplicate: boolean;
+  organizationId: string | null;
+  /** Motivo si el evento se aceptó sin aplicar nada. */
+  ignored?: string;
 }
 
-export async function processBillingEvent(db: DB, billing: BillingProvider, event: BillingEvent): Promise<{ duplicate: boolean; organizationId: string | null }> {
+/** Suscripción y pistas de organización/cliente que trae cada tipo de evento. */
+function extractRefs(event: BillingEvent): { relevant: boolean; subscriptionId: string | null; orgHint: unknown; customerId: string | null } {
+  const o = event.data.object;
+  const metadata = obj(o.metadata);
+  const customerId = asString(o.customer);
+  if (event.type.startsWith('customer.subscription.')) {
+    return { relevant: true, subscriptionId: asString(o.id), orgHint: metadata.organization_id, customerId };
+  }
+  if (event.type === 'checkout.session.completed') {
+    return { relevant: true, subscriptionId: asString(o.subscription), orgHint: o.client_reference_id ?? metadata.organization_id, customerId };
+  }
+  if (event.type.startsWith('invoice.')) {
+    // API reciente: invoice.parent.subscription_details; antigua: invoice.subscription(_details).
+    const details = obj(obj(o.parent).subscription_details);
+    const legacy = obj(o.subscription_details);
+    return {
+      relevant: true,
+      subscriptionId: asString(o.subscription) ?? asString(details.subscription),
+      orgHint: obj(details.metadata).organization_id ?? obj(legacy.metadata).organization_id,
+      customerId,
+    };
+  }
+  return { relevant: false, subscriptionId: null, orgHint: null, customerId };
+}
+
+const retryLater = (message: string) => new AppError(503, 'BILLING_ERROR', message);
+
+/**
+ * Procesa un evento de Stripe. En todo evento de suscripción, Checkout o factura se recupera la
+ * suscripción ACTUAL desde Stripe y se aplica ese estado (fuente de verdad), así que el orden de
+ * llegada de los eventos no importa. El evento solo se marca como procesado si se ha podido
+ * resolver: si Stripe falla o no se encuentra la organización se lanza un 5xx para que Stripe
+ * reintente (salvo si la organización ya no existe: se acepta y se registra).
+ */
+export async function processBillingEvent(
+  db: DB,
+  billing: BillingProvider,
+  event: BillingEvent,
+  log?: { warn: (o: object, msg: string) => void },
+): Promise<BillingEventResult> {
+  const seen = await db.selectFrom('stripe_events').select('id').where('id', '=', event.id).executeTakeFirst();
+  if (seen) return { duplicate: true, organizationId: null };
+
+  const markProcessed = async (ignored: string, organizationId: string | null = null): Promise<BillingEventResult> => {
+    const ins = await db.insertInto('stripe_events').values({ id: event.id, type: event.type }).onConflict((oc) => oc.column('id').doNothing()).returning('id').executeTakeFirst();
+    return { duplicate: !ins, organizationId, ignored };
+  };
+
+  const refs = extractRefs(event);
+  if (!refs.relevant) return markProcessed('event_type_not_used');
+  if (!refs.subscriptionId) {
+    // Checkout sin suscripción o factura suelta: solo se vincula el cliente si se conoce el local.
+    return markProcessed('no_subscription');
+  }
+
+  let state: SubscriptionState | null;
+  try {
+    state = await billing.retrieveSubscription(refs.subscriptionId);
+  } catch (err) {
+    log?.warn({ err: (err as Error).message, eventId: event.id }, 'No se pudo recuperar la suscripción de Stripe; Stripe reintentará');
+    throw retryLater('No se ha podido consultar la suscripción en Stripe. Reintentar más tarde.');
+  }
+  if (!state) {
+    log?.warn({ eventId: event.id }, 'Stripe no conoce la suscripción del evento: se ignora');
+    return markProcessed('subscription_not_found');
+  }
+
+  // Organización: metadatos de la suscripción (fijados al crear el Checkout) → pista del evento → cliente.
+  const orgRef = state.metadata.organization_id ?? refs.orgHint;
+  let orgId: string | null = null;
+  if (typeof orgRef === 'string' && UUID_RE.test(orgRef)) {
+    const o = await db.selectFrom('organizations').select('id').where('id', '=', orgRef).executeTakeFirst();
+    if (!o) {
+      log?.warn({ eventId: event.id, organizationId: orgRef }, 'Evento de Stripe de un local que ya no existe: se acepta sin efecto');
+      return markProcessed('organization_deleted');
+    }
+    orgId = o.id;
+  }
+  const customerId = state.customerId ?? refs.customerId;
+  if (!orgId && customerId) {
+    const o = await db.selectFrom('organizations').select('id').where('stripe_customer_id', '=', customerId).executeTakeFirst();
+    orgId = o?.id ?? null;
+  }
+  if (!orgId) {
+    log?.warn({ eventId: event.id, type: event.type }, 'Evento de Stripe sin local asociable: se responde 503 para que Stripe reintente');
+    throw retryLater('No se ha podido asociar el evento a ningún local todavía. Reintentar más tarde.');
+  }
+  const resolvedOrgId = orgId;
+
   return db.transaction().execute(async (trx) => {
-    const inserted = await trx
-      .insertInto('stripe_events')
-      .values({ id: event.id, type: event.type })
-      .onConflict((oc) => oc.column('id').doNothing())
-      .returning('id')
-      .executeTakeFirst();
+    const inserted = await trx.insertInto('stripe_events').values({ id: event.id, type: event.type }).onConflict((oc) => oc.column('id').doNothing()).returning('id').executeTakeFirst();
     if (!inserted) return { duplicate: true, organizationId: null };
-    const obj = event.data.object;
-    const metadata = (obj.metadata ?? {}) as Record<string, unknown>;
+    const org = await trx.selectFrom('organizations').selectAll().where('id', '=', resolvedOrgId).forUpdate().executeTakeFirst();
+    if (!org) return { duplicate: false, organizationId: null, ignored: 'organization_deleted' };
 
-    if (event.type === 'checkout.session.completed') {
-      const customer = asString(obj.customer);
-      const orgId = await findOrgId(trx, obj.client_reference_id ?? metadata.organization_id, customer);
-      if (!orgId) return { duplicate: false, organizationId: null };
-      const plan = metadata.plan === 'monthly' || metadata.plan === 'annual' ? metadata.plan : null;
-      await trx
-        .updateTable('organizations')
-        .set({
-          stripe_customer_id: customer,
-          stripe_subscription_id: asString(obj.subscription),
-          ...(plan ? { plan } : {}),
-          updated_at: sql<Date>`now()`,
-        })
-        .where('id', '=', orgId)
-        .execute();
-      return { duplicate: false, organizationId: orgId };
+    // Solo cuenta la suscripción actual del local. Otra suscripción solo la sustituye si la
+    // actual ha terminado y la nueva está viva (p. ej. nueva contratación tras cancelar).
+    const current = org.stripe_subscription_id;
+    if (current && current !== state.id) {
+      const replace = TERMINATED.includes(org.subscription_status) && !TERMINATED.includes(state.status);
+      if (!replace) return { duplicate: false, organizationId: org.id, ignored: 'not_current_subscription' };
     }
 
-    if (event.type.startsWith('customer.subscription.')) {
-      const customer = asString(obj.customer);
-      const subId = asString(obj.id);
-      const orgId = await findOrgId(trx, metadata.organization_id, customer);
-      if (!orgId || !subId) return { duplicate: false, organizationId: null };
-      const org = await trx.selectFrom('organizations').selectAll().where('id', '=', orgId).forUpdate().executeTakeFirstOrThrow();
-      const eventAt = new Date(event.created * 1000);
-      // Eventos desordenados: se ignora uno más antiguo que el último aplicado.
-      if (org.stripe_event_at && org.stripe_event_at.getTime() > eventAt.getTime()) return { duplicate: false, organizationId: orgId };
-      // Una suscripción antigua (ya sustituida) no debe pisar el estado de la actual.
-      if (org.stripe_subscription_id && org.stripe_subscription_id !== subId && event.type === 'customer.subscription.deleted') {
-        return { duplicate: false, organizationId: orgId };
-      }
-      const items = (obj.items as { data?: { current_period_end?: number; price?: { id?: string } }[] } | undefined)?.data ?? [];
-      const periodEnd = items[0]?.current_period_end ?? (typeof obj.current_period_end === 'number' ? obj.current_period_end : null);
-      const priceId = items[0]?.price?.id;
-      const plan = priceId === billing.priceMonthly ? 'monthly' : priceId === billing.priceAnnual ? 'annual' : (metadata.plan as string | undefined) ?? org.plan;
-      const status = event.type === 'customer.subscription.deleted' ? 'canceled' : typeof obj.status === 'string' ? obj.status : 'canceled';
-      await trx
-        .updateTable('organizations')
-        .set({
-          subscription_status: status,
-          stripe_subscription_id: subId,
-          stripe_customer_id: customer ?? org.stripe_customer_id,
-          current_period_end: periodEnd ? new Date(periodEnd * 1000) : null,
-          cancel_at_period_end: obj.cancel_at_period_end === true,
-          plan: plan === 'monthly' || plan === 'annual' ? plan : null,
-          stripe_event_at: eventAt,
-          updated_at: sql<Date>`now()`,
-        })
-        .where('id', '=', orgId)
-        .execute();
-      await audit(trx, { event: 'billing.subscription_updated', organizationId: orgId, metadata: { status, eventType: event.type, eventId: event.id } });
-      return { duplicate: false, organizationId: orgId };
-    }
-    return { duplicate: false, organizationId: null };
+    const metaPlan = state.metadata.plan;
+    const plan =
+      state.priceId === billing.priceMonthly ? 'monthly' : state.priceId === billing.priceAnnual ? 'annual' : metaPlan === 'monthly' || metaPlan === 'annual' ? metaPlan : org.plan;
+    const eventAt = new Date(event.created * 1000);
+    await trx
+      .updateTable('organizations')
+      .set({
+        subscription_status: state.status,
+        stripe_subscription_id: state.id,
+        stripe_customer_id: customerId ?? org.stripe_customer_id,
+        current_period_end: state.currentPeriodEnd ? new Date(state.currentPeriodEnd * 1000) : null,
+        cancel_at_period_end: state.cancelAtPeriodEnd,
+        plan: plan === 'monthly' || plan === 'annual' ? plan : null,
+        stripe_event_at: org.stripe_event_at && org.stripe_event_at > eventAt ? org.stripe_event_at : eventAt,
+        updated_at: sql<Date>`now()`,
+      })
+      .where('id', '=', org.id)
+      .execute();
+    await audit(trx, { event: 'billing.subscription_updated', organizationId: org.id, metadata: { status: state.status, eventType: event.type, eventId: event.id } });
+    return { duplicate: false, organizationId: org.id };
   });
 }
 
@@ -180,7 +237,7 @@ export async function billingWebhookRoutes(app: FastifyInstance): Promise<void> 
     } catch {
       throw new AppError(400, 'BAD_REQUEST', 'Firma de webhook no válida');
     }
-    const result = await processBillingEvent(db, billing, event);
+    const result = await processBillingEvent(db, billing, event, req.log);
     return reply.send({ received: true, duplicate: result.duplicate });
   });
 }

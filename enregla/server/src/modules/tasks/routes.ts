@@ -13,13 +13,13 @@ export async function taskRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/today', async (req) => {
     const ctx = orgCtx(req);
-    return computeToday(db, ctx.org);
+    return computeToday(db, ctx.org, app.deps.now());
   });
 
   app.get('/compliance', async (req) => {
     const ctx = orgCtx(req);
     const q = parse(S.dateRangeQuery, req.query);
     if (diffDays(q.from, q.to) + 1 > MAX_COMPLIANCE_DAYS) throw badRequest(`El rango máximo es de ${MAX_COMPLIANCE_DAYS} días`);
-    return computeCompliance(db, ctx.org, q.from, q.to);
+    return computeCompliance(db, ctx.org, q.from, q.to, app.deps.now());
   });
 }

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
@@ -28,6 +29,8 @@ import { reportRoutes } from './modules/reports/routes.js';
 import { billingRoutes, billingWebhookRoutes } from './modules/billing/routes.js';
 import { kioskRoutes } from './modules/kiosk/routes.js';
 import { auditRoutes } from './modules/orgs/audit.js';
+import { enqueueEmail, processOutbox } from './lib/outbox.js';
+import type { Config } from './config.js';
 
 z.config(z.locales.es());
 
@@ -67,20 +70,73 @@ function resolveWebDist(deps: AppDeps): string | null {
   return existsSync(path.join(dir, 'index.html')) ? dir : null;
 }
 
+const requireFromHere = createRequire(import.meta.url);
+function defaultResolve(id: string): string {
+  return requireFromHere.resolve(id);
+}
+
+/**
+ * Opciones del logger. `pino-pretty` es dependencia de desarrollo: si no está instalada (imagen de
+ * producción tras `npm prune`, o alguien arranca con NODE_ENV=development), se usa JSON plano en
+ * vez de caerse al arrancar.
+ */
+export function loggerOptions(config: Pick<Config, 'env' | 'logLevel'>, resolve: (id: string) => string = defaultResolve): Exclude<FastifyServerOptions['logger'], boolean | undefined> {
+  let pretty = false;
+  if (config.env === 'development') {
+    try {
+      resolve('pino-pretty');
+      pretty = true;
+    } catch {
+      pretty = false;
+    }
+  }
+  return {
+    level: config.logLevel,
+    redact: { paths: REDACT_PATHS, censor: '[REDACTED]' },
+    ...(pretty ? { transport: { target: 'pino-pretty', options: { singleLine: true } } } : {}),
+  };
+}
+
+/** keep-alive mayor que el de los balanceadores habituales (60–120 s) para evitar 502 por carreras. */
+export const HTTP_TIMEOUTS = { keepAliveMs: 125_000, headersMs: 130_000, requestMs: 300_000 };
+
+/** Rutas de la SPA que no son públicas (o no aportan nada indexadas): llevan X-Robots-Tag: noindex. */
+const PRIVATE_SPA_PREFIXES = [
+  '/app',
+  '/locales',
+  '/nuevo-local',
+  '/cocina',
+  '/carta',
+  '/entrar',
+  '/registro',
+  '/revisa-tu-correo',
+  '/verificar-email',
+  '/recuperar-contrasena',
+  '/restablecer-contrasena',
+  '/confirmar-email',
+  '/invitacion',
+];
+export function isPrivateSpaPath(pathname: string): boolean {
+  return PRIVATE_SPA_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOptions['logger'] } = {}): Promise<FastifyInstance> {
   const { config } = deps;
   const app = Fastify({
-    logger: opts.logger ?? {
-      level: config.logLevel,
-      redact: { paths: REDACT_PATHS, censor: '[REDACTED]' },
-      ...(config.env === 'development' ? { transport: { target: 'pino-pretty', options: { singleLine: true } } } : {}),
-    },
+    logger: opts.logger ?? loggerOptions(config),
+    keepAliveTimeout: HTTP_TIMEOUTS.keepAliveMs,
+    requestTimeout: HTTP_TIMEOUTS.requestMs,
     trustProxy: typeof config.trustProxy === 'number' ? trustHops(config.trustProxy) : config.trustProxy,
     bodyLimit: 256 * 1024,
     routerOptions: { ignoreTrailingSlash: true, maxParamLength: 200 },
     requestIdHeader: false,
     genReqId: () => crypto.randomUUID(),
   });
+
+  // headersTimeout coherente: mayor que keepAliveTimeout (y menor que requestTimeout).
+  app.server.headersTimeout = HTTP_TIMEOUTS.headersMs;
+  // Corte o reinicio de PostgreSQL: se registra y el pool reconecta en la siguiente petición.
+  deps.pool.on('error', (err) => app.log.error({ err: err.message }, 'Conexión inactiva con PostgreSQL perdida'));
 
   // API solo JSON: sin parser de text/plain (→ 415 para cualquier otro Content-Type).
   app.removeContentTypeParser('text/plain');
@@ -91,12 +147,31 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     pendingJobs.add(p);
     void p.finally(() => pendingJobs.delete(p));
   };
+  // Emails: bandeja de salida en PostgreSQL (ver lib/outbox.ts) con primer intento inmediato.
+  const deliver = async (ids: string[]) => {
+    await processOutbox(deps.db, deps.mailer, {
+      ids,
+      limit: ids.length,
+      onError: (err) => app.log.warn({ err: (err as Error).message }, 'Fallo enviando email: se reintentará'),
+    });
+  };
+  app.decorate('queueMail', (db, message) => enqueueEmail(db, message));
+  app.decorate('deliverEmails', (ids: string[]) => {
+    if (ids.length === 0) return;
+    track(deliver(ids).catch((err: unknown) => app.log.error({ err }, 'Error procesando la bandeja de emails')));
+  });
   app.decorate('sendMail', (message) => {
     track(
-      deps.mailer.send(message).catch((err: unknown) => {
-        app.log.error({ err: (err as Error).message, subject: message.subject }, 'Error enviando email');
-      }),
+      enqueueEmail(deps.db, message)
+        .then((id) => deliver([id]))
+        .catch((err: unknown) => {
+          app.log.error({ err: (err as Error).message }, 'Error encolando email');
+        }),
     );
+  });
+  let shuttingDown = false;
+  app.decorate('markShuttingDown', () => {
+    shuttingDown = true;
   });
   app.decorate('runInBackground', (label: string, job: () => Promise<void>) => {
     track(
@@ -163,13 +238,23 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
   });
 
   // Salud
-  app.get('/healthz', async () => ({ status: 'ok' }));
-  app.get('/readyz', async (_req, reply) => {
+  // Las sondas no se registran a nivel info (serían una línea por segundo en los logs).
+  app.get('/healthz', { logLevel: 'warn' }, async () => ({ status: 'ok' }));
+  app.get('/readyz', { logLevel: 'warn' }, async (_req, reply) => {
+    if (shuttingDown) return reply.status(503).send({ status: 'unavailable', reason: 'shutting_down' });
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await sql`SELECT 1`.execute(deps.db);
+      await Promise.race([
+        sql`SELECT 1`.execute(deps.db),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('timeout')), 3_000);
+        }),
+      ]);
       return { status: 'ok' };
     } catch {
       return reply.status(503).send({ status: 'unavailable' });
+    } finally {
+      clearTimeout(timer);
     }
   });
 
@@ -215,9 +300,21 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     });
   }
 
+  // X-Robots-Tag: la API, la carta pública y la app privada no deben indexarse.
+  app.addHook('onSend', async (req, reply, payload) => {
+    const pathname = req.url.split('?')[0]!;
+    if (pathname === '/api' || pathname.startsWith('/api/') || isPrivateSpaPath(pathname)) reply.header('X-Robots-Tag', 'noindex, nofollow');
+    return payload;
+  });
+
   app.setNotFoundHandler((req, reply) => {
-    const isApi = req.url.startsWith('/api/') || req.url === '/api';
-    if (!isApi && webDist && (req.method === 'GET' || req.method === 'HEAD') && (req.headers.accept ?? '').includes('text/html')) {
+    const pathname = req.url.split('?')[0]!;
+    const isApi = pathname.startsWith('/api/') || pathname === '/api';
+    // Un fichero (último segmento con extensión) inexistente es 404; cualquier otra ruta GET/HEAD
+    // fuera de /api es una ruta de la SPA y recibe index.html, sea cual sea la cabecera Accept.
+    const lastSegment = pathname.slice(pathname.lastIndexOf('/') + 1);
+    const looksLikeFile = /\.[A-Za-z0-9]{1,8}$/.test(lastSegment);
+    if (!isApi && webDist && !looksLikeFile && (req.method === 'GET' || req.method === 'HEAD')) {
       reply.header('Cache-Control', 'no-cache');
       return reply.sendFile('index.html');
     }

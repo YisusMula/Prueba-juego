@@ -13,6 +13,8 @@ export function orgView(o: Organization, role: Role) {
     role,
     publicMenu: { enabled: o.public_menu_enabled, slug: o.public_menu_slug },
     subscription: subscriptionView(o),
+    /** Si no es null, el local está pendiente de eliminación definitiva en esa fecha (solo lectura). */
+    deletionScheduledAt: o.deletion_scheduled_at?.toISOString() ?? null,
     createdAt: o.created_at.toISOString(),
   };
 }
@@ -66,6 +68,9 @@ export function recordView(r: RecordRow & { amended_by?: string | null }) {
     amendsRecordId: r.amends_record_id,
     amendmentReason: r.amendment_reason,
     amendedByRecordId: r.amended_by ?? null,
+    /** Fecha del hecho: en una enmienda, la del registro original (raíz de la cadena). */
+    effectiveAt: r.effective_at.toISOString(),
+    /** Hora real de inserción (en una enmienda, cuándo se enmendó). */
     createdAt: r.created_at.toISOString(),
   };
 }

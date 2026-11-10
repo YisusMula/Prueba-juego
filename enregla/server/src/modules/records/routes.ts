@@ -9,6 +9,7 @@ import { keysetAfter, toPage } from '../../lib/pagination.js';
 import type { DB } from '../../db/index.js';
 import { recordView } from '../views.js';
 import { createRecord } from './service.js';
+import { idempotencyKey, withIdempotency } from './idempotency.js';
 
 export function amendedBySelect() {
   return sql<string | null>`(SELECT a.id FROM records a WHERE a.amends_record_id = r.id)`.as('amended_by');
@@ -33,10 +34,11 @@ export async function recordRoutes(app: FastifyInstance): Promise<void> {
     if (q.equipmentId) query = query.where('r.equipment_id', '=', q.equipmentId);
     if (q.staffId) query = query.where('r.staff_id', '=', q.staffId);
     if (q.alert !== undefined) query = query.where('r.alert', '=', q.alert);
-    if (q.from) query = query.where('r.created_at', '>=', sql<Date>`(${q.from}::date)::timestamp AT TIME ZONE ${tz}`);
-    if (q.to) query = query.where('r.created_at', '<', sql<Date>`(${q.to}::date + 1)::timestamp AT TIME ZONE ${tz}`);
-    if (q.cursor) query = query.where(keysetAfter({ table: 'records', alias: 'r', cursor: q.cursor, orgId: ctx.org.id, direction: 'desc' }));
-    const rows = await query.orderBy('r.created_at', 'desc').orderBy('r.id', 'desc').limit(q.limit + 1).execute();
+    // Fechas y orden por la fecha del hecho (effective_at): una enmienda aparece junto al original.
+    if (q.from) query = query.where('r.effective_at', '>=', sql<Date>`(${q.from}::date)::timestamp AT TIME ZONE ${tz}`);
+    if (q.to) query = query.where('r.effective_at', '<', sql<Date>`(${q.to}::date + 1)::timestamp AT TIME ZONE ${tz}`);
+    if (q.cursor) query = query.where(keysetAfter({ table: 'records', alias: 'r', cursor: q.cursor, orgId: ctx.org.id, direction: 'desc', orderColumn: 'effective_at' }));
+    const rows = await query.orderBy('r.effective_at', 'desc').orderBy('r.id', 'desc').limit(q.limit + 1).execute();
     return toPage(rows, q.limit, (r) => r.id, recordView);
   });
 
@@ -58,15 +60,21 @@ export async function recordRoutes(app: FastifyInstance): Promise<void> {
     const ctx = requireWritable(req);
     const auth = requireUser(req);
     const body = parse(S.createRecordBody, req.body);
+    const key = idempotencyKey(req);
     await limitCreate(auth.user.id, ctx.org.id);
-    const row = await createRecord(
-      db,
-      ctx.org,
-      { userId: auth.user.id, userName: auth.user.name, staffId: body.staffId ?? null, deviceId: null },
-      body.type,
-      body.data,
+    const { record, replayed } = await withIdempotency(db, { orgId: ctx.org.id, key, scope: 'records', payload: body }, (tx) =>
+      createRecord(
+        tx,
+        ctx.org,
+        { userId: auth.user.id, userName: auth.user.name, staffId: body.staffId ?? null, deviceId: null },
+        body.type,
+        body.data,
+        undefined,
+        { now: app.deps.now() },
+      ),
     );
-    return reply.status(201).send({ record: recordView(row) });
+    if (replayed) reply.header('Idempotent-Replayed', 'true');
+    return reply.status(replayed ? 200 : 201).send({ record: recordView(record) });
   });
 
   app.post('/:recordId/amendments', async (req, reply) => {
@@ -74,15 +82,20 @@ export async function recordRoutes(app: FastifyInstance): Promise<void> {
     const auth = requireUser(req);
     const id = idParam(req.params, 'recordId', 'Registro');
     const body = parse(S.amendmentBody, req.body);
+    const key = idempotencyKey(req);
     await limitCreate(auth.user.id, ctx.org.id);
-    const row = await createRecord(
-      db,
-      ctx.org,
-      { userId: auth.user.id, userName: auth.user.name, staffId: body.staffId ?? null, deviceId: null },
-      null, // el tipo es el del registro original
-      body.data,
-      { originalId: id, reason: body.reason },
+    const { record, replayed } = await withIdempotency(db, { orgId: ctx.org.id, key, scope: `amendment:${id}`, payload: body }, (tx) =>
+      createRecord(
+        tx,
+        ctx.org,
+        { userId: auth.user.id, userName: auth.user.name, staffId: body.staffId ?? null, deviceId: null },
+        null, // el tipo es el del registro original
+        body.data,
+        { originalId: id, reason: body.reason },
+        { now: app.deps.now() },
+      ),
     );
-    return reply.status(201).send({ record: recordView(row) });
+    if (replayed) reply.header('Idempotent-Replayed', 'true');
+    return reply.status(replayed ? 200 : 201).send({ record: recordView(record) });
   });
 }

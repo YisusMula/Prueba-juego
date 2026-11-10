@@ -45,6 +45,11 @@ export class SmtpMailer implements Mailer {
       secure: smtp.secure,
       auth: smtp.user ? { user: smtp.user, pass: smtp.pass } : undefined,
       requireTLS: !smtp.secure,
+      // Timeouts explícitos: un SMTP colgado no debe retener el worker indefinidamente.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 30_000,
+      dnsTimeout: 10_000,
     });
   }
   async send(message: MailMessage): Promise<void> {

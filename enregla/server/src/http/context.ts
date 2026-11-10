@@ -14,6 +14,8 @@ export interface AppDeps {
   mailer: Mailer;
   rateLimiter: RateLimiter;
   billing: BillingProvider | null;
+  /** Reloj de la aplicación (inyectable en tests): "hoy", hora de los registros, avisos. */
+  now: () => Date;
 }
 
 export interface AuthCtx {
@@ -36,8 +38,17 @@ export interface DeviceCtx {
 declare module 'fastify' {
   interface FastifyInstance {
     deps: AppDeps;
-    /** Envía un email sin bloquear la respuesta (tiempos uniformes); los fallos se registran en el log. */
+    /**
+     * Encola un email en la bandeja de salida (en segundo plano, sin bloquear la respuesta) e
+     * intenta enviarlo enseguida; si el SMTP falla se reintenta con backoff.
+     */
     sendMail(message: MailMessage): void;
+    /** Encola un email con la conexión/transacción dada; devuelve su id (para `deliverEmails` tras el commit). */
+    queueMail(db: DB, message: MailMessage): Promise<string>;
+    /** Primer intento inmediato de envío de emails ya encolados (y confirmados), en segundo plano. */
+    deliverEmails(ids: string[]): void;
+    /** Marca el proceso como "apagándose": /readyz responde 503. */
+    markShuttingDown(): void;
     /**
      * Ejecuta trabajo fuera del camino de la respuesta (tras enviarla), con captura de errores
      * y log. Se usa para que el tiempo de respuesta no dependa de si una cuenta existe.

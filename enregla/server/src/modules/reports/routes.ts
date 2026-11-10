@@ -16,7 +16,6 @@ import { CSV_HEADERS, csvLine, csvRow, type ReportRecord } from './format.js';
 import { createReportPdf } from './pdf.js';
 
 export const MAX_REPORT_DAYS = 366;
-export const MAX_CSV_ROWS = 500_000;
 const BATCH = 500;
 
 /** Itera los registros de un tipo en el rango [from, to] (fechas locales) por lotes. */
@@ -30,10 +29,11 @@ export async function* iterateRecords(db: DB, org: Organization, from: string, t
       .select(amendedBySelect())
       .where('r.organization_id', '=', org.id)
       .where('r.type', 'in', types)
-      .where('r.created_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)
-      .where('r.created_at', '<', sql<Date>`(${to}::date + 1)::timestamp AT TIME ZONE ${tz}`);
-    if (cursor) q = q.where(keysetAfter({ table: 'records', alias: 'r', cursor, orgId: org.id, direction: 'asc' }));
-    const batch = await q.orderBy('r.created_at').orderBy('r.id').limit(BATCH).execute();
+      .where('r.effective_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)
+      .where('r.effective_at', '<', sql<Date>`(${to}::date + 1)::timestamp AT TIME ZONE ${tz}`);
+    if (cursor) q = q.where(keysetAfter({ table: 'records', alias: 'r', cursor, orgId: org.id, direction: 'asc', orderColumn: 'effective_at' }));
+    // Por fecha del hecho: cada enmienda sale junto a su original.
+    const batch = await q.orderBy('r.effective_at').orderBy('r.id').limit(BATCH).execute();
     if (batch.length > 0) yield batch;
     if (batch.length < BATCH) return;
     cursor = batch[batch.length - 1]!.id;
@@ -61,8 +61,8 @@ async function countRecords(db: DB, org: Organization, from: string, to: string,
         .select(sql<number>`1`.as('x'))
         .where('r.organization_id', '=', org.id)
         .where('r.type', 'in', types)
-        .where('r.created_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)
-        .where('r.created_at', '<', sql<Date>`(${to}::date + 1)::timestamp AT TIME ZONE ${tz}`)
+        .where('r.effective_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)
+        .where('r.effective_at', '<', sql<Date>`(${to}::date + 1)::timestamp AT TIME ZONE ${tz}`)
         .limit(cap)
         .as('s'),
     )
@@ -138,19 +138,24 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     const ctx = orgCtx(req);
     const q = parseQuery(req.query);
     await limit('csv', ctx.org.id, ctx.userId);
+    // Como en el PDF: si el CSV superaría el máximo se rechaza ANTES de empezar (nunca se corta en silencio).
+    const maxRows = config.reports.maxCsvRows;
+    const n = await countRecords(db, ctx.org, q.from, q.to, q.types, maxRows + 1);
+    if (n > maxRows) {
+      throw new AppError(
+        400,
+        'REPORT_TOO_LARGE',
+        `El CSV tendría más de ${maxRows.toLocaleString('es-ES')} registros. Acota el periodo o los tipos de registro y descárgalo en varias partes.`,
+      );
+    }
     await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'csv', from: q.from, to: q.to, types: q.types } });
     const tz = ctx.org.timezone;
     async function* generate(): AsyncGenerator<string> {
       yield '\uFEFF' + csvLine(CSV_HEADERS);
-      let n = 0;
       for await (const batch of iterateRecords(db, ctx.org, q.from, q.to, q.types)) {
         let chunk = '';
-        for (const r of batch) {
-          if (n++ >= MAX_CSV_ROWS) break;
-          chunk += csvLine(csvRow(r, tz));
-        }
+        for (const r of batch) chunk += csvLine(csvRow(r, tz));
         yield chunk;
-        if (n >= MAX_CSV_ROWS) break;
       }
     }
     reply.type('text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="${filename(ctx.org, q.from, q.to, 'csv')}"`);

@@ -12,6 +12,7 @@ import { isWritable } from '../billing/status.js';
 import { computeToday } from '../tasks/service.js';
 import { createRecord } from '../records/service.js';
 import { recordView } from '../views.js';
+import { idempotencyKey, withIdempotency } from '../records/idempotency.js';
 
 const TOKEN_RE = /^kd_[A-Za-z0-9_-]{43}$/;
 
@@ -71,7 +72,7 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/tasks/today', async (req) => {
     const ctx = deviceCtx(req);
-    return computeToday(db, ctx.org);
+    return computeToday(db, ctx.org, app.deps.now());
   });
 
   const lockedError = (retrySeconds: number) =>
@@ -132,6 +133,7 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     const ctx = deviceCtx(req);
     if (!isWritable(ctx.org)) throw readOnly();
     const body = parse(S.kioskRecordBody, req.body);
+    const key = idempotencyKey(req);
     const staff = await db
       .selectFrom('staff')
       .selectAll()
@@ -148,7 +150,12 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await enforce(rateLimiter, `records:device:${ctx.deviceId}`, config.rateLimits.recordCreateDevice, 'Demasiados registros seguidos desde este dispositivo. Espera un minuto.');
-    const row = await createRecord(db, ctx.org, { userId: null, userName: null, staffId: staff.id, deviceId: ctx.deviceId }, body.type, body.data);
-    return reply.status(201).send({ record: recordView(row) });
+    // El PIN no forma parte de la huella: un reintento con el mismo registro es la misma petición.
+    const { pin: _pin, ...payload } = body;
+    const { record, replayed } = await withIdempotency(db, { orgId: ctx.org.id, key, scope: 'kiosk', payload }, (tx) =>
+      createRecord(tx, ctx.org, { userId: null, userName: null, staffId: staff.id, deviceId: ctx.deviceId }, body.type, body.data, undefined, { now: app.deps.now() }),
+    );
+    if (replayed) reply.header('Idempotent-Replayed', 'true');
+    return reply.status(replayed ? 200 : 201).send({ record: recordView(record) });
   });
 }

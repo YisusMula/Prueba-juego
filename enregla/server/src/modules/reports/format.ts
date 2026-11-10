@@ -22,9 +22,13 @@ const range = (min: unknown, max: unknown): string => {
 };
 export const signer = (r: RecordRow): string => [r.staff_name, r.user_name && !r.staff_name ? r.user_name : null].filter(Boolean).join(' / ') || '—';
 
-export function notes(r: ReportRecord): string {
+export function notes(r: ReportRecord, tz = 'UTC'): string {
   const parts: string[] = [];
-  if (r.amends_record_id) parts.push(`ENMIENDA del registro ${r.amends_record_id.slice(0, 8)}. Motivo: ${r.amendment_reason ?? ''}`);
+  if (r.amends_record_id) {
+    parts.push(
+      `ENMIENDA del registro ${r.amends_record_id.slice(0, 8)}, hecha el ${formatDateTimeEs(r.created_at, tz)} por ${signer(r)}. Motivo: ${r.amendment_reason ?? ''}`,
+    );
+  }
   if (r.amended_by) parts.push(`Corregido por el registro ${r.amended_by.slice(0, 8)}`);
   return parts.join(' · ');
 }
@@ -100,10 +104,11 @@ const esDate = (iso: unknown): string => (typeof iso === 'string' && /^\d{4}-\d{
 
 export function formatRow(type: RecordType, r: ReportRecord, tz: string): string[] {
   const d = r.data;
-  const when = formatDateTimeEs(r.created_at, tz);
+  // Fecha del HECHO (en una enmienda, la del registro original); cuándo y quién enmendó va en Notas.
+  const when = formatDateTimeEs(r.effective_at, tz);
   switch (type) {
     case 'temperatura':
-      return [when, str(d.equipmentName), `${num(d.value)} °C`, range(d.minTemp, d.maxTemp), signer(r), str(d.correctiveAction), notes(r)];
+      return [when, str(d.equipmentName), `${num(d.value)} °C`, range(d.minTemp, d.maxTemp), signer(r), str(d.correctiveAction), notes(r, tz)];
     case 'limpieza': {
       const items = (d.items as { area: string; done: boolean }[] | undefined) ?? [];
       const doneCount = items.filter((i) => i.done).length;
@@ -114,7 +119,7 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         items.filter((i) => !i.done).map((i) => i.area).join('; '),
         signer(r),
         str(d.observations),
-        notes(r),
+        notes(r, tz),
       ];
     }
     case 'recepcion':
@@ -127,7 +132,7 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         esDate(d.expiryDate),
         d.accepted ? 'Aceptada' : `Rechazada: ${str(d.rejectionReason)}`,
         signer(r),
-        notes(r),
+        notes(r, tz),
       ];
     case 'aceite':
       return [
@@ -137,14 +142,14 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         typeof d.polarCompounds === 'number' ? `${num(d.polarCompounds)} %` : '',
         signer(r),
         str(d.correctiveAction),
-        notes(r),
+        notes(r, tz),
       ];
     case 'plagas':
-      return [when, d.result === 'con_indicios' ? 'Con indicios' : 'Sin indicios', str(d.description), str(d.action), signer(r), notes(r)];
+      return [when, d.result === 'con_indicios' ? 'Con indicios' : 'Sin indicios', str(d.description), str(d.action), signer(r), notes(r, tz)];
     case 'incidencia':
-      return [when, str(d.description), str(d.correctiveAction), d.closed ? 'Cerrada' : 'Abierta', signer(r), notes(r)];
+      return [when, str(d.description), str(d.correctiveAction), d.closed ? 'Cerrada' : 'Abierta', signer(r), notes(r, tz)];
     case 'formacion':
-      return [when, str(d.traineeName), str(d.course), esDate(d.trainingDate), str(d.trainer), num(d.hours), signer(r), notes(r)];
+      return [when, str(d.traineeName), str(d.course), esDate(d.trainingDate), str(d.trainer), num(d.hours), signer(r), notes(r, tz)];
   }
 }
 
@@ -188,6 +193,9 @@ export const CSV_HEADERS = [
   'fecha_formacion',
   'formador',
   'horas',
+  // Añadidas al final (compatibilidad): hora real de inserción y, en enmiendas, quién enmendó.
+  'fecha_registro',
+  'enmendado_por',
 ];
 
 export function csvRow(r: ReportRecord, tz: string): string[] {
@@ -196,7 +204,9 @@ export function csvRow(r: ReportRecord, tz: string): string[] {
   const row: Record<string, string> = {
     id: r.id,
     tipo: r.type,
-    fecha_hora: formatDateTimeEs(r.created_at, tz),
+    fecha_hora: formatDateTimeEs(r.effective_at, tz),
+    fecha_registro: formatDateTimeEs(r.created_at, tz),
+    enmendado_por: r.amends_record_id ? signer(r) : '',
     firmado_por_personal: str(r.staff_name),
     firmado_por_usuario: str(r.user_name),
     dispositivo_cocina: r.device_id ? 'sí' : 'no',
@@ -249,21 +259,36 @@ export function csvLine(cells: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
-// PDF: saneado de texto para las fuentes estándar (WinAnsi)
+// PDF: saneado de texto (fuente Unicode embebida, sin recortes)
 // ---------------------------------------------------------------------------
-const WINANSI_EXTRA = new Set('€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ');
-export function pdfText(value: string, max = 600): string {
+/** Marcador para glifos que la fuente no tiene (emojis, escrituras no cubiertas). */
+export const MISSING_GLYPH = '□';
+
+/**
+ * Prepara un texto para el PDF: NFC, sin caracteres de control y, si se indica `hasGlyph`, con
+ * los caracteres sin glifo en la fuente sustituidos por un marcador (consecutivos → uno solo).
+ * NUNCA recorta: las celdas crecen y, si hace falta, continúan en la página siguiente.
+ */
+export function pdfText(value: string, hasGlyph?: (codePoint: number) => boolean): string {
   const s = value
     .normalize('NFC')
-    .replace(/≤/g, '<=')
-    .replace(/≥/g, '>=')
-    .replace(/−/g, '-')
     // eslint-disable-next-line no-control-regex -- se eliminan caracteres de control a propósito
-    .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, ' ');
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u2028\u2029]/g, ' ')
+    .replace(/\t/g, ' ')
+    // Selectores de variación, unión de emojis y modificadores de tono: sin sentido sin el emoji.
+    .replace(/[\u200D\uFE0E\uFE0F]|\u{1F3FB}|\u{1F3FC}|\u{1F3FD}|\u{1F3FE}|\u{1F3FF}/gu, '');
+  if (!hasGlyph) return s;
   let out = '';
+  let lastMissing = false;
   for (const ch of s) {
     const c = ch.codePointAt(0)!;
-    out += (c >= 0x20 && c <= 0x7e) || (c >= 0xa0 && c <= 0xff) || WINANSI_EXTRA.has(ch) ? ch : '?';
+    if (c === 0x0a || c === 0x20 || hasGlyph(c)) {
+      out += ch;
+      lastMissing = false;
+    } else if (!lastMissing) {
+      out += MISSING_GLYPH;
+      lastMissing = true;
+    }
   }
-  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
+  return out;
 }

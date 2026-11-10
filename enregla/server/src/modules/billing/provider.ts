@@ -21,6 +21,18 @@ export interface BillingEvent {
   data: { object: Record<string, unknown> };
 }
 
+/** Estado actual de una suscripción según Stripe (fuente de verdad para el webhook). */
+export interface SubscriptionState {
+  id: string;
+  status: string;
+  customerId: string | null;
+  metadata: Record<string, string>;
+  cancelAtPeriodEnd: boolean;
+  /** Segundos UNIX. */
+  currentPeriodEnd: number | null;
+  priceId: string | null;
+}
+
 /** Abstracción sobre Stripe para poder sustituir las llamadas de red en tests. */
 export interface BillingProvider {
   readonly priceMonthly: string;
@@ -29,6 +41,11 @@ export interface BillingProvider {
   createPortalSession(params: { customerId: string; returnUrl: string }): Promise<{ url: string }>;
   /** Cancela de inmediato una suscripción (al eliminar el local). Una suscripción que ya no existe cuenta como cancelada. */
   cancelSubscription(subscriptionId: string): Promise<void>;
+  /**
+   * Recupera el estado ACTUAL de una suscripción. `null` si Stripe no la conoce (resource_missing).
+   * Lanza ante errores de red/servidor (el webhook responde 5xx para que Stripe reintente).
+   */
+  retrieveSubscription(subscriptionId: string): Promise<SubscriptionState | null>;
   /** Verifica la firma sobre el cuerpo crudo. Lanza si la firma no es válida. */
   constructEvent(rawBody: Buffer, signature: string): BillingEvent;
 }
@@ -82,6 +99,27 @@ export class StripeBillingProvider implements BillingProvider {
     } catch (err) {
       const e = err as { code?: string; statusCode?: number };
       if (e.code === 'resource_missing' || e.statusCode === 404) return;
+      throw err;
+    }
+  }
+
+  async retrieveSubscription(subscriptionId: string): Promise<SubscriptionState | null> {
+    try {
+      const sub = await this.stripe.subscriptions.retrieve(subscriptionId);
+      const item = sub.items.data[0] as (Stripe.SubscriptionItem & { current_period_end?: number }) | undefined;
+      const legacyEnd = (sub as unknown as { current_period_end?: number }).current_period_end;
+      return {
+        id: sub.id,
+        status: sub.status,
+        customerId: typeof sub.customer === 'string' ? sub.customer : (sub.customer?.id ?? null),
+        metadata: { ...(sub.metadata ?? {}) },
+        cancelAtPeriodEnd: sub.cancel_at_period_end === true,
+        currentPeriodEnd: item?.current_period_end ?? legacyEnd ?? null,
+        priceId: item?.price?.id ?? null,
+      };
+    } catch (err) {
+      const e = err as { code?: string; statusCode?: number };
+      if (e.code === 'resource_missing' || e.statusCode === 404) return null;
       throw err;
     }
   }

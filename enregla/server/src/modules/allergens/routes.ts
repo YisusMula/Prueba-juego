@@ -150,11 +150,11 @@ export async function publicMenuRoutes(app: FastifyInstance): Promise<void> {
     if (!/^[A-Za-z0-9_-]{22}$/.test(slug)) throw notFound('Carta');
     const org = await db
       .selectFrom('organizations')
-      .select(['id', 'name', 'subscription_status', 'trial_ends_at', 'stripe_subscription_id'])
+      .select(['id', 'name', 'subscription_status', 'trial_ends_at', 'stripe_subscription_id', 'deletion_scheduled_at'])
       .where('public_menu_slug', '=', slug)
       .where('public_menu_enabled', '=', true)
       .executeTakeFirst();
-    // En solo lectura (prueba caducada, impago, cancelada) la carta no se sirve; vuelve al reactivarse.
+    // En solo lectura (prueba caducada, impago, cancelada, pendiente de eliminación) la carta no se sirve.
     if (!org || !isWritable(org)) throw notFound('Carta');
     const dishes = await db
       .selectFrom('dishes')

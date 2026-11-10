@@ -23,18 +23,28 @@ export function effectiveStatus(org: Pick<Organization, 'subscription_status' | 
 }
 
 /**
- * Solo 'active' y 'trialing' permiten escribir. Cualquier otro estado (prueba caducada,
- * impago, cancelada…) deja la organización en solo lectura.
+ * Estados de solo lectura: prueba caducada, impago definitivo (`unpaid`), cancelada,
+ * `incomplete_expired` y `paused` (prueba de Stripe terminada sin método de pago).
+ * `past_due` es ESCRIBIBLE: periodo de gracia mientras Stripe reintenta el cobro (la API expone
+ * `paymentFailed` para avisar). `incomplete` (primer pago en curso, ≤ 23 h) también.
+ * Un local pendiente de eliminación es siempre de solo lectura.
  */
-export function isWritable(org: Pick<Organization, 'subscription_status' | 'trial_ends_at' | 'stripe_subscription_id'>, now = new Date()): boolean {
-  const s = effectiveStatus(org, now);
-  return s === 'active' || s === 'trialing';
+const READ_ONLY_STATUSES: EffectiveStatus[] = ['trial_expired', 'unpaid', 'canceled', 'incomplete_expired', 'paused'];
+
+type WritableInput = Pick<Organization, 'subscription_status' | 'trial_ends_at' | 'stripe_subscription_id'> & { deletion_scheduled_at?: Date | null };
+
+export function isWritable(org: WritableInput, now = new Date()): boolean {
+  if (org.deletion_scheduled_at) return false;
+  return !READ_ONLY_STATUSES.includes(effectiveStatus(org, now));
 }
 
 export function subscriptionView(org: Organization, now = new Date()) {
+  const status = effectiveStatus(org, now);
   return {
-    status: effectiveStatus(org, now),
+    status,
     readOnly: !isWritable(org, now),
+    /** Cobro fallido con reintentos en curso: se puede seguir trabajando, pero hay que avisar. */
+    paymentFailed: status === 'past_due',
     trialEndsAt: org.trial_ends_at.toISOString(),
     plan: org.plan as 'monthly' | 'annual' | null,
     currentPeriodEnd: org.current_period_end?.toISOString() ?? null,

@@ -1,10 +1,12 @@
 import { Readable } from 'node:stream';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
 import { orgCtx, requireRole, requireUser, requireWritable } from '../../http/guards.js';
-import { AppError } from '../../lib/errors.js';
+import { AppError, conflict } from '../../lib/errors.js';
+import { emails } from '../../lib/emails.js';
+import { formatDateEs, localDate } from '../../lib/dates.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { verifySecret } from '../../lib/password.js';
 import { audit } from '../../lib/audit.js';
@@ -111,6 +113,7 @@ export async function orgRootRoutes(app: FastifyInstance): Promise<void> {
 /** /api/orgs/:orgId (con contexto de organización cargado) */
 export async function orgRoutes(app: FastifyInstance): Promise<void> {
   const { db, config, rateLimiter } = app.deps;
+  const mailCtx = { appName: config.appName, appOrigin: config.appOrigin };
 
   app.get('/', async (req) => {
     const ctx = orgCtx(req);
@@ -137,17 +140,28 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     return { organization: orgView(org, ctx.role) };
   });
 
-  app.delete('/', async (req, reply) => {
-    const ctx = requireRole(req, 'owner');
+  async function reauth(req: FastifyRequest, userId: string): Promise<void> {
     const body = parse(S.passwordConfirmBody, req.body);
-    await enforce(rateLimiter, `sensitive:user:${ctx.userId}`, config.rateLimits.sensitiveUser);
-    const user = await db.selectFrom('users').select(['password_hash']).where('id', '=', ctx.userId).executeTakeFirstOrThrow();
+    await enforce(rateLimiter, `sensitive:user:${userId}`, config.rateLimits.sensitiveUser);
+    const user = await db.selectFrom('users').select(['password_hash']).where('id', '=', userId).executeTakeFirstOrThrow();
     if (!(await verifySecret(user.password_hash, body.password))) {
-      await audit(db, { event: 'auth.login_failed', userId: ctx.userId, ip: req.ip, metadata: { reason: 'reauth' } });
+      await audit(db, { event: 'auth.login_failed', userId, ip: req.ip, metadata: { reason: 'reauth' } });
       throw new AppError(401, 'INVALID_CREDENTIALS', 'La contraseña no es correcta');
     }
-    // Una suscripción viva en Stripe se cancela ANTES de borrar; si falla, no se borra nada.
+  }
+
+  /**
+   * Eliminación DIFERIDA: el local queda "pendiente de eliminación" durante
+   * ORG_DELETION_GRACE_DAYS (30) días en solo lectura, sin carta pública, con los dispositivos
+   * de cocina revocados y sin recordatorios. Un owner puede restaurarlo; la tarea diaria lo purga
+   * al vencer. Antes se cancela la suscripción de Stripe (si falla, no se hace nada).
+   */
+  app.delete('/', async (req, reply) => {
+    const ctx = requireRole(req, 'owner');
+    await reauth(req, ctx.userId);
     const org = await db.selectFrom('organizations').selectAll().where('id', '=', ctx.org.id).executeTakeFirstOrThrow();
+    if (org.deletion_scheduled_at) throw conflict('Este local ya está pendiente de eliminación.');
+    // Una suscripción viva en Stripe se cancela ANTES; si falla, no se marca nada.
     if (hasLiveStripeSubscription(org)) {
       const billing = app.deps.billing;
       if (!billing) {
@@ -161,8 +175,77 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       }
       await audit(db, { event: 'billing.subscription_canceled', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { reason: 'org_deleted' } });
     }
-    await db.deleteFrom('organizations').where('id', '=', ctx.org.id).execute();
-    await audit(db, { event: 'org.deleted', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { name: ctx.org.name } });
+    const graceDays = config.orgDeletionGraceDays;
+    const queued = await db.transaction().execute(async (trx) => {
+      const updated = await trx
+        .updateTable('organizations')
+        .set({
+          deletion_requested_at: sql<Date>`now()`,
+          deletion_scheduled_at: sql<Date>`now() + make_interval(days => ${graceDays})`,
+          deletion_requested_by: ctx.userId,
+          // La cancelación ya está hecha en Stripe; el webhook lo confirmará.
+          ...(hasLiveStripeSubscription(org) ? { subscription_status: 'canceled', cancel_at_period_end: false } : {}),
+          updated_at: sql<Date>`now()`,
+        })
+        .where('id', '=', ctx.org.id)
+        .returning(['deletion_scheduled_at', 'name', 'timezone'])
+        .executeTakeFirstOrThrow();
+      const revoked = await trx
+        .updateTable('devices')
+        .set({ revoked_at: sql<Date>`now()` })
+        .where('organization_id', '=', ctx.org.id)
+        .where('revoked_at', 'is', null)
+        .returning('id')
+        .execute();
+      await audit(trx, {
+        event: 'org.deletion_scheduled',
+        organizationId: ctx.org.id,
+        userId: ctx.userId,
+        ip: req.ip,
+        metadata: { scheduledFor: updated.deletion_scheduled_at!.toISOString(), devicesRevoked: revoked.length },
+      });
+      const owners = await trx
+        .selectFrom('memberships as m')
+        .innerJoin('users as u', 'u.id', 'm.user_id')
+        .select('u.email')
+        .where('m.organization_id', '=', ctx.org.id)
+        .where('m.role', '=', 'owner')
+        .execute();
+      const deleteOn = formatDateEs(localDate(updated.deletion_scheduled_at!, updated.timezone));
+      const ids: string[] = [];
+      for (const o of owners) ids.push(await app.queueMail(trx, emails.orgDeletionScheduled(mailCtx, o.email, updated.name, ctx.org.id, deleteOn)));
+      return ids;
+    });
+    app.deliverEmails(queued);
+    return reply.status(204).send();
+  });
+
+  /** Restaura un local pendiente de eliminación (no reactiva la suscripción cancelada ni los dispositivos). */
+  app.post('/restore', async (req) => {
+    const ctx = requireRole(req, 'owner');
+    if (!ctx.org.deletion_scheduled_at) throw conflict('Este local no está pendiente de eliminación.');
+    const org = await db
+      .updateTable('organizations')
+      .set({ deletion_requested_at: null, deletion_scheduled_at: null, deletion_requested_by: null, updated_at: sql<Date>`now()` })
+      .where('id', '=', ctx.org.id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await audit(db, { event: 'org.restored', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip });
+    return { organization: orgView(org, ctx.role) };
+  });
+
+  /**
+   * Eliminación inmediata y definitiva (derecho de supresión). Solo para un local que YA está
+   * pendiente de eliminación, y con reautenticación.
+   */
+  app.delete('/permanent', async (req, reply) => {
+    const ctx = requireRole(req, 'owner');
+    await reauth(req, ctx.userId);
+    if (!ctx.org.deletion_scheduled_at) {
+      throw conflict('Primero solicita la eliminación del local; la eliminación inmediata solo está disponible para locales pendientes de eliminación.');
+    }
+    await db.deleteFrom('organizations').where('id', '=', ctx.org.id).where('deletion_scheduled_at', 'is not', null).execute();
+    await audit(db, { event: 'org.deleted', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { name: ctx.org.name, reason: 'permanent_request' } });
     return reply.status(204).send();
   });
 

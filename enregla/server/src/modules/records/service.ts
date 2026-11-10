@@ -189,6 +189,7 @@ export async function createRecord(
   requestedType: S.RecordType | null,
   rawData: unknown,
   amendment?: { originalId: string; reason: string },
+  opts: { now?: Date } = {},
 ): Promise<RecordRow> {
   let original: RecordRow | undefined;
   let type: S.RecordType;
@@ -223,6 +224,8 @@ export async function createRecord(
         amends_record_id: original?.id ?? null,
         amendment_reason: amendment?.reason ?? null,
         alert: prepared.alert,
+        // Hora del servidor de aplicación (reloj inyectable en tests). effective_at la fija un trigger.
+        ...(opts.now ? { created_at: opts.now } : {}),
       })
       .returningAll()
       .executeTakeFirstOrThrow();

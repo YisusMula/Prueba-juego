@@ -22,7 +22,14 @@ const envSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).optional(),
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL es obligatorio'),
+  // DATABASE_URL o, como alternativa, PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE (la contraseña
+  // no necesita codificarse para URL). Vacío cuenta como no definido.
+  DATABASE_URL: z.string().optional(),
+  PGHOST: z.string().optional(),
+  PGPORT: z.coerce.number().int().min(1).max(65535).optional(),
+  PGUSER: z.string().optional(),
+  PGPASSWORD: z.string().optional(),
+  PGDATABASE: z.string().optional(),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   APP_NAME: z.string().min(1).max(60).default('EnRegla'),
   APP_URL: z.url().default('http://localhost:5173'),
@@ -44,6 +51,9 @@ const envSchema = z.object({
   STRIPE_PRICE_ANNUAL: z.string().optional(),
   SCHEDULER_ENABLED: bool.default(true),
   SCHEDULER_INTERVAL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
+  EMAIL_WORKER_ENABLED: bool.default(true),
+  EMAIL_WORKER_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(600).default(15),
+  ORG_DELETION_GRACE_DAYS: z.coerce.number().int().min(1).max(90).default(30),
   WEB_DIST_DIR: z.string().optional(),
   TRIAL_DAYS: z.coerce.number().int().min(1).max(60).default(14),
   AUDIT_RETENTION_MONTHS: z.coerce.number().int().min(1).max(120).default(12),
@@ -78,6 +88,8 @@ export interface Config {
     transport: 'smtp' | 'console' | 'memory';
     from: string;
     smtp?: { host: string; port: number; secure: boolean; user?: string; pass?: string };
+    /** Worker de la bandeja de salida (reintentos). Desactivado en tests (se invoca a mano). */
+    worker: { enabled: boolean; intervalSeconds: number };
   };
   stripe: {
     secretKey: string;
@@ -88,6 +100,8 @@ export interface Config {
   scheduler: { enabled: boolean; intervalSeconds: number };
   webDistDir?: string;
   trialDays: number;
+  /** Días que un local pendiente de eliminación se conserva antes de purgarlo. */
+  orgDeletionGraceDays: number;
   rateLimits: {
     loginIp: RateLimitRule;
     /** Intentos fallidos por (cuenta + IP): el umbral "normal" de bloqueo. */
@@ -124,6 +138,8 @@ export interface Config {
   reports: {
     /** Máximo de filas de un PDF (por encima se pide acotar o usar CSV). */
     maxPdfRows: number;
+    /** Máximo de filas de un CSV (por encima se rechaza con REPORT_TOO_LARGE antes de empezar). */
+    maxCsvRows: number;
     /** PDF generándose a la vez en este proceso; si está lleno se responde 429. */
     pdfConcurrency: number;
     /** Segundos sugeridos en Retry-After cuando no hay hueco para otro PDF. */
@@ -161,6 +177,15 @@ function parseTrustProxy(v: string): boolean | number | string[] {
 
 export class ConfigError extends Error {}
 
+/** URL de conexión desde DATABASE_URL o desde las variables PG* (con la contraseña codificada). */
+export function resolveDatabaseUrl(e: { DATABASE_URL?: string; PGHOST?: string; PGPORT?: number; PGUSER?: string; PGPASSWORD?: string; PGDATABASE?: string }): string | null {
+  if (e.DATABASE_URL && e.DATABASE_URL.trim() !== '') return e.DATABASE_URL.trim();
+  if (!e.PGHOST) return null;
+  const enc = encodeURIComponent;
+  const auth = e.PGUSER ? `${enc(e.PGUSER)}${e.PGPASSWORD ? `:${enc(e.PGPASSWORD)}` : ''}@` : '';
+  return `postgres://${auth}${e.PGHOST.includes(':') ? `[${e.PGHOST}]` : e.PGHOST}:${e.PGPORT ?? 5432}/${enc(e.PGDATABASE ?? e.PGUSER ?? 'postgres')}`;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Partial<Config> = {}): Config {
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {
@@ -171,6 +196,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
   const isProduction = e.NODE_ENV === 'production';
   const appOrigin = new URL(e.APP_URL).origin;
   const problems: string[] = [];
+  const databaseUrl = resolveDatabaseUrl(e);
+  if (!databaseUrl) throw new ConfigError('Configuración no válida: DATABASE_URL es obligatorio (o PGHOST, PGUSER, PGPASSWORD y PGDATABASE)');
 
   const stripeVals = [e.STRIPE_SECRET_KEY, e.STRIPE_WEBHOOK_SECRET, e.STRIPE_PRICE_MONTHLY, e.STRIPE_PRICE_ANNUAL];
   const stripeSet = stripeVals.filter((v) => v && v.length > 0).length;
@@ -213,7 +240,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     }
     let dbPassword = '';
     try {
-      dbPassword = decodeURIComponent(new URL(e.DATABASE_URL).password);
+      dbPassword = decodeURIComponent(new URL(databaseUrl).password);
     } catch {
       problems.push('DATABASE_URL no es una URL válida');
     }
@@ -235,7 +262,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     host: e.HOST,
     port: e.PORT,
     logLevel: e.LOG_LEVEL ?? (e.NODE_ENV === 'test' ? 'silent' : 'info'),
-    databaseUrl: e.DATABASE_URL,
+    databaseUrl,
     databasePoolMax: e.DATABASE_POOL_MAX,
     appName: e.APP_NAME,
     appOrigin,
@@ -253,11 +280,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
       smtp: e.SMTP_HOST
         ? { host: e.SMTP_HOST, port: e.SMTP_PORT, secure: e.SMTP_SECURE, user: e.SMTP_USER, pass: e.SMTP_PASS }
         : undefined,
+      worker: { enabled: e.EMAIL_WORKER_ENABLED && e.NODE_ENV !== 'test', intervalSeconds: e.EMAIL_WORKER_INTERVAL_SECONDS },
     },
     stripe,
     scheduler: { enabled: e.SCHEDULER_ENABLED && e.NODE_ENV !== 'test', intervalSeconds: e.SCHEDULER_INTERVAL_SECONDS },
     webDistDir: e.WEB_DIST_DIR,
     trialDays: e.TRIAL_DAYS,
+    orgDeletionGraceDays: e.ORG_DELETION_GRACE_DAYS,
     rateLimits: {
       loginIp: { limit: 30, windowSeconds: 15 * 60 },
       loginAccountIp: { limit: 10, windowSeconds: 15 * 60 },
@@ -284,7 +313,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     },
     pinMaxFailures: 5,
     pinLockMinutes: 15,
-    reports: { maxPdfRows: 5_000, pdfConcurrency: e.PDF_MAX_CONCURRENCY, pdfBusyRetrySeconds: 15 },
+    reports: { maxPdfRows: 5_000, maxCsvRows: 500_000, pdfConcurrency: e.PDF_MAX_CONCURRENCY, pdfBusyRetrySeconds: 15 },
     retention: { auditMonths: e.AUDIT_RETENTION_MONTHS, unverifiedAccountDays: e.UNVERIFIED_ACCOUNT_DAYS },
   };
   return { ...config, ...overrides };

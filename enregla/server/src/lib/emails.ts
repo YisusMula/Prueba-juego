@@ -119,6 +119,26 @@ export const emails = {
       ...(pending.length > 20 ? [`… y ${pending.length - 20} más.`] : []),
       'Puedes desactivar este recordatorio en los ajustes del local.',
     ], { url: `${ctx.appOrigin}/`, label: 'Abrir tareas de hoy' }),
+  /** Aviso de fin de prueba (3 días antes). Sin presión: informa y enlaza a facturación. */
+  trialEndingSoon: (ctx: Ctx, to: string, orgName: string, orgId: string, endsOn: string, daysLeft: number) =>
+    layout(ctx, to, 'Tu prueba gratuita termina pronto', [
+      `La prueba gratuita del local ${userText(orgName)} termina el ${endsOn} (${daysLeft === 1 ? 'queda 1 día' : `quedan ${daysLeft} días`}).`,
+      'Si quieres seguir registrando después de esa fecha, puedes elegir un plan (mensual o anual) en la sección de facturación del local. Si no haces nada, no se te cobrará: el local pasará a solo lectura y podrás seguir consultando y descargando tus registros e informes.',
+    ], { url: `${ctx.appOrigin}/locales/${orgId}/facturacion`, label: 'Ver facturación' }),
+  /** Aviso el día en que caduca la prueba. */
+  trialEndsToday: (ctx: Ctx, to: string, orgName: string, orgId: string, ended: boolean) =>
+    layout(ctx, to, ended ? 'Tu prueba gratuita ha terminado' : 'Tu prueba gratuita termina hoy', [
+      ended
+        ? `La prueba gratuita del local ${userText(orgName)} ha terminado hoy. El local está en solo lectura: tus registros, informes y la exportación siguen disponibles.`
+        : `La prueba gratuita del local ${userText(orgName)} termina hoy. A partir de entonces el local quedará en solo lectura: tus registros, informes y la exportación seguirán disponibles.`,
+      'Para seguir registrando, elige un plan en la sección de facturación del local cuando te venga bien. No se te cobra nada sin que lo contrates.',
+    ], { url: `${ctx.appOrigin}/locales/${orgId}/facturacion`, label: 'Ver facturación' }),
+  /** Confirmación de eliminación programada de un local. */
+  orgDeletionScheduled: (ctx: Ctx, to: string, orgName: string, orgId: string, deleteOn: string) =>
+    layout(ctx, to, 'Local programado para eliminación', [
+      `Se ha solicitado eliminar el local ${userText(orgName)}. Quedará eliminado definitivamente, con todos sus registros, el ${deleteOn}.`,
+      'Hasta entonces el local está en solo lectura: puedes consultar y exportar sus datos e informes, y un propietario puede restaurarlo desde los ajustes del local. Si no lo pediste tú, restáuralo y revisa quién tiene acceso.',
+    ], { url: `${ctx.appOrigin}/locales/${orgId}/ajustes/datos`, label: 'Ver el local' }),
   accountDeleted: (ctx: Ctx, to: string) =>
     layout(ctx, to, 'Cuenta eliminada', [`Tu cuenta de ${ctx.appName} se ha eliminado.`]),
 };

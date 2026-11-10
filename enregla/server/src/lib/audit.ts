@@ -18,6 +18,8 @@ export type AuditEvent =
   | 'org.created'
   | 'org.updated'
   | 'org.deleted'
+  | 'org.deletion_scheduled'
+  | 'org.restored'
   | 'org.exported'
   | 'member.invited'
   | 'member.invitation_revoked'

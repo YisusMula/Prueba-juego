@@ -73,7 +73,7 @@ export async function registerSecurity(app: FastifyInstance, config: Config): Pr
     origin: devOrigins.length > 0 ? devOrigins : false,
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'X-Requested-With', 'Idempotency-Key'],
     maxAge: 600,
   });
 }
