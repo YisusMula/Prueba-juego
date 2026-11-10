@@ -42,13 +42,13 @@ type ErrorResponse = {
 | 403 | `FORBIDDEN` | Autenticado y miembro, pero sin el rol necesario (p. ej. manager en acción de owner). |
 | 403 | `CSRF_FAILED` | Falta `X-Requested-With` u `Origin` no permitido. |
 | 404 | `NOT_FOUND` | Recurso inexistente **o de otra organización** (nunca se revela si existe). También rutas desconocidas. |
-| 409 | `CONFLICT` | Estado incompatible (último propietario, enmienda duplicada, ya miembro, ya suscrito…). |
+| 409 | `CONFLICT` | Estado incompatible (último propietario, enmienda duplicada, ya miembro, ya suscrito, `Idempotency-Key` reutilizada con otro cuerpo, local ya pendiente de eliminación…). |
 | 415 | `BAD_REQUEST` | `Content-Type` no admitido (usa `application/json`). No envíes `Content-Type: application/json` con cuerpo vacío (→ 400). |
 | 413 | `PAYLOAD_TOO_LARGE` | Cuerpo > 256 KiB (1 MiB en el webhook). |
-| 400 | `REPORT_TOO_LARGE` | Informe PDF con más de 5000 registros: acota fechas/tipos o usa el CSV. |
+| 400 | `REPORT_TOO_LARGE` | Informe PDF con más de 5000 registros (acota fechas/tipos o usa el CSV) o CSV con más de 500 000 (acota y descárgalo en partes). |
 | 429 | `RATE_LIMITED` | Límite de peticiones (o servidor ocupado generando PDF). Cabecera `Retry-After` (segundos). Muestra `error.message`, que explica el motivo. |
 | 429 | `PIN_LOCKED` | Kiosko: PIN bloqueado tras 5 fallos (15 min). Cabecera `Retry-After`. |
-| 502 | `BILLING_ERROR` | Fallo al hablar con Stripe (también al cancelar la suscripción cuando se elimina un local: el local NO se elimina). |
+| 502 | `BILLING_ERROR` | Fallo al hablar con Stripe (también al cancelar la suscripción cuando se elimina un local: el local NO se elimina). En el webhook, 503 `BILLING_ERROR` = «reintentar» (solo lo ve Stripe). |
 | 503 | `BILLING_NOT_CONFIGURED` | Stripe no configurado en el servidor. |
 | 500 | `INTERNAL_ERROR` | Error inesperado (sin detalles internos). |
 
@@ -149,6 +149,24 @@ Todas las respuestas 429 llevan `Retry-After` (segundos) y un `error.message` en
 | Invitaciones por local | 20 / día |
 | Invitaciones por usuario (todos sus locales) | 30 / día |
 
+### 1.7 Idempotencia al crear registros (`Idempotency-Key`)
+
+`POST /api/orgs/{orgId}/records`, `POST /api/orgs/{orgId}/records/{recordId}/amendments` y `POST /api/kiosk/records` aceptan la cabecera opcional **`Idempotency-Key: <UUID>`**. Sirve para que un reintento (red móvil que se corta, doble toque en «Guardar», cola offline de la tablet) no duplique el registro.
+
+Cómo usarla en el cliente:
+
+1. Genera **una clave nueva por registro que el usuario quiere crear** (`crypto.randomUUID()`) en el momento en que pulsa «Guardar», y guárdala junto a los datos del formulario (en memoria o en la cola offline).
+2. Envía esa misma clave en **todos los reintentos** de ese mismo registro, con el **mismo cuerpo**.
+3. Respuestas:
+   - `201 { record }` → creado ahora.
+   - `200 { record }` + cabecera `Idempotent-Replayed: true` → ya existía (un intento anterior llegó al servidor): trátalo como éxito; es el **mismo** registro (mismo `id`). También ocurre con peticiones simultáneas con la misma clave: solo una crea el registro.
+   - `409 CONFLICT` → esa clave ya se usó con **otro** cuerpo (bug del cliente: no reutilices claves entre registros distintos). Genera una nueva.
+   - `400 VALIDATION_ERROR` (`path: "Idempotency-Key"`) → la clave no es un UUID.
+   - Un error (400/402/404/429…) **no consume** la clave: corrige y reintenta con la misma o con otra.
+4. Tras un éxito, descarta la clave. Nueva acción del usuario = nueva clave.
+
+Las claves son únicas **por local** y se conservan **7 días**; en el kiosko el PIN no forma parte de la comparación del cuerpo. Sin cabecera, el comportamiento es el de siempre (cada petición crea un registro).
+
 ---
 
 ## 2. Salud
@@ -156,7 +174,7 @@ Todas las respuestas 429 llevan `Retry-After` (segundos) y un `error.message` en
 | Método | Ruta | Respuesta |
 |---|---|---|
 | GET | `/healthz` | `200 { "status": "ok" }` (proceso vivo) |
-| GET | `/readyz` | `200 { "status": "ok" }` o `503 { "status": "unavailable" }` (comprueba la BD) |
+| GET | `/readyz` | `200 { "status": "ok" }` o `503 { "status": "unavailable", "reason"?: "shutting_down" }` (503 si la BD no responde en 3 s o si el proceso se está apagando) |
 
 ---
 
@@ -216,7 +234,7 @@ Errores: 400 `INVALID_TOKEN`, 409 `CONFLICT` (el email ya lo usa otra cuenta).
 ```ts
 200 {
   user: User;
-  organizations: { id: string; name: string; businessType: BusinessType; role: 'owner' | 'manager'; subscription: Subscription }[];
+  organizations: { id: string; name: string; businessType: BusinessType; role: 'owner' | 'manager'; subscription: Subscription; deletionScheduledAt: string | null }[];
 }
 ```
 
@@ -233,7 +251,7 @@ Errores: 401 `INVALID_CREDENTIALS`, 400 (igual al actual), 429.
 
 ### DELETE `/api/account`
 Cuerpo: `{ password: string }` → `204` (borra la cookie). Los registros firmados conservan el nombre del firmante. Se **revocan los dispositivos de cocina que creó** y sus eventos de auditoría se seudonimizan (sin email ni IP). Nunca elimina locales.
-Errores: 401 `INVALID_CREDENTIALS`, 409 `CONFLICT` si es el único propietario de algún local (debe eliminar el local o nombrar otro propietario antes).
+Errores: 401 `INVALID_CREDENTIALS`, 409 `CONFLICT` si es el único propietario de algún local (debe eliminar el local o nombrar otro propietario antes). Los locales ya **pendientes de eliminación** no bloquean el borrado de la cuenta.
 
 ---
 
@@ -243,7 +261,8 @@ Errores: 401 `INVALID_CREDENTIALS`, 409 `CONFLICT` si es el único propietario d
 type BusinessType = 'bar' | 'restaurante' | 'cafeteria' | 'obrador' | 'catering' | 'tienda';
 type Subscription = {
   status: 'trialing' | 'trial_expired' | 'active' | 'past_due' | 'unpaid' | 'canceled' | 'incomplete' | 'incomplete_expired' | 'paused';
-  readOnly: boolean;          // true salvo 'active' o 'trialing'
+  readOnly: boolean;          // true en trial_expired, unpaid, canceled, incomplete_expired, paused o si el local está pendiente de eliminación
+  paymentFailed: boolean;     // NUEVO: true en 'past_due' (cobro fallido, Stripe reintentando): se puede escribir, pero muestra un aviso
   trialEndsAt: string;        // ISO
   plan: 'monthly' | 'annual' | null;
   currentPeriodEnd: string | null;
@@ -260,13 +279,14 @@ type Organization = {
   role: 'owner' | 'manager';  // rol del usuario actual
   publicMenu: { enabled: boolean; slug: string };
   subscription: Subscription;
+  deletionScheduledAt: string | null; // NUEVO: si no es null, el local está pendiente de eliminación definitiva en esa fecha
   createdAt: string;
 };
 ```
 
 **Roles.** `owner`: todo. `manager`: todo lo operativo (registros, personal, equipos, limpieza, proveedores, platos/carta, dispositivos, informes, tareas) pero **no**: editar ajustes del local, gestionar miembros/invitaciones, facturación, exportación RGPD, auditoría ni borrar el local (→ 403 `FORBIDDEN`).
 
-**Solo lectura.** Si `subscription.readOnly` es `true`, toda creación/edición responde 402 `READ_ONLY`. Siguen permitidos: todas las lecturas, informes PDF/CSV, exportación, facturación (checkout/portal), revocar dispositivos, quitar miembros/salir, preferencias personales, **desactivar la carta pública** y eliminar el local. Mientras está en solo lectura, la carta pública **no se sirve** (404) aunque esté activada; vuelve a servirse al reactivar la suscripción.
+**Solo lectura.** Si `subscription.readOnly` es `true` (por la suscripción **o** porque el local está pendiente de eliminación: mira primero `deletionScheduledAt`), toda creación/edición responde 402 `READ_ONLY`. Siguen permitidos: todas las lecturas, informes PDF/CSV, exportación, facturación (checkout/portal), revocar dispositivos, quitar miembros/salir, preferencias personales, **desactivar la carta pública** y eliminar el local. Mientras está en solo lectura, la carta pública **no se sirve** (404) aunque esté activada; vuelve a servirse al reactivar la suscripción.
 
 **Aislamiento.** Todas las rutas `/api/orgs/{orgId}/…` exigen sesión y pertenencia. Si el usuario no es miembro, o cualquier id de la ruta o del cuerpo pertenece a otro local → **404**.
 
@@ -291,8 +311,21 @@ Errores: 400, 409 (máx. 50 locales por cuenta).
 ### PATCH `/api/orgs/{orgId}` — owner, escritura
 Cuerpo (al menos un campo): `{ name?: string; timezone?: string; reminderEnabled?: boolean; reminderHour?: 0..23 }` → `200 { organization }`.
 
-### DELETE `/api/orgs/{orgId}` — owner
-Cuerpo: `{ password: string }` → `204`. Borra el local y **todos** sus datos (irreversible). Si el local tiene una suscripción viva en Stripe, **se cancela antes**; si la cancelación falla → 502 `BILLING_ERROR` y el local **no** se borra (si Stripe no está configurado en el servidor → 503 `BILLING_NOT_CONFIGURED`, tampoco se borra). Errores: 401 `INVALID_CREDENTIALS`, 403, 429, 502, 503.
+### DELETE `/api/orgs/{orgId}` — owner (borrado DIFERIDO)
+Cuerpo: `{ password: string }` → `204`. **Ya no borra al instante**: el local queda **pendiente de eliminación** durante 30 días (`organization.deletionScheduledAt` = fecha de la eliminación definitiva). Mientras tanto:
+- es de **solo lectura** (402 `READ_ONLY` al escribir; `subscription.readOnly: true`), sin carta pública (404), con **todos los dispositivos de cocina revocados** (401 en `/api/kiosk/*`), sin recordatorios ni avisos de prueba, y sin Checkout (409);
+- los miembros pueden seguir viendo, exportando y descargando informes;
+- un owner puede **restaurarlo** (`POST /restore`) o pedir la **eliminación inmediata y definitiva** (`DELETE /permanent`);
+- los owners reciben un email con la fecha de eliminación definitiva;
+- al vencer el plazo, una tarea diaria lo elimina con todos sus datos.
+
+Si el local tiene una suscripción viva en Stripe, **se cancela antes** (y queda `canceled`); si la cancelación falla → 502 `BILLING_ERROR` y el local **no** pasa a pendiente (si Stripe no está configurado en el servidor → 503 `BILLING_NOT_CONFIGURED`). Errores: 401 `INVALID_CREDENTIALS`, 403, 409 (ya pendiente), 429, 502, 503.
+
+### POST `/api/orgs/{orgId}/restore` — owner (NUEVO)
+Sin cuerpo → `200 { organization }` (con `deletionScheduledAt: null`). Cancela la eliminación pendiente. **No** reactiva la suscripción cancelada (el local queda en el estado que le corresponda: prueba vigente o solo lectura hasta contratar) ni los dispositivos de cocina (hay que volver a vincularlos). 409 si el local no está pendiente de eliminación; 403 para managers.
+
+### DELETE `/api/orgs/{orgId}/permanent` — owner (NUEVO)
+Cuerpo: `{ password: string }` → `204`. Eliminación **inmediata y definitiva** (derecho de supresión), solo para un local que **ya** está pendiente de eliminación (si no → 409). Irreversible. Errores: 401 `INVALID_CREDENTIALS`, 403, 409, 429.
 
 ### GET `/api/orgs/{orgId}/membership`
 `200 { role: 'owner' | 'manager'; dailyReminder: boolean }`
@@ -345,7 +378,7 @@ Query: `limit` (1–200), `cursor` (string numérica = `id` del último). Orden:
 ```ts
 200 { items: { id: string; event: string; user: { id: string; name: string | null } | null; ip: string | null; metadata: object; createdAt: string }[]; nextCursor: string | null }
 ```
-Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `device.revoked_with_member`, `billing.subscription_canceled`, `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
+Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.deletion_scheduled`, `org.restored`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `device.revoked_with_member`, `billing.subscription_canceled`, `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
 
 ---
 
@@ -404,7 +437,7 @@ Los límites pueden ser solo máximo, solo mínimo, ambos o ninguno (°C, −60�
 | POST | `/equipment` (escritura) | `{ name; type; minTemp?: number\|null; maxTemp?: number\|null; checksPerDay?: number (def. 1); active?: boolean (def. true) }` | `201 { equipment }` |
 | PATCH | `/equipment/{equipmentId}` (escritura) | cualquier subconjunto de los campos anteriores | `200 { equipment }` |
 
-Validación: `minTemp ≤ maxTemp` (también al combinar con los valores actuales en PATCH) → 400 con `details[0].path = "minTemp"`. Sin borrado: desactivar con `active: false`.
+Validación: `minTemp ≤ maxTemp` (también al combinar con los valores actuales en PATCH) → 400 con `details[0].path = "minTemp"`. Sin borrado: desactivar con `active: false`. Cada cambio de `checksPerDay`/`active` queda en un historial interno: desactivar o cambiar la frecuencia **no** altera el cumplimiento de días pasados (§13).
 
 ---
 
@@ -429,13 +462,13 @@ type CleaningPlan = {
 | POST | `/cleaning-plans` (escritura) | `{ name; frequency; weekday?; monthDay?; items: { area: string; product?: string\|null; method?: string\|null }[]; active? }` | `201 { cleaningPlan }` |
 | PATCH | `/cleaning-plans/{planId}` (escritura) | subconjunto. En `items`, incluye `id` en los ítems existentes para conservarlos; los ítems sin `id` (o con id desconocido) reciben uno nuevo | `200 { cleaningPlan }` |
 
-`weekday` es obligatorio si `frequency = weekly`; `monthDay` si `monthly`. Los registros guardan una copia de los nombres de los ítems, así que editar un plan no altera registros pasados.
+`weekday` es obligatorio si `frequency = weekly`; `monthDay` si `monthly`. Los registros guardan una copia de los nombres de los ítems, así que editar un plan no altera registros pasados. Los cambios de frecuencia/día/`active` quedan en un historial interno y no alteran el cumplimiento de días pasados (§13).
 
 ---
 
 ## 10. Registros — `/api/orgs/{orgId}/records`
 
-Registros **inmutables** (append-only, reforzado con un trigger en la BD). No hay `PATCH`/`DELETE` (→ 404). Una corrección es una **enmienda**: un nuevo registro del mismo tipo que referencia al original, con motivo obligatorio. Solo una enmienda por registro; para volver a corregir, se enmienda la enmienda. En tareas, alertas y cumplimiento cuenta la versión vigente (la última de la cadena); los informes muestran ambas.
+Registros **inmutables** (append-only, reforzado con un trigger en la BD). **Fecha del hecho:** tareas, cumplimiento, alertas, historial e informes usan `effectiveAt`; una enmienda hecha hoy de un registro de ayer cuenta ayer (no cambia el cumplimiento de ningún día). Muestra `effectiveAt` como fecha del registro y, en las enmiendas, «enmendado el `createdAt` por `user`/`staff`». No hay `PATCH`/`DELETE` (→ 404). Una corrección es una **enmienda**: un nuevo registro del mismo tipo que referencia al original, con motivo obligatorio. Solo una enmienda por registro; para volver a corregir, se enmienda la enmienda. En tareas, alertas y cumplimiento cuenta la versión vigente (la última de la cadena); los informes muestran ambas.
 
 ```ts
 type RecordType = 'temperatura' | 'limpieza' | 'recepcion' | 'aceite' | 'plagas' | 'incidencia' | 'formacion';
@@ -450,7 +483,8 @@ type Record = {
   amendsRecordId: string | null;                    // si es una enmienda: id del original
   amendmentReason: string | null;
   amendedByRecordId: string | null;                 // si fue corregido: id de la enmienda
-  createdAt: string;                                // hora del servidor
+  effectiveAt: string;                              // NUEVO: fecha del HECHO. Registro normal = createdAt; enmienda = la del registro original (raíz de la cadena)
+  createdAt: string;                                // hora real de inserción (en una enmienda: cuándo se enmendó)
 };
 ```
 
@@ -484,19 +518,19 @@ Almacenado: `{ traineeStaffId, traineeName, course, trainingDate, trainer, hours
 En la entrada, los textos opcionales vacíos se guardan como `null`.
 
 ### GET `/records`
-Query: `type?`, `from?` y `to?` (`AAAA-MM-DD`, fechas locales del local, inclusive), `equipmentId?`, `staffId?`, `alert?` (`true`/`false`), `limit`, `cursor`. → `200 Page<Record>` (más recientes primero).
+Query: `type?`, `from?` y `to?` (`AAAA-MM-DD`, fechas locales del local, inclusive; se comparan con `effectiveAt`), `equipmentId?`, `staffId?`, `alert?` (`true`/`false`), `limit`, `cursor`. → `200 Page<Record>` ordenado por `effectiveAt` descendente (más recientes primero; una enmienda aparece junto a su original).
 
 ### GET `/records/{recordId}`
 `200 { record: Record; amends: Record | null; amendedBy: Record | null }`
 
 ### POST `/records` — escritura
-Cuerpo: `{ type: RecordType; data: <entrada del tipo>; staffId?: uuid | null }` → `201 { record: Record }`.
+Cuerpo: `{ type: RecordType; data: <entrada del tipo>; staffId?: uuid | null }` → `201 { record: Record }` (o `200` si es una repetición con la misma `Idempotency-Key`, §1.7).
 `staffId` (opcional desde la web) indica qué miembro del personal firma; debe ser del local y estar activo. El usuario autenticado siempre queda registrado en `user`.
-Errores: 400 `VALIDATION_ERROR` (paths con prefijo `data.`), 404 si `equipmentId`/`cleaningPlanId`/`supplierId`/`traineeStaffId`/`staffId` no son del local, 402 `READ_ONLY`, 429 (más de 120 altas por minuto del mismo usuario en el local).
+Errores: 400 `VALIDATION_ERROR` (paths con prefijo `data.`), 404 si `equipmentId`/`cleaningPlanId`/`supplierId`/`traineeStaffId`/`staffId` no son del local, 402 `READ_ONLY`, 409 (clave de idempotencia con otro cuerpo), 429 (más de 120 altas por minuto del mismo usuario en el local).
 
 ### POST `/records/{recordId}/amendments` — escritura
-Cuerpo: `{ reason: string (1–1000); data: <entrada COMPLETA del tipo del original>; staffId?: uuid | null }` → `201 { record: Record }` (con `amendsRecordId` y `amendmentReason`).
-Errores: 400, 404, 409 `CONFLICT` si el registro ya tiene enmienda, 429 (comparte el límite de 120/min con las altas).
+Cuerpo: `{ reason: string (1–1000); data: <entrada COMPLETA del tipo del original>; staffId?: uuid | null }` → `201 { record: Record }` (con `amendsRecordId`, `amendmentReason` y `effectiveAt` = el del original; `200` en una repetición con la misma `Idempotency-Key`).
+Errores: 400, 404, 409 `CONFLICT` si el registro ya tiene enmienda (o clave de idempotencia con otro cuerpo), 429 (comparte el límite de 120/min con las altas).
 
 ---
 
@@ -567,7 +601,7 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
   notice: string;                                             // aviso para mostrar al cliente
 }
 ```
-404 si el slug no existe, la carta está desactivada **o el local está en solo lectura** (prueba caducada, impago, cancelada). Sin ids ni datos internos. Cabecera `X-Robots-Tag: noindex, nofollow`. Límite 120/min por IP.
+404 si el slug no existe, la carta está desactivada **o el local está en solo lectura** (prueba caducada, impago definitivo, cancelada, pendiente de eliminación). Sin ids ni datos internos. Cabecera `X-Robots-Tag: noindex, nofollow`. Límite 120/min por IP.
 
 ---
 
@@ -584,21 +618,23 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
     required: number;        // checksPerDay
     done: number;            // lecturas vigentes de hoy (máx. required)
     status: 'done' | 'pending';
-    lastReading: { value: number; outOfRange: boolean; at: string } | null;
+    countsToday: boolean;    // NUEVO: false si el equipo se dio de alta o se reactivó HOY: se muestra (y lo registrado figura como hecho) pero no es exigible ni cuenta en `summary`
+    lastReading: { value: number; outOfRange: boolean; at: string } | null;   // `at` = effectiveAt
   }[];                       // equipos activos con checksPerDay > 0
   cleaning: {
     cleaningPlanId: string; name: string; frequency: 'daily' | 'weekly' | 'monthly';
     status: 'done' | 'pending';
-    completedAt: string | null;
+    countsToday: boolean;    // NUEVO: igual que en temperatures
+    completedAt: string | null;   // effectiveAt del registro
   }[];                       // planes activos que tocan hoy
-  summary: { total: number; done: number; pending: number; percent: number };
+  summary: { total: number; done: number; pending: number; percent: number };   // solo elementos con countsToday
   alerts: {
     kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'plagas_con_indicios' | 'incidencia_abierta';
     recordId: string; message: string; createdAt: string;
   }[];                       // alertas de hoy + incidencias abiertas de cualquier fecha (máx. 50 + 50)
 }
 ```
-Reglas: un plan semanal toca el `weekday` indicado; uno mensual, el `monthDay`. Se considera hecho si hay un registro de limpieza del plan desde el inicio de su periodo (lunes de la semana / día 1 del mes / hoy) hasta hoy. Las lecturas sustituidas por una enmienda no cuentan.
+Reglas: un plan semanal toca el `weekday` indicado; uno mensual, el `monthDay`. Se considera hecho si hay un registro de limpieza del plan (por `effectiveAt`) desde el inicio de su periodo (lunes de la semana / día 1 del mes / hoy) hasta hoy. Las lecturas sustituidas por una enmienda no cuentan; la enmienda cuenta en el día del original. Las alertas «de hoy» son las de registros cuyo hecho es de hoy; `createdAt` de cada alerta = `effectiveAt`.
 
 ### GET `/tasks/compliance?from=AAAA-MM-DD&to=AAAA-MM-DD`
 Rango máximo 92 días; los días futuros se omiten.
@@ -609,7 +645,7 @@ Rango máximo 92 días; los días futuros se omiten.
   overall: { expected: number; done: number; percent: number | null };
 }
 ```
-Usa la configuración actual (equipos/planes activos), contando cada uno desde su fecha de creación.
+Lo esperado de cada día sale de la **configuración vigente ese día** (historial de equipos y planes): un equipo/plan se exige un día si estaba activo al empezar el día y sigue activo al terminarlo (o ahora, si es hoy), con la frecuencia vigente al final del día. Así, desactivarlo, reactivarlo o cambiar su frecuencia no reescribe el pasado, y el día de alta (o de reactivación/desactivación) no es exigible. Los registros cuentan por `effectiveAt`.
 
 ---
 
@@ -618,12 +654,12 @@ Usa la configuración actual (equipos/planes activos), contando cada uno desde s
 Query común: `from`, `to` (`AAAA-MM-DD`, inclusive, máx. 366 días) y `types` opcional (lista separada por comas de `RecordType`; vacío = todos). Disponibles para owner y manager, también en solo lectura. Quedan auditados.
 
 ### GET `/reports/pdf`
-`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria, periodo y tipos; una tabla por tipo; filas fuera de rango en rojo; enmiendas destacadas con su motivo y referencia cruzada; pie con fecha de generación y número de página. **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. Se genera en streaming. Límites: 10 / 10 min por local y por usuario; además, como mucho 2 PDF a la vez en el servidor: si están ocupados → 429 con `Retry-After` (reintenta pasados esos segundos).
+`200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria, periodo y tipos; una tabla por tipo (ordenada por fecha del hecho); «Fecha y hora» = fecha del **hecho** (`effectiveAt`); filas fuera de rango en rojo; enmiendas destacadas con su motivo, referencia cruzada y **cuándo y por quién** se enmendó; pie con fecha de generación y número de página. Fuente Unicode embebida: los textos salen completos (sin «…»; las celdas largas continúan en la página siguiente) y con cualquier letra latina, griega o cirílica; los caracteres sin glifo (muchos emojis, CJK) salen como `□`. Respuesta con `Content-Length` (el PDF se genera entero antes de enviarse). **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. Se genera en streaming. Límites: 10 / 10 min por local y por usuario; además, como mucho 2 PDF a la vez en el servidor: si están ocupados → 429 con `Retry-After` (reintenta pasados esos segundos).
 
 ### GET `/reports/csv`
-`200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora, firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas`. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
+`200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora (fecha del HECHO), firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas, fecha_registro, enmendado_por` (las dos últimas son NUEVAS, al final: hora real de inserción y, en enmiendas, quién enmendó). Orden por fecha del hecho. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
 
-Límite CSV: 20 / 10 min por local y por usuario.
+Límite CSV: 20 / 10 min por local y por usuario. Máximo 500 000 filas: si se superarían → 400 `REPORT_TOO_LARGE` **antes** de empezar (antes se cortaba en silencio).
 
 Errores (ambos): 400 si faltan fechas, `from > to`, rango > 1 año, años fuera de 2000–2100 o tipo desconocido; 429 por los límites anteriores.
 
@@ -652,9 +688,9 @@ Sin cuerpo → `200 { url: string }` (portal de cliente de Stripe: cambiar tarje
 Errores: 409 si no hay cliente de Stripe todavía, 502, 503.
 
 ### POST `/api/billing/webhook` (solo Stripe)
-Firma `Stripe-Signature` verificada sobre el cuerpo crudo; idempotente por id de evento. Eventos usados: `checkout.session.completed`, `customer.subscription.created|updated|deleted`. Respuesta `200 { received: true, duplicate: boolean }`; 400 si la firma no es válida; 503 sin Stripe.
+Firma `Stripe-Signature` verificada sobre el cuerpo crudo; idempotente por id de evento. Eventos usados: `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.*` (p. ej. `invoice.paid`, `invoice.payment_failed`). En cada uno se **recupera la suscripción actual de Stripe** y se aplica su estado. Respuesta `200 { received: true, duplicate: boolean }`; 400 si la firma no es válida; **503 sin marcar el evento** (Stripe reintenta) si Stripe falla o el local aún no se puede identificar; 503 `BILLING_NOT_CONFIGURED` sin Stripe. Eventos de un local ya eliminado o de una suscripción que no es la actual del local → 200 sin efecto.
 
-**Estados y solo lectura**: `active` y `trialing` permiten escribir. `trial_expired` (prueba local caducada), `past_due`, `unpaid`, `canceled`, `incomplete`, `incomplete_expired` y `paused` → solo lectura (402 `READ_ONLY` al escribir). Muestra un banner con un botón a Checkout (o al portal si `hasBillingAccount`).
+**Estados y solo lectura**: `active`, `trialing`, **`past_due`** (periodo de gracia mientras Stripe reintenta el cobro; `paymentFailed: true` → muestra un aviso «No hemos podido cobrar tu suscripción: actualiza el método de pago» con botón al portal) e `incomplete` (primer pago en curso) permiten escribir. `trial_expired` (prueba local caducada), `unpaid`, `canceled`, `incomplete_expired` y `paused` → solo lectura (402 `READ_ONLY` al escribir). Muestra un banner con un botón a Checkout (o al portal si `hasBillingAccount`). Checkout responde 409 si el local está pendiente de eliminación.
 
 ---
 
@@ -683,7 +719,7 @@ Flujo recomendado:
 Misma respuesta que `GET /api/orgs/{orgId}/tasks/today`.
 
 ### POST `/api/kiosk/records`
-Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tipo> }` → `201 { record: Record }` (`user: null`, `deviceId` del dispositivo).
+Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tipo> }` → `201 { record: Record }` (`user: null`, `deviceId` del dispositivo). Admite `Idempotency-Key` (§1.7; muy recomendable en la tablet, que reintenta con mala cobertura): una repetición devuelve `200` con el mismo registro.
 - Si el miembro tiene PIN: sin `pin` → 401 `PIN_REQUIRED`; incorrecto → 401 `INVALID_PIN`; al 5.º fallo consecutivo → 429 `PIN_LOCKED` durante 15 min (`Retry-After`). El límite es estricto incluso con peticiones simultáneas (nunca se comprueban más de 5 PIN erróneos por ventana). Un encargado puede desbloquear con `POST /staff/{id}/unlock` o cambiando el PIN.
 - Por dispositivo: más de 20 PIN erróneos en 15 min (sumando todas las personas) → 429 `RATE_LIMITED` también para PIN correctos hasta que pase la ventana; más de 120 registros/min → 429 `RATE_LIMITED`.
 - 404 si `staffId` (u otros ids del `data`) no son del local; 400 si está desactivado o los datos no son válidos; 402 `READ_ONLY` si la suscripción no está activa.
@@ -704,6 +740,7 @@ Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tip
 | POST | `/api/invitations/accept` | sesión |
 | GET/POST | `/api/orgs` | sesión |
 | GET/PATCH/DELETE | `/api/orgs/{orgId}` | miembro (PATCH/DELETE owner) |
+| POST · DELETE | `/api/orgs/{orgId}/restore` · `/api/orgs/{orgId}/permanent` | owner |
 | GET/PATCH | `/api/orgs/{orgId}/membership` | miembro |
 | GET | `/api/orgs/{orgId}/export` · `/audit` | owner |
 | GET · PATCH/DELETE | `/api/orgs/{orgId}/members` · `/members/{userId}` | miembro · owner |
@@ -724,3 +761,18 @@ Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tip
 | GET | `/api/public/menu/{slug}` | – |
 
 "miembro" = owner o manager. Las rutas que crean o modifican datos exigen además que la suscripción permita escritura (§5).
+
+---
+
+## 18. Cambios de esta versión que afectan al frontend
+
+Todos son **aditivos** salvo el cambio de comportamiento de `DELETE /api/orgs/{orgId}` y de `past_due`.
+
+1. **Borrado diferido de locales.** Tras `DELETE /api/orgs/{orgId}` (204) el local **sigue existiendo**: no lo quites de la lista ni redirijas como si se hubiera borrado; recárgalo. Si `organization.deletionScheduledAt` no es `null`, muestra un banner «Este local se eliminará definitivamente el {fecha}» con botones «Restaurar» (`POST /restore`, solo owner) y «Eliminar ya definitivamente» (`DELETE /permanent` con contraseña, solo owner, confirmación fuerte). En ese estado: formularios deshabilitados (solo lectura), Checkout oculto, informes/exportación disponibles. `GET /api/account` también trae `deletionScheduledAt` por local (para marcarlo en el selector). Los textos de confirmación del borrado deben decir que hay 30 días para restaurar.
+2. **`past_due` ya no es solo lectura.** Usa `subscription.paymentFailed` para mostrar un aviso de pago fallido (con enlace al portal) sin deshabilitar nada. `incomplete` también es escribible.
+3. **Fecha del hecho.** `Record.effectiveAt` es la fecha que debe mostrarse como fecha del registro (historial, detalle); en enmiendas, muestra aparte «enmendado el `createdAt` por …». El historial ya viene ordenado y filtrado por `effectiveAt`.
+4. **Tareas de hoy.** Nuevo `countsToday` en `temperatures[]` y `cleaning[]`: si es `false` (alta o reactivación hoy) muéstralo como «opcional hoy / empieza a contar mañana»; `summary` ya lo excluye.
+5. **Idempotencia.** Envía `Idempotency-Key: crypto.randomUUID()` (una por registro, reutilizada en reintentos) en `POST /records`, en las enmiendas y, sobre todo, en `POST /api/kiosk/records`. Trata `200` como éxito igual que `201`.
+6. **CSV**: puede responder `400 REPORT_TOO_LARGE` (muestra `error.message`). Tiene dos columnas nuevas al final.
+7. **Auditoría**: nuevos eventos `org.deletion_scheduled` y `org.restored` (añade sus etiquetas).
+8. **Rutas de la SPA**: `GET /` y cualquier ruta de la SPA devuelven `index.html` con cualquier `Accept`; la API, la carta pública y la app privada llevan `X-Robots-Tag: noindex, nofollow` (no hace falta nada en el frontend; la portada y las páginas legales siguen siendo indexables).

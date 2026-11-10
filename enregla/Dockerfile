@@ -24,6 +24,7 @@ RUN mkdir -p /app/web/dist && \
 
 # --- Imagen final ------------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
+# NODE_ENV=production siempre: pino-pretty es dependencia de desarrollo y no está en la imagen.
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000
@@ -32,6 +33,8 @@ COPY --from=server-build --chown=node:node /app/server/package.json ./package.js
 COPY --from=server-build --chown=node:node /app/server/node_modules ./node_modules
 COPY --from=server-build --chown=node:node /app/server/dist ./dist
 COPY --from=server-build --chown=node:node /app/server/migrations ./migrations
+# Fuentes Unicode del PDF (DejaVu Sans + licencia): dist/modules/reports/pdf.js las busca en ../../../assets.
+COPY --from=server-build --chown=node:node /app/server/assets ./assets
 COPY --from=web-build --chown=node:node /app/web/dist /app/web/dist
 # Si el build web está vacío (sin index.html) el servidor lo ignora y sirve solo la API.
 USER node

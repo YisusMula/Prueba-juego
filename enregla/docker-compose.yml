@@ -24,8 +24,16 @@ services:
     restart: unless-stopped
     env_file: server/.env
     environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      DATABASE_URL: postgres://enregla:${POSTGRES_PASSWORD}@db:5432/enregla
+      # Siempre production (aunque server/.env diga development): la imagen no trae pino-pretty.
+      NODE_ENV: production
+      # Conexión por variables separadas: la contraseña NO va dentro de una URL (no hace falta
+      # codificar caracteres como @ : / #). DATABASE_URL vacío anula el que haya en server/.env.
+      DATABASE_URL: ""
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: enregla
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: enregla
       HOST: 0.0.0.0
       PORT: 3000
     depends_on:

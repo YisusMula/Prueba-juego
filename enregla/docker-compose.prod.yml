@@ -3,6 +3,7 @@
 #   cp server/.env.example server/.env    # NODE_ENV=production, APP_URL=https://TU_DOMINIO, SMTP_*, MAIL_FROM,
 #                                         # POSTGRES_PASSWORD larga, DOMAIN=TU_DOMINIO, ACME_EMAIL=tu@email
 #   docker compose -f docker-compose.prod.yml --env-file server/.env up -d --build
+# Guía completa (primer despliegue, copias, restauración, actualización): docs/OPERACIONES.md
 # Requisitos: el DNS de DOMAIN apunta a este servidor y los puertos 80/443 están abiertos.
 # La app NO publica ningún puerto: solo Caddy es accesible desde fuera.
 services:
@@ -27,8 +28,16 @@ services:
     restart: unless-stopped
     env_file: server/.env
     environment:
+      # Siempre production (aunque server/.env diga development): la imagen no trae pino-pretty.
       NODE_ENV: production
-      DATABASE_URL: postgres://enregla:${POSTGRES_PASSWORD}@db:5432/enregla
+      # Conexión por variables separadas: la contraseña NO va dentro de una URL (no hace falta
+      # codificar caracteres como @ : / #). DATABASE_URL vacío anula el que haya en server/.env.
+      DATABASE_URL: ""
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: enregla
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: enregla
       HOST: 0.0.0.0
       PORT: 3000
       # Solo se confía en el proxy de la red interna `edge` (Caddy). Nunca TRUST_PROXY=true.
@@ -43,6 +52,32 @@ services:
       - no-new-privileges:true
     stop_grace_period: 20s
     networks: [internal, edge]
+
+  # Copias de seguridad diarias con pg_dump (deploy/backup.sh), retención local de
+  # BACKUP_RETENTION_DAYS días en ./backups. Una copia que solo está en este servidor NO protege
+  # de perder el servidor: define BACKUP_POST_HOOK para enviarla fuera (docs/OPERACIONES.md).
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: enregla
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: enregla
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_POST_HOOK: ${BACKUP_POST_HOOK:-}
+      # Hora (UTC) de la copia diaria.
+      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-3}
+    volumes:
+      - ./deploy/backup.sh:/usr/local/bin/enregla-backup.sh:ro
+      - ./backups:/backups
+    # Bucle simple (sin cron en la imagen): una copia al día a BACKUP_HOUR_UTC.
+    entrypoint: ["/bin/sh", "-c", "while true; do if [ \"$$(date -u +%H)\" -eq \"$${BACKUP_HOUR_UTC}\" ] && [ \"$$(date -u +%F)\" != \"$$(cat /backups/.last 2>/dev/null)\" ]; then sh /usr/local/bin/enregla-backup.sh && date -u +%F > /backups/.last; fi; sleep 300; done"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
 
   caddy:
     image: caddy:2-alpine

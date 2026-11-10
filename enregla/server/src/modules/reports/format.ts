@@ -276,7 +276,7 @@ export function pdfText(value: string, hasGlyph?: (codePoint: number) => boolean
     .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u2028\u2029]/g, ' ')
     .replace(/\t/g, ' ')
     // Selectores de variación, unión de emojis y modificadores de tono: sin sentido sin el emoji.
-    .replace(/[\u200D\uFE0E\uFE0F]|\u{1F3FB}|\u{1F3FC}|\u{1F3FD}|\u{1F3FE}|\u{1F3FF}/gu, '');
+    .replace(/\u200D|\uFE0E|\uFE0F|\u{1F3FB}|\u{1F3FC}|\u{1F3FD}|\u{1F3FE}|\u{1F3FF}/gu, '');
   if (!hasGlyph) return s;
   let out = '';
   let lastMissing = false;

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
-import { addMember, closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, testConfig, type TestCtx, FIXED_NOW, FIXED_TODAY, backdateConfig } from './helpers.js';
+import { addMember, closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, testConfig, type TestCtx, FIXED_NOW, FIXED_TODAY } from './helpers.js';
 import { computeCompliance } from '../src/modules/tasks/service.js';
 
 let ctx: TestCtx;
