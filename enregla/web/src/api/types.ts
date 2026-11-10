@@ -31,6 +31,8 @@ export type Subscription = {
   readOnly: boolean;
   /** Cobro fallido (past_due): se puede seguir escribiendo, pero hay que avisar. */
   paymentFailed: boolean;
+  /** Desde cuándo el cobro falla (past_due). Pasado el plazo de gracia del servidor (no expuesto), el local pasa a solo lectura. */
+  pastDueSince?: string | null;
   trialEndsAt: string;
   plan: 'monthly' | 'annual' | null;
   currentPeriodEnd: string | null;
@@ -246,6 +248,8 @@ export type TodayTasks = {
     status: 'done' | 'pending';
     /** false: alta o reactivación hoy; se muestra pero no cuenta (empieza a contar mañana). */
     countsToday: boolean;
+    /** Lecturas hechas que solo cuentan por una corrección registrada en un día posterior. */
+    correctedLater?: number;
     lastReading: { value: number; outOfRange: boolean; at: string } | null;
   }[];
   cleaning: {
@@ -255,18 +259,20 @@ export type TodayTasks = {
     status: 'done' | 'pending';
     countsToday: boolean;
     completedAt: string | null;
+    /** Hecha solo gracias a una corrección registrada en un día posterior al del hecho. */
+    correctedLater?: boolean;
     /** Última limpieza PARCIAL del periodo (no cuenta como hecha). */
     partial?: { done: number; total: number; at: string; recordId: string } | null;
   }[];
-  summary: { total: number; done: number; pending: number; percent: number };
+  summary: { total: number; done: number; pending: number; percent: number; correctedLater?: number };
   alerts: { kind: AlertKind; recordId: string; message: string; createdAt: string }[];
 };
 
 export type Compliance = {
   from: string;
   to: string;
-  days: { date: string; expected: number; done: number; percent: number | null }[];
-  overall: { expected: number; done: number; percent: number | null };
+  days: { date: string; expected: number; done: number; percent: number | null; correctedLater?: number }[];
+  overall: { expected: number; done: number; percent: number | null; correctedLater?: number };
 };
 
 export type Billing = {

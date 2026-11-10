@@ -67,7 +67,7 @@ export const test = base.extend<{ consoleGuard: void }>({
       page.on('console', (m) => {
         if (m.type() !== 'error') return;
         const t = m.text();
-        if (/Failed to load resource: the server responded with a status of 4\d\d/.test(t)) return;
+        if (/Failed to load resource: the server responded with a status of (4\d\d|502|503)/.test(t)) return; // 502/503: errores de Stripe que la web debe mostrar (se simulan en la e2e)
         problems.push(`console: ${t}`);
       });
       await use();

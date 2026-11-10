@@ -1083,6 +1083,12 @@ export function BillingPage() {
       if (!isSafeExternal(r.url)) throw new Error('URL de pago no válida');
       window.location.assign(r.url);
     } catch (err) {
+      // 409: ya hay un pago en curso o ya está pagado; se recarga el estado para que la pantalla refleje la realidad.
+      if (isApiError(err) && err.status === 409) {
+        void qc.invalidateQueries({ queryKey: keys.orgScoped(orgId, 'billing') });
+        void qc.invalidateQueries({ queryKey: keys.org(orgId), exact: true });
+        void qc.invalidateQueries({ queryKey: keys.account });
+      }
       setError({ message: errorMessage(err), notConfigured: isApiError(err) && err.code === 'BILLING_NOT_CONFIGURED' });
       setBusy(false);
     }

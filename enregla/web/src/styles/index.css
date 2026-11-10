@@ -171,6 +171,24 @@
   100% { background-position: 200% 0; }
 }
 
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+/* Barra de progreso indeterminada (informes PDF en cola/generándose). */
+.indeterminate-bar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 30%;
+  border-radius: 9999px;
+  background: var(--brand);
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .indeterminate-bar::after { width: 100%; animation: none; opacity: 0.5; }
+}
+
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;

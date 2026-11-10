@@ -117,7 +117,7 @@ test('recuperación de contraseña completa', async ({ page }) => {
 });
 
 test('invitación abierta con otra cuenta: cerrar sesión, entrar con la invitada y aceptar', async ({ page }) => {
-  await createVerifiedAccount(page, invitedEmail, 'Clave-Invitada-2026', 'Irene Invitada');
+  await createVerifiedAccount(page, invitedEmail, 'Cocina-Segura-2026', 'Irene Invitada');
   await login(page);
   const inv = await page.request.post(`${page.url().replace(/\/locales\/([0-9a-f-]+)\/hoy$/, '/api/orgs/$1')}/invitations`, {
     data: { email: invitedEmail, role: 'manager' },
@@ -132,7 +132,7 @@ test('invitación abierta con otra cuenta: cerrar sesión, entrar con la invitad
   await page.getByRole('button', { name: `Cerrar sesión y entrar con ${invitedEmail}` }).click();
   await expect(page).toHaveURL(/\/entrar\?next=%2Finvitacion/);
   await expect(page.getByLabel('Email')).toHaveValue(invitedEmail);
-  await page.getByLabel('Contraseña', { exact: true }).fill('Clave-Invitada-2026');
+  await page.getByLabel('Contraseña', { exact: true }).fill('Cocina-Segura-2026');
   await page.getByRole('button', { name: 'Entrar', exact: true }).click();
   await expect(page).toHaveURL(/\/invitacion/);
   await page.getByRole('button', { name: /Aceptar y entrar en Restaurante La Demo/ }).click();

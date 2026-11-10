@@ -7,7 +7,7 @@ import { Button, buttonClasses } from '@/components/ui/Button';
 import { Callout } from '@/components/ui/Feedback';
 import { Field, Input, PasswordInput } from '@/components/ui/Form';
 import { Dialog, useToast } from '@/components/ui/Overlay';
-import { api, errorMessage } from '@/api/client';
+import { api, errorMessage, isApiError } from '@/api/client';
 import { keys } from '@/api/queries';
 import type { Organization, SubscriptionStatus } from '@/api/types';
 import { formatLocalDate, localDateIn, relativeDays } from '@/lib/format';
@@ -34,6 +34,15 @@ export async function openBillingPortal(orgId: string): Promise<void> {
 
 /** Fecha de eliminación definitiva en la zona del local («9 dic 2026»). */
 export const deletionDate = (iso: string, tz: string) => formatLocalDate(localDateIn(tz, new Date(iso)));
+
+/**
+ * Frase sobre el plazo de gracia de un cobro fallido. La API no expone cuántos días son (los fija el servidor,
+ * PAST_DUE_READ_ONLY_DAYS), así que no se inventa una fecha: se indica desde cuándo falla y que el plazo es de unos días.
+ */
+export function pastDueDeadlineText(pastDueSince: string | null | undefined, tz: string): string {
+  const since = pastDueSince ? ` Lleva fallando desde el ${formatLocalDate(localDateIn(tz, new Date(pastDueSince)))}.` : '';
+  return `Puedes seguir registrando con normalidad durante unos días más; si el pago no se resuelve, el local pasará a solo lectura (podrás consultar y descargar todo, pero no añadir registros).${since}`;
+}
 
 /** Aviso persistente: local pendiente de eliminación, pago fallido, solo lectura o prueba a punto de terminar. */
 export function SubscriptionBanner() {
@@ -84,7 +93,7 @@ export function SubscriptionBanner() {
 }
 
 function PaymentFailedBanner() {
-  const { orgId, isOwner } = useOrgContext();
+  const { org, orgId, isOwner, tz } = useOrgContext();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -92,8 +101,8 @@ function PaymentFailedBanner() {
       <div className="mx-auto flex max-w-5xl flex-col gap-3 sm:flex-row sm:items-center">
         <Icon name="card" size={22} className="shrink-0 text-warn" />
         <p className="flex-1 text-ink">
-          <strong>No hemos podido cobrar la suscripción.</strong> Puedes seguir trabajando con normalidad mientras lo reintentamos.{' '}
-          {isOwner ? 'Actualiza el método de pago para evitar que el local pase a solo lectura.' : 'Avisa a la persona propietaria del local para que actualice el método de pago.'}
+          <strong>No hemos podido cobrar la suscripción.</strong> Seguimos reintentándolo. {pastDueDeadlineText(org.subscription.pastDueSince, tz)}{' '}
+          {isOwner ? 'Actualiza el método de pago para evitarlo.' : 'Avisa a la persona propietaria del local para que actualice el método de pago.'}
           {error ? <span className="mt-1 block font-semibold text-bad">{error}</span> : null}
         </p>
         {isOwner ? (
@@ -125,6 +134,7 @@ function PaymentFailedBanner() {
 function DeletionBanner() {
   const { org, orgId, isOwner, tz } = useOrgContext();
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -141,6 +151,17 @@ function DeletionBanner() {
       await qc.invalidateQueries({ queryKey: ['org', orgId] });
       toast.show('Local restaurado: ya no se eliminará');
     } catch (err) {
+      if (isApiError(err) && err.status === 404) {
+        // La purga diaria (o una eliminación inmediata) ya lo ha borrado: no hay nada que restaurar.
+        storage.setLastOrg(null);
+        qc.removeQueries({ queryKey: keys.org(orgId) });
+        await qc.invalidateQueries({ queryKey: keys.account });
+        toast.show(`${errorMessage(err)} El local ya se había eliminado.`);
+        navigate('/app', { replace: true });
+        return;
+      }
+      // 409: ya no estaba pendiente de eliminación; se recarga para mostrar el estado real.
+      if (isApiError(err) && err.status === 409) await qc.invalidateQueries({ queryKey: ['org', orgId] });
       setError(errorMessage(err));
     } finally {
       setBusy(false);
@@ -195,6 +216,16 @@ function PermanentDeleteDialog({ onClose }: { onClose: () => void }) {
       await qc.invalidateQueries({ queryKey: keys.account });
       navigate('/app', { replace: true });
     } catch (err) {
+      if (isApiError(err) && err.status === 404) {
+        // Ya estaba borrado (p. ej. por la purga diaria): el resultado buscado se ha cumplido.
+        storage.setLastOrg(null);
+        qc.removeQueries({ queryKey: keys.org(orgId) });
+        await qc.invalidateQueries({ queryKey: keys.account });
+        navigate('/app', { replace: true });
+        return;
+      }
+      if (isApiError(err) && err.status === 409) await qc.invalidateQueries({ queryKey: ['org', orgId] });
+      // 502/503 (Stripe): el local NO se ha eliminado; se muestra el mensaje del servidor y se puede reintentar.
       setError(errorMessage(err));
       setBusy(false);
     }

@@ -59,6 +59,9 @@ export function TodayPage() {
   );
 }
 
+/** «1 completada con una corrección posterior» / «3 completadas con una corrección posterior». */
+export const correctedLaterText = (n: number) => `${n} ${n === 1 ? 'completada' : 'completadas'} con una corrección posterior`;
+
 function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const { path } = useOrgContext();
   // Lo dado de alta (o reactivado) hoy se muestra aparte: no es exigible hasta mañana ni cuenta en el progreso.
@@ -101,6 +104,11 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                   : 'No hay controles de temperatura ni limpiezas previstos para hoy.'
                 : `${summary.done} ${summary.done === 1 ? 'tarea hecha' : 'tareas hechas'} · ${data.alerts.length === 0 ? 'sin alertas' : `${data.alerts.length} ${data.alerts.length === 1 ? 'alerta' : 'alertas'}`}`}
             </p>
+            {(summary.correctedLater ?? 0) > 0 ? (
+              <p className="mt-0.5 text-sm text-ink-muted" data-testid="corrected-later-summary">
+                {correctedLaterText(summary.correctedLater ?? 0)}
+              </p>
+            ) : null}
             {allDone ? (
               <Badge tone="ok" icon="check" className="mt-2">
                 Al día
@@ -204,6 +212,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                       <span className="block text-sm text-ink-muted">
                         {t.done} de {t.required} {t.required === 1 ? 'control' : 'controles'}
                         {t.lastReading ? ` · última ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}` : ''}
+                        {(t.correctedLater ?? 0) > 0 ? ` · ${t.correctedLater === 1 ? '1 con una corrección posterior' : `${t.correctedLater} con una corrección posterior`}` : ''}
                       </span>
                     </span>
                     {t.lastReading?.outOfRange ? <Badge tone="bad" icon="alert">Fuera de rango</Badge> : <Badge tone="ok" icon="check">Hecho</Badge>}
@@ -214,7 +223,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     <Icon name="check" className="shrink-0 text-ok" strokeWidth={2.5} />
                     <span className="min-w-0 flex-1">
                       <span className="block font-semibold">{c.name}</span>
-                      <span className="block text-sm text-ink-muted">{c.completedAt ? `Hecha el ${formatLocalDate(localDateIn(tz, new Date(c.completedAt)))} a las ${formatTime(c.completedAt, tz)}` : 'Hecha'}</span>
+                      <span className="block text-sm text-ink-muted">{c.completedAt ? `Hecha el ${formatLocalDate(localDateIn(tz, new Date(c.completedAt)))} a las ${formatTime(c.completedAt, tz)}` : 'Hecha'}{c.correctedLater ? ' · completada con una corrección posterior' : ''}</span>
                     </span>
                     <Badge tone="ok" icon="check">Hecho</Badge>
                   </li>
@@ -285,7 +294,7 @@ function useSubscriptionNotice(): SubNotice | null {
   const sub = org.subscription;
   if (org.deletionScheduledAt) return null; // ya hay un aviso persistente de eliminación
   if (sub.readOnly) return { tone: 'bad', title: 'Solo lectura', text: 'No se pueden añadir registros hasta activar la suscripción.', cta: isOwner ? 'Elegir plan' : null };
-  if (sub.paymentFailed) return { tone: 'bad', title: 'Pago pendiente', text: 'No hemos podido cobrar la suscripción.', cta: isOwner ? 'Ver facturación' : null };
+  if (sub.paymentFailed) return { tone: 'bad', title: 'Pago pendiente', text: 'No hemos podido cobrar la suscripción. Puedes seguir registrando unos días más; si no se resuelve, el local pasará a solo lectura.', cta: isOwner ? 'Ver facturación' : null };
   if (sub.status === 'trialing' && !sub.hasBillingAccount) {
     const days = relativeDays(sub.trialEndsAt);
     if (days <= 7) {
@@ -452,7 +461,7 @@ export function ReportsPage() {
 
           <h2 className="mt-6 text-xl font-bold">3. Descargar</h2>
           <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-            <DownloadButton disabled={!canDownload} url={`/api/orgs/${orgId}/reports/pdf?${query}`} fallbackName="registros.pdf" icon="report" variant="primary">
+            <DownloadButton disabled={!canDownload} url={`/api/orgs/${orgId}/reports/pdf?${query}`} fallbackName="registros.pdf" icon="report" variant="primary" busyLabel="Generando el informe…">
               Informe PDF
             </DownloadButton>
             <DownloadButton disabled={!canDownload} url={`/api/orgs/${orgId}/reports/csv?${query}`} fallbackName="registros.csv">
@@ -504,6 +513,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
   }, [days]);
 
   if (days.length === 0) return <p className="text-ink-muted">No hay días en este periodo.</p>;
+  const anyCorrected = days.some((d) => (d.correctedLater ?? 0) > 0);
   const overall = data.overall.percent;
   return (
     <div>
@@ -513,6 +523,11 @@ export function ComplianceChart({ data }: { data: Compliance }) {
           <span className="text-ink-muted">
             {data.overall.done} de {data.overall.expected} tareas hechas
           </span>
+          {(data.overall.correctedLater ?? 0) > 0 ? (
+            <span className="block text-sm text-ink-muted" data-testid="overall-corrected-later">
+              {correctedLaterText(data.overall.correctedLater ?? 0)}
+            </span>
+          ) : null}
         </p>
         <p className="text-ink-muted">
           {summary.full} de {summary.withData} días completos
@@ -542,7 +557,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                   <rect x={x} y={pad.t + innerH - 3} width={bw * 0.7} height={3} rx={1} fill={color} />
                 ) : (
                   <rect x={x} y={pad.t + innerH - h} width={bw * 0.7} height={h} rx={Math.min(3, bw * 0.2)} fill={color}>
-                    <title>{`${formatLocalDate(d.date)}: ${formatPercent(p)} (${d.done} de ${d.expected})`}</title>
+                    <title>{`${formatLocalDate(d.date)}: ${formatPercent(p)} (${d.done} de ${d.expected})${(d.correctedLater ?? 0) > 0 ? `; ${correctedLaterText(d.correctedLater ?? 0)}` : ''}`}</title>
                   </rect>
                 )}
                 {i % labelEvery === 0 ? (
@@ -573,6 +588,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                 <th scope="col" className="px-3 py-2">Hechas</th>
                 <th scope="col" className="px-3 py-2">Previstas</th>
                 <th scope="col" className="px-3 py-2">%</th>
+                {anyCorrected ? <th scope="col" className="px-3 py-2">Con corrección posterior</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -582,6 +598,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                   <td className="px-3 py-1.5 tabular">{d.done}</td>
                   <td className="px-3 py-1.5 tabular">{d.expected}</td>
                   <td className="px-3 py-1.5 tabular">{formatPercent(d.percent)}</td>
+                  {anyCorrected ? <td className="px-3 py-1.5 tabular">{d.correctedLater ? d.correctedLater : '–'}</td> : null}
                 </tr>
               ))}
             </tbody>

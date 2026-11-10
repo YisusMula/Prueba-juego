@@ -73,6 +73,7 @@ export function LoginPage() {
           Vuelve a entrar para seguir donde lo dejaste.
         </Callout>
       ) : null}
+      {params.get('emailActualizado') ? <Callout tone="ok" className="mb-5" title={EMAIL_UPDATED_MESSAGE} live="polite" /> : null}
       {params.get('salida') ? <Callout tone="ok" className="mb-5" title="Has cerrado sesión" live="polite" /> : null}
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <Field label="Email" error={errors.email}>
@@ -264,6 +265,7 @@ function TokenActionPage({
   successTitle,
   successText,
   successAction,
+  afterSuccess,
 }: {
   title: string;
   docTitle: string;
@@ -272,7 +274,10 @@ function TokenActionPage({
   /** Texto propio del éxito (evita repetir el título con el mensaje del servidor). */
   successText: string;
   successAction: { to: string; label: string };
+  /** Se ejecuta tras confirmar; si devuelve una ruta, se navega a ella (p. ej. al login si la sesión ya no vale). */
+  afterSuccess?: () => Promise<string | null>;
 }) {
+  const navigate = useNavigate();
   const token = useHashTokenOnce();
   const [state, setState] = useState<{ status: 'loading' | 'ok' | 'error'; message?: string }>({
     status: token ? 'loading' : 'error',
@@ -280,10 +285,17 @@ function TokenActionPage({
   });
   useEffect(() => {
     if (!token) return;
-    postOnce<{ message: string }>(url, token).then(
-      () => setState({ status: 'ok' }),
-      (err: unknown) => setState({ status: 'error', message: errorMessage(err) }),
-    );
+    postOnce<{ message: string }>(url, token)
+      .then(
+        async () => {
+          const redirect = afterSuccess ? await afterSuccess().catch(() => null) : null;
+          if (redirect) navigate(redirect, { replace: true });
+          else setState({ status: 'ok' });
+        },
+        (err: unknown) => setState({ status: 'error', message: errorMessage(err) }),
+      );
+    // afterSuccess es estable por página (definida a nivel de módulo o memoizada).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, url]);
   return (
     <AuthLayout title={title} docTitle={docTitle}>
@@ -327,7 +339,26 @@ export function VerifyEmailPage() {
   );
 }
 
+export const EMAIL_UPDATED_MESSAGE = 'Email actualizado. Entra con tu nuevo email.';
+
 export function ConfirmEmailChangePage() {
+  const qc = useQueryClient();
+  // El servidor cierra las demás sesiones (y todas si se confirma sin sesión o con otra cuenta):
+  // si la actual ya no vale, se lleva al login con un mensaje claro en vez de dejar un estado roto.
+  const afterSuccess = async (): Promise<string | null> => {
+    try {
+      await api.get('/api/account', { silentAuth: true });
+      await qc.invalidateQueries({ queryKey: keys.account });
+      return null;
+    } catch (err) {
+      if (isApiError(err) && err.code === 'UNAUTHENTICATED') {
+        storage.setSessionHint(false);
+        qc.clear();
+        return '/entrar?emailActualizado=1';
+      }
+      return null;
+    }
+  };
   return (
     <TokenActionPage
       title="Confirmar nuevo email"
@@ -336,6 +367,7 @@ export function ConfirmEmailChangePage() {
       successTitle="Email actualizado"
       successText="A partir de ahora entrarás con tu nuevo email. Hemos avisado también a la dirección anterior."
       successAction={{ to: '/app', label: 'Ir a mi panel' }}
+      afterSuccess={afterSuccess}
     />
   );
 }
@@ -482,6 +514,8 @@ export function InvitationPage() {
       await qc.invalidateQueries({ queryKey: keys.account });
       navigate(`/locales/${r.organizationId}/hoy`, { replace: true });
     } catch (err) {
+      // Token inválido (caducado, revocado, local pendiente de eliminar…): no tiene sentido reintentarlo tras un login.
+      if (isApiError(err) && err.code === 'INVALID_TOKEN') pendingInvitationToken = null;
       setError(errorMessage(err));
       setAccepting(false);
     }
@@ -508,9 +542,14 @@ export function InvitationPage() {
   return (
     <AuthLayout title="Invitación" docTitle="Invitación">
       {error ? (
-        <Callout tone="bad" title="No se puede usar esta invitación" live="assertive">
-          {error}
-        </Callout>
+        <div className="space-y-5">
+          <Callout tone="bad" title="No se puede usar esta invitación" live="assertive">
+            {error}
+          </Callout>
+          <LinkButton to="/app" variant="secondary" block>
+            Ir a mi panel
+          </LinkButton>
+        </div>
       ) : !preview ? (
         <div className="flex items-center gap-3 text-lg" role="status">
           <Spinner /> Cargando invitación…

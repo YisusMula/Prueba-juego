@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Keypad } from '../ui/Keypad';
+import { passwordRules } from '@shared/schemas';
 import { PasswordMeter } from '@/features/PasswordMeter';
 import { QrCode } from '../ui/QrCode';
 import { AllergenIcon } from '../icons/AllergenIcon';
@@ -48,6 +49,19 @@ describe('PasswordMeter', () => {
     render(<PasswordMeter password="corta" email="a@b.es" />);
     expect(screen.getByText('Entre 10 y 128 caracteres')).toBeInTheDocument();
     expect(screen.getAllByText(/: pendiente/).length).toBeGreaterThan(0);
+  });
+});
+
+describe('PasswordMeter (regla de datos personales)', () => {
+  it('muestra la etiqueta y el mensaje del módulo compartido', () => {
+    render(<PasswordMeter password="ana.martin2" email="ana.martin@x.es" />);
+    expect(screen.getByText('No contiene tu email ni tu nombre')).toBeInTheDocument();
+    expect(screen.getByText(/ni contenerlos/)).toBeInTheDocument();
+    expect(screen.getByText(/ni contenerlos/)).toHaveTextContent(passwordRules('ana.martin2', { email: 'ana.martin@x.es' }).find((r) => r.id === 'personal')!.message);
+  });
+  it('sin datos personales el requisito se cumple', () => {
+    render(<PasswordMeter password="Cocina-Limpia-2026" email="ana.martin@x.es" />);
+    expect(screen.queryByText(/ni contenerlos/)).toBeNull();
   });
 });
 

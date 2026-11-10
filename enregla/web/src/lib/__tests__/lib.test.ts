@@ -59,14 +59,23 @@ describe('requisitos de contraseña', () => {
   it('coinciden con la política del servidor', () => {
     expect(passwordAcceptable('corta')).toBe(false);
     expect(passwordAcceptable('aaaaaaaaaaaa')).toBe(false);
-    // Solo coincidencia EXACTA (sin distinguir mayúsculas) con comunes, email o nombre.
+    // Comunes: solo la coincidencia exacta; email y nombre: también si los CONTIENE (política compartida).
     expect(passwordAcceptable('ana.martin', 'ana.martin@x.es')).toBe(false);
-    expect(passwordAcceptable('ana.martin2', 'ana.martin@x.es')).toBe(true);
+    expect(passwordAcceptable('ana.martin2', 'ana.martin@x.es')).toBe(false);
     expect(passwordAcceptable('Contrasena-Larga-77x')).toBe(true);
     expect(passwordAcceptable('CONTRASENA123')).toBe(false);
     expect(passwordAcceptable('Pepa Ruiz Gil', '', 'pepa ruiz gil')).toBe(false);
     expect(passwordProblem('qwertyuiop')).toMatch(/más usadas/);
     expect(passwordAcceptable('Cocina-Limpia-2026')).toBe(true);
+    expect(passwordAcceptable('Mi-AnaMartin-99x', 'ana.martin@x.es')).toBe(false);
+    expect(passwordAcceptable('ana2026xyz', 'ana@x.es')).toBe(false);
+    expect(passwordAcceptable('Cocina-Limpia-2026', 'ana.martin@x.es', 'Ana Martín')).toBe(true);
+    expect(passwordAcceptable('Josefina-Cocina-1', '', 'Josefina Ruiz')).toBe(false);
+    expect(passwordAcceptable('JOSÉFINA-cocina-1', '', 'Josefina Ruiz')).toBe(false);
+    const personal = passwordChecks('ana.martin2', 'ana.martin@x.es').find((c) => c.id === 'personal');
+    expect(personal?.ok).toBe(false);
+    expect(personal?.label).toBe('No contiene tu email ni tu nombre');
+    expect(passwordProblem('ana.martin2', 'ana.martin@x.es')).toMatch(/ni contenerlos/);
     expect(passwordChecks('').every((c) => !c.ok)).toBe(true);
     expect(passwordScore('Cocina-Limpia-2026!')).toBeGreaterThanOrEqual(3);
   });

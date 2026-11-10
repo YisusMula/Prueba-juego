@@ -15,6 +15,7 @@ export default defineConfig({
     locale: 'es-ES',
     timezoneId: 'Europe/Madrid',
     trace: 'off',
+    colorScheme: process.env.E2E_SCHEME === 'dark' ? 'dark' : 'light',
     screenshot: 'only-on-failure',
     ...devices['Desktop Chrome'],
   },
