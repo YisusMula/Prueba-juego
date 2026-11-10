@@ -31,24 +31,36 @@ export function maskEmail(email: string): string {
   return `${local.slice(0, 1)}***@${domain}`;
 }
 
-interface Ctx {
+export interface Ctx {
   appName: string;
   appOrigin: string;
+  /** Email de soporte (opcional): si está configurado, cada email lo indica al final. */
+  supportEmail?: string | null;
 }
 
+/** Contexto de los emails a partir de la configuración del servidor. */
+export const mailCtxFrom = (config: { appName: string; appOrigin: string; supportEmail: string | null }): Ctx => ({
+  appName: config.appName,
+  appOrigin: config.appOrigin,
+  supportEmail: config.supportEmail,
+});
+
 function layout(ctx: Ctx, to: string, subject: string, paragraphs: string[], link?: { url: string; label: string }): MailMessage {
+  const support = ctx.supportEmail ? `¿Necesitas ayuda? Escríbenos a ${ctx.supportEmail}.` : null;
   const text = [
     ...paragraphs,
     ...(link ? [`${link.label}: ${link.url}`] : []),
     '',
     `— ${ctx.appName}`,
     'Si no esperabas este mensaje, puedes ignorarlo.',
+    ...(support ? [support] : []),
   ].join('\n\n');
   const html = `<!doctype html><html lang="es"><body style="font-family:Arial,sans-serif;color:#1f2933;max-width:560px;margin:auto;padding:16px">
 <h2 style="color:#0f766e">${escapeHtml(ctx.appName)}</h2>
 ${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('\n')}
 ${link ? `<p><a href="${escapeHtml(link.url)}" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">${escapeHtml(link.label)}</a></p><p style="font-size:12px;color:#52606d">Si el botón no funciona, copia este enlace en tu navegador:<br>${escapeHtml(link.url)}</p>` : ''}
 <p style="font-size:12px;color:#52606d">Si no esperabas este mensaje, puedes ignorarlo.</p>
+${ctx.supportEmail ? `<p style="font-size:12px;color:#52606d">¿Necesitas ayuda? Escríbenos a <a href="mailto:${escapeHtml(ctx.supportEmail)}">${escapeHtml(ctx.supportEmail)}</a>.</p>` : ''}
 </body></html>`;
   return { to, subject: `${subject} · ${ctx.appName}`, text, html };
 }
@@ -87,7 +99,7 @@ export const emails = {
   passwordChanged: (ctx: Ctx, to: string) =>
     layout(ctx, to, 'Tu contraseña ha cambiado', [
       'La contraseña de tu cuenta se ha cambiado, se han cerrado las demás sesiones y se han anulado los enlaces pendientes (cambio de email, restablecimiento…).',
-      'Si no has sido tú, restablece tu contraseña inmediatamente y contacta con soporte.',
+      `Si no has sido tú, restablece tu contraseña inmediatamente${ctx.supportEmail ? ` y escríbenos a ${ctx.supportEmail}` : ''}.`,
     ]),
   emailChange: (ctx: Ctx, to: string, token: string) =>
     layout(ctx, to, 'Confirma tu nuevo email', ['Confirma este email como nueva dirección de tu cuenta. El enlace caduca en 24 horas.'], {
@@ -104,7 +116,7 @@ export const emails = {
   emailChangedNotice: (ctx: Ctx, to: string, newEmail: string) =>
     layout(ctx, to, 'Tu email ha cambiado', [
       `El email de tu cuenta se ha cambiado a ${userText(newEmail, 254)}.`,
-      'Si no has sido tú, contacta con soporte inmediatamente.',
+      ctx.supportEmail ? `Si no has sido tú, escríbenos inmediatamente a ${ctx.supportEmail}.` : 'Si no has sido tú, restablece tu contraseña inmediatamente.',
     ]),
   // Asunto fijo: el nombre del local y el de quien invita son texto libre y solo van, acotados, en el cuerpo.
   invitation: (ctx: Ctx, to: string, orgName: string, inviterName: string, role: string, token: string) =>

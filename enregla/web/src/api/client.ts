@@ -24,7 +24,8 @@ export type ErrorCode =
   | 'BILLING_ERROR'
   | 'BILLING_NOT_CONFIGURED'
   | 'INTERNAL_ERROR'
-  | 'NETWORK_ERROR';
+  | 'NETWORK_ERROR'
+  | 'TIMEOUT';
 
 export type ErrorDetail = { path: string; message: string };
 
@@ -40,6 +41,10 @@ export class ApiError extends Error {
     this.code = code;
     this.details = details;
     this.retryAfter = retryAfter;
+  }
+  /** Error de red o de tiempo de espera: tiene sentido reintentar la misma petición. */
+  get retryable(): boolean {
+    return this.code === 'NETWORK_ERROR' || this.code === 'TIMEOUT';
   }
   /** Mensaje del primer detalle cuyo path coincide (p. ej. "data.correctiveAction"). */
   fieldError(path: string): string | undefined {
@@ -60,7 +65,40 @@ export type RequestOptions = {
   /** No emitir el evento global de sesión caducada (p. ej. login, comprobación inicial). */
   silentAuth?: boolean;
   signal?: AbortSignal;
+  /** Tiempo máximo de espera en ms (por defecto 15 s). */
+  timeoutMs?: number;
+  /** Clave de idempotencia (altas de registros): la misma en todos los reintentos del mismo registro. */
+  idempotencyKey?: string;
 };
+
+/** Tiempo máximo de una petición normal a la API. Las descargas usan uno mayor (download.ts). */
+export const REQUEST_TIMEOUT_MS = 15_000;
+export const TIMEOUT_MESSAGE = 'El servidor está tardando demasiado en responder. Comprueba la conexión y vuelve a intentarlo.';
+export const NETWORK_MESSAGE = 'Sin conexión con el servidor. Comprueba tu conexión a internet y vuelve a intentarlo.';
+
+/** Señal que se cancela por tiempo (y, si se da, también con la señal del llamador). */
+export function timeoutSignal(ms: number, signal?: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function' && (!signal || typeof AbortSignal.any === 'function')) {
+    const t = AbortSignal.timeout(ms);
+    return signal ? AbortSignal.any([signal, t]) : t;
+  }
+  // Navegadores antiguos: equivalente manual.
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(new DOMException('Tiempo agotado', 'TimeoutError')), ms);
+  signal?.addEventListener('abort', () => {
+    clearTimeout(id);
+    ctrl.abort(signal.reason);
+  });
+  return ctrl.signal;
+}
+
+/** Traduce un fallo de fetch a ApiError (red o tiempo agotado). Los abortos del llamador se relanzan. */
+export function fetchFailure(err: unknown, callerSignal?: AbortSignal): unknown {
+  if (callerSignal?.aborted) return err;
+  const name = (err as Error | undefined)?.name;
+  if (name === 'TimeoutError' || name === 'AbortError') return new ApiError(0, 'TIMEOUT', TIMEOUT_MESSAGE);
+  return new ApiError(0, 'NETWORK_ERROR', NETWORK_MESSAGE);
+}
 
 const FALLBACK_MESSAGES: Partial<Record<number, string>> = {
   404: 'No lo encontramos.',
@@ -94,15 +132,16 @@ export async function request<T>(method: string, url: string, body?: unknown, op
         Accept: 'application/json',
         'X-Requested-With': 'XMLHttpRequest',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}),
         ...opts.headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: opts.signal,
+      signal: timeoutSignal(opts.timeoutMs ?? REQUEST_TIMEOUT_MS, opts.signal),
     });
   } catch (err) {
-    if ((err as Error).name === 'AbortError') throw err;
-    throw new ApiError(0, 'NETWORK_ERROR', 'Sin conexión con el servidor. Comprueba tu conexión a internet.');
+    throw fetchFailure(err, opts.signal);
   }
+  // 200 (repetición idempotente) y 201 (creado) son igual de válidos.
   if (res.status === 204) return undefined as T;
   if (!res.ok) {
     const error = await parseError(res);
@@ -135,7 +174,7 @@ export function qs(params: Record<string, string | number | boolean | null | und
 export function errorMessage(e: unknown): string {
   if (isApiError(e)) {
     if ((e.code === 'RATE_LIMITED' || e.code === 'PIN_LOCKED') && e.retryAfter) {
-      return `${e.message} Inténtalo de nuevo en ${formatWait(e.retryAfter)}.`;
+      return `${e.message.replace(/\.?\s*$/, '.')} Inténtalo de nuevo en ${formatWait(e.retryAfter)}.`;
     }
     return e.message;
   }

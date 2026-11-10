@@ -68,6 +68,9 @@ export async function* iterateRecords(db: DB, org: Organization, from: string, t
       .selectFrom('records as r')
       .selectAll('r')
       .select(amendedBySelect())
+      // Cuándo y quién corrigió el registro (para «Corregido el … por …», sin ids internos).
+      .select(sql<Date | null>`(SELECT a.created_at FROM records a WHERE a.amends_record_id = r.id)`.as('amended_at'))
+      .select(sql<string | null>`(SELECT coalesce(a.staff_name, a.user_name) FROM records a WHERE a.amends_record_id = r.id)`.as('amended_by_name'))
       .where('r.organization_id', '=', org.id)
       .where('r.type', 'in', types)
       .where('r.effective_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)

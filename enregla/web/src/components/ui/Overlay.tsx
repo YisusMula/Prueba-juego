@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLocation } from 'react-router';
 import { cn } from '@/lib/cn';
 import { Icon } from '@/components/icons/Icon';
 import { Button } from './Button';
@@ -44,17 +45,31 @@ export function Dialog({
     return () => d.removeEventListener('click', onClick);
   }, [dismissible]);
 
+  // Elemento que tenía el foco al abrir: al cerrar (botón, Esc o clic fuera) se le devuelve.
+  const opener = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
     if (open && !d.open) {
+      opener.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
       if (typeof d.showModal === 'function') d.showModal();
       else d.setAttribute('open', '');
     } else if (!open && d.open) {
       if (typeof d.close === 'function') d.close();
       else d.removeAttribute('open');
+      const target = opener.current;
+      opener.current = null;
+      if (target?.isConnected) requestAnimationFrame(() => target.focus({ preventScroll: true }));
     }
   }, [open]);
+  // Si el diálogo se desmonta abierto (p. ej. al guardar), también se devuelve el foco.
+  useEffect(
+    () => () => {
+      const target = opener.current;
+      if (target?.isConnected) requestAnimationFrame(() => target.focus({ preventScroll: true }));
+    },
+    [],
+  );
 
   return (
     <dialog
@@ -143,7 +158,7 @@ export function ConfirmDialog({
 // Avisos (toasts) con región aria-live
 // ---------------------------------------------------------------------------
 type ToastTone = 'ok' | 'bad' | 'info';
-type ToastItem = { id: number; tone: ToastTone; message: string };
+type ToastItem = { id: number; tone: ToastTone; message: string; at: number };
 type ToastApi = { show: (message: string, tone?: ToastTone) => void };
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -152,10 +167,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
   const remove = useCallback((id: number) => setItems((list) => list.filter((t) => t.id !== id)), []);
+  // Al cambiar de pantalla se retiran los avisos de la anterior (salvo los recién creados, que
+  // confirman justo la acción que ha provocado la navegación).
+  const { pathname } = useLocation();
+  useEffect(() => {
+    const now = Date.now();
+    setItems((list) => (list.some((t) => now - t.at > 1000) ? list.filter((t) => now - t.at <= 1000) : list));
+  }, [pathname]);
   const show = useCallback(
     (message: string, tone: ToastTone = 'ok') => {
       const id = nextId.current++;
-      setItems((list) => [...list.slice(-2), { id, tone, message }]);
+      setItems((list) => [...list.slice(-2), { id, tone, message, at: Date.now() }]);
       window.setTimeout(() => remove(id), tone === 'bad' ? 7000 : 4000);
     },
     [remove],

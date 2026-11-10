@@ -1,18 +1,20 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { PublicLayout } from '@/layouts/PublicLayout';
-import { LEGAL, isPlaceholder, type LegalKey } from '@/config/legal';
+import { LEGAL, type LegalKey } from '@/config/legal';
 import { APP_NAME, PRICING } from '@/config/brand';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
-import { Callout } from '@/components/ui/Feedback';
 
-/** Dato del titular: si sigue sin rellenar, se resalta como marcador pendiente. */
+/** Dato del titular: si no se ha configurado, se resalta como marcador pendiente. */
 function L({ k }: { k: LegalKey }) {
-  const v = LEGAL[k];
-  return isPlaceholder(v) ? <mark className="placeholder-mark">{v}</mark> : <>{v}</>;
+  const { value, placeholder } = LEGAL[k];
+  if (value) return <>{value}</>;
+  return (
+    <mark className="placeholder-mark" data-testid="legal-placeholder">
+      [{placeholder}]
+    </mark>
+  );
 }
-
-const hasPlaceholders = Object.values(LEGAL).some(isPlaceholder);
 
 function LegalShell({ title, children }: { title: string; children: ReactNode }) {
   useDocumentTitle(title);
@@ -23,17 +25,13 @@ function LegalShell({ title, children }: { title: string; children: ReactNode })
         <p className="mt-2 text-ink-muted">
           Última actualización: <L k="lastUpdated" />
         </p>
-        {hasPlaceholders ? (
-          <Callout tone="warn" className="mt-6" title="Plantilla pendiente de completar">
-            Los textos marcados entre corchetes deben rellenarse en <code>src/config/legal.ts</code> y el contenido revisarse por un profesional
-            antes de publicar la web.
-          </Callout>
-        ) : null}
         <div className="mt-6">{children}</div>
       </article>
     </PublicLayout>
   );
 }
+
+const jurisdiction = () => (LEGAL.jurisdiction.value ? <>los juzgados y tribunales de {LEGAL.jurisdiction.value}</> : <>los juzgados y tribunales que correspondan conforme a la ley</>);
 
 export function LegalNoticePage() {
   return (
@@ -42,7 +40,7 @@ export function LegalNoticePage() {
       <p>
         En cumplimiento de la Ley 34/2002, de servicios de la sociedad de la información y de comercio electrónico (LSSI-CE), se informa de que
         el sitio web y la aplicación {APP_NAME} son titularidad de <L k="ownerName" />, con NIF <L k="taxId" /> y domicilio en <L k="address" />.
-        Correo electrónico de contacto: <L k="contactEmail" />. <L k="registryData" />.
+        Correo electrónico de contacto: <L k="contactEmail" />.{LEGAL.registryData.value ? ` ${LEGAL.registryData.value}.` : null}
       </p>
       <h2>2. Objeto</h2>
       <p>
@@ -69,7 +67,7 @@ export function LegalNoticePage() {
       <h2>6. Legislación y jurisdicción</h2>
       <p>
         Este aviso se rige por la legislación española. Para cualquier controversia, y salvo que la normativa de consumidores disponga otra cosa,
-        las partes se someten a los juzgados y tribunales de <L k="jurisdiction" />.
+        las partes se someten a {jurisdiction()}.
       </p>
     </LegalShell>
   );
@@ -84,9 +82,9 @@ export function PrivacyPage() {
       </p>
       <h2>2. Qué datos tratamos</h2>
       <ul>
-        <li>Cuenta: nombre, email y contraseña (guardada cifrada de forma irreversible).</li>
+        <li>Cuenta: nombre, email y contraseña. La contraseña se guarda protegida mediante un hash irreversible: nadie, tampoco nosotros, puede leerla.</li>
         <li>Datos de los locales y de su actividad: equipos, planes de limpieza, proveedores, platos, y los registros que se anotan.</li>
-        <li>Personal de cocina: nombre y, si se configura, un PIN (guardado cifrado de forma irreversible).</li>
+        <li>Personal de cocina: nombre y, si se configura, un PIN (también protegido mediante un hash irreversible: no podemos leerlo).</li>
         <li>Facturación: los datos de pago los gestiona directamente el proveedor de pagos; nosotros no vemos ni guardamos la tarjeta.</li>
         <li>Datos técnicos y de seguridad: dirección IP, fecha y hora de accesos y acciones relevantes (registro de auditoría).</li>
       </ul>
@@ -99,13 +97,16 @@ export function PrivacyPage() {
       </ul>
       <h2>4. Cuánto tiempo los conservamos</h2>
       <p>
-        Mientras mantengas la cuenta o el local. Al eliminarlos, se borran sus datos, salvo los que debamos conservar por obligación legal durante
-        los plazos establecidos.
+        Mientras mantengas la cuenta o el local. Al eliminar un local, queda 30 días pendiente de eliminación (se puede restaurar y sus
+        datos se pueden seguir consultando y exportando) y después se borra con todos sus registros; también puedes pedir que se borre de
+        inmediato. Al eliminar tu cuenta se borran sus datos, salvo los que debamos conservar por obligación legal durante los plazos
+        establecidos.
       </p>
       <h2>5. Con quién los compartimos</h2>
       <p>
-        Con proveedores que nos ayudan a prestar el servicio, como encargados del tratamiento: alojamiento (<L k="hostingProvider" />, servidores
-        en <L k="hostingLocation" />), envío de email (<L k="emailProvider" />) y pagos (Stripe). No vendemos datos ni los usamos para publicidad.
+        Con proveedores que nos ayudan a prestar el servicio, como encargados del tratamiento: alojamiento (<L k="hostingProvider" />
+        {LEGAL.hostingLocation.value ? `, servidores en ${LEGAL.hostingLocation.value}` : ''}), envío de email
+        {LEGAL.emailProvider.value ? ` (${LEGAL.emailProvider.value})` : ''} y pagos (Stripe). No vendemos datos ni los usamos para publicidad.
       </p>
       <h2>6. Tus derechos</h2>
       <p>
@@ -138,7 +139,8 @@ export function TermsPage() {
       </p>
       <h2>3. Prueba gratuita, precio y pago</h2>
       <p>
-        Cada local nuevo tiene {PRICING.trialDays} días de prueba gratuita sin necesidad de tarjeta. Después, la suscripción cuesta{' '}
+        Cada cuenta tiene una prueba gratuita de {PRICING.trialDays} días, sin necesidad de tarjeta, que empieza al dar de alta su primer local
+        (los locales que se añadan después comparten esa misma prueba). Después, la suscripción cuesta{' '}
         {PRICING.monthly} € al mes o {PRICING.annual} € al año por local, impuestos no incluidos, con pago por adelantado a través de Stripe. La
         suscripción se renueva automáticamente hasta que la canceles.
       </p>
@@ -150,7 +152,8 @@ export function TermsPage() {
       </p>
       <h2>5. Tus datos</h2>
       <p>
-        Los datos que introduces son tuyos. Puedes exportarlos y eliminar el local cuando quieras. Ver la{' '}
+        Los datos que introduces son tuyos. Puedes exportarlos y eliminar el local cuando quieras: queda 30 días pendiente de eliminación,
+        por si cambias de opinión, y después se borra definitivamente (o al momento, si lo pides). Ver la{' '}
         <Link to="/privacidad" className="underline">política de privacidad</Link>.
       </p>
       <h2>6. Uso correcto</h2>
@@ -166,7 +169,7 @@ export function TermsPage() {
       <h2>8. Cambios y contacto</h2>
       <p>
         Avisaremos con antelación de cambios relevantes en estos términos. Contacto: <L k="contactEmail" />. Titular: <L k="ownerName" />, NIF{' '}
-        <L k="taxId" />. Jurisdicción: <L k="jurisdiction" />.
+        <L k="taxId" />.
       </p>
     </LegalShell>
   );

@@ -159,7 +159,7 @@ describe('alérgenos y carta pública', () => {
 
   it('carta pública: activable, sin datos internos, slug regenerable', async () => {
     const { client, base } = await setupOwner(ctx);
-    await client.post(`${base}/dishes`, { name: 'Ensalada', category: 'Entrantes', allergens: { ...ALL_NO, mustard: 'contains' } });
+    await client.post(`${base}/dishes`, { name: 'Ensalada', category: 'Entrantes', allergens: { ...ALL_NO, mustard: 'contains' }, allergensReviewed: true });
     await client.post(`${base}/dishes`, { name: 'Oculto', allergens: ALL_NO, visible: false });
     const settings = json(await client.get(`${base}/public-menu`)).publicMenu;
     expect(settings.enabled).toBe(false);
@@ -174,7 +174,7 @@ describe('alérgenos y carta pública', () => {
     expect(body.dishes).toHaveLength(1);
     expect(body.dishes[0]).toEqual({ name: 'Ensalada', category: 'Entrantes', description: null, allergens: expect.objectContaining({ mustard: 'contains' }) });
     expect(body.allergens).toHaveLength(14);
-    expect(body.allergens[0]).toEqual({ id: 'gluten', label: 'Cereales que contienen gluten' });
+    expect(body.allergens[0]).toEqual({ id: 'gluten', label: 'Cereales que contienen gluten', name: 'Gluten' });
     expect(body.allergens.map((a: { id: string }) => a.id)).toEqual([
       'gluten', 'crustaceans', 'eggs', 'fish', 'peanuts', 'soybeans', 'milk', 'nuts', 'celery', 'mustard', 'sesame', 'sulphites', 'lupin', 'molluscs',
     ]);

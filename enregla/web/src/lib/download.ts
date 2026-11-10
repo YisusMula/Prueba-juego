@@ -1,4 +1,7 @@
-import { ApiError, apiEvents, SESSION_EXPIRED } from '@/api/client';
+import { ApiError, apiEvents, fetchFailure, SESSION_EXPIRED, timeoutSignal } from '@/api/client';
+
+/** Las descargas (PDF, CSV, exportación) pueden tardar más que una petición normal. */
+export const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 /** Extrae el nombre de fichero de Content-Disposition (admite filename* RFC 5987). */
 export function filenameFromDisposition(header: string | null, fallback: string): string {
@@ -23,9 +26,13 @@ export function filenameFromDisposition(header: string | null, fallback: string)
 export async function downloadFile(url: string, fallbackName: string): Promise<string> {
   let res: Response;
   try {
-    res = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-  } catch {
-    throw new ApiError(0, 'NETWORK_ERROR', 'Sin conexión con el servidor. Comprueba tu conexión a internet.');
+    res = await fetch(url, {
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      signal: timeoutSignal(DOWNLOAD_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw fetchFailure(err);
   }
   if (!res.ok) {
     const retry = res.headers.get('Retry-After');
@@ -43,7 +50,12 @@ export async function downloadFile(url: string, fallbackName: string): Promise<s
     if (code === 'UNAUTHENTICATED') apiEvents.dispatchEvent(new Event(SESSION_EXPIRED));
     throw new ApiError(res.status, code, message, details, retry ? Number(retry) || null : null);
   }
-  const blob = await res.blob();
+  let blob: Blob;
+  try {
+    blob = await res.blob();
+  } catch (err) {
+    throw fetchFailure(err);
+  }
   const name = filenameFromDisposition(res.headers.get('Content-Disposition'), fallbackName);
   const href = URL.createObjectURL(blob);
   const a = document.createElement('a');

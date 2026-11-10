@@ -47,7 +47,14 @@ export function addDaysIso(date: string, days: number): string {
 }
 
 const numberFmt = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 1 });
-export const formatNumber = (n: number) => numberFmt.format(n).replace('-', '−');
+/** 3,5 · −18 · 1234 (coma decimal y signo menos tipográfico «−»). */
+export const formatNumber = (n: number) => numberFmt.format(n).replace(/^-/, '−');
+
+/**
+ * Porcentaje con el criterio de la RAE: número, espacio fino de no separación y «%» («75 %»).
+ * Se usa el mismo formato en toda la aplicación.
+ */
+export const formatPercent = (n: number | null | undefined) => (n == null ? '—' : `${formatNumber(Math.round(n))}\u202F%`);
 
 /** 3,5 °C · −18 °C */
 export const formatTemp = (n: number | null | undefined) => (n == null ? '—' : `${formatNumber(n)} °C`);

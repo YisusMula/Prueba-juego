@@ -7,7 +7,7 @@ import { AppError, invalidToken, conflict } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { checkPasswordPolicy, getDummyHash, hashSecret, verifySecret } from '../../lib/password.js';
 import { audit } from '../../lib/audit.js';
-import { emails } from '../../lib/emails.js';
+import { emails, mailCtxFrom } from '../../lib/emails.js';
 import { clearSessionCookie, createSession, deleteUserSessions, setSessionCookie } from './sessions.js';
 import { consumeEmailToken, createEmailToken, invalidateUserTokens, peekEmailToken } from './tokens.js';
 
@@ -28,7 +28,7 @@ export function policyError(message: string): AppError {
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   const deps = app.deps;
   const { config, db, rateLimiter } = deps;
-  const ctx = { appName: config.appName, appOrigin: config.appOrigin };
+  const ctx = mailCtxFrom(config);
 
   const ACCEPTED = { message: 'Si los datos son correctos, recibirás un email en unos minutos.' };
 

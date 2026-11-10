@@ -188,6 +188,9 @@ export interface DishesTable {
   category: string | null;
   description: string | null;
   allergens: Json<Record<string, string>>;
+  /** Revisión explícita de los 14 alérgenos (migración 0004). Sin revisar no se publica. */
+  allergens_reviewed: Generated<boolean>;
+  allergens_reviewed_at: Date | null;
   visible: Generated<boolean>;
   created_at: Timestamp;
   updated_at: Timestamp;

@@ -29,6 +29,8 @@ export type SubscriptionStatus =
 export type Subscription = {
   status: SubscriptionStatus;
   readOnly: boolean;
+  /** Cobro fallido (past_due): se puede seguir escribiendo, pero hay que avisar. */
+  paymentFailed: boolean;
   trialEndsAt: string;
   plan: 'monthly' | 'annual' | null;
   currentPeriodEnd: string | null;
@@ -36,7 +38,15 @@ export type Subscription = {
   hasBillingAccount: boolean;
 };
 
-export type OrgSummary = { id: string; name: string; businessType: BusinessType; role: Role; subscription: Subscription };
+export type OrgSummary = {
+  id: string;
+  name: string;
+  businessType: BusinessType;
+  role: Role;
+  subscription: Subscription;
+  /** Si no es null, el local está pendiente de eliminación definitiva en esa fecha. */
+  deletionScheduledAt: string | null;
+};
 
 export type Account = { user: User; organizations: OrgSummary[] };
 
@@ -50,6 +60,8 @@ export type Organization = {
   role: Role;
   publicMenu: { enabled: boolean; slug: string };
   subscription: Subscription;
+  /** Si no es null, el local está pendiente de eliminación definitiva en esa fecha (solo lectura). */
+  deletionScheduledAt: string | null;
   createdAt: string;
 };
 
@@ -127,9 +139,13 @@ export type RecepcionStored = {
   product: string;
   lot: string | null;
   temperature: number | null;
+  maxTemperature?: number | null;
+  temperatureOutOfRange?: boolean;
   expiryDate: string | null;
+  expired?: boolean;
   accepted: boolean;
   rejectionReason: string | null;
+  correctiveAction?: string | null;
 };
 export type AceiteStored = {
   equipmentId: string;
@@ -169,6 +185,9 @@ type RecordBase = {
   amendsRecordId: string | null;
   amendmentReason: string | null;
   amendedByRecordId: string | null;
+  /** Fecha del HECHO (en una enmienda, la del registro original). Es la que se muestra. */
+  effectiveAt: string;
+  /** Hora real de inserción (en una enmienda: cuándo se corrigió). */
   createdAt: string;
 };
 
@@ -187,6 +206,9 @@ export type Dish = {
   category: string | null;
   description: string | null;
   allergens: AllergenMap;
+  /** Revisión explícita de los 14 alérgenos: sin revisar no sale en la carta pública. */
+  allergensReviewed: boolean;
+  allergensReviewedAt: string | null;
   visible: boolean;
   createdAt: string;
   updatedAt: string;
@@ -194,7 +216,7 @@ export type Dish = {
 export type PublicMenuSettings = { enabled: boolean; slug: string; apiPath: string };
 export type PublicMenu = {
   organization: { name: string };
-  allergens: { id: AllergenId; label: string }[];
+  allergens: { id: AllergenId; label: string; name?: string }[];
   statuses: Record<AllergenStatus, string>;
   dishes: { name: string; category: string | null; description: string | null; allergens: AllergenMap }[];
   updatedAt: string | null;
@@ -206,6 +228,7 @@ export type AlertKind =
   | 'temperatura_fuera_de_rango'
   | 'aceite_fuera_de_limite'
   | 'recepcion_rechazada'
+  | 'recepcion_con_incidencia'
   | 'plagas_con_indicios'
   | 'incidencia_abierta';
 
@@ -221,6 +244,8 @@ export type TodayTasks = {
     required: number;
     done: number;
     status: 'done' | 'pending';
+    /** false: alta o reactivación hoy; se muestra pero no cuenta (empieza a contar mañana). */
+    countsToday: boolean;
     lastReading: { value: number; outOfRange: boolean; at: string } | null;
   }[];
   cleaning: {
@@ -228,7 +253,10 @@ export type TodayTasks = {
     name: string;
     frequency: Frequency;
     status: 'done' | 'pending';
+    countsToday: boolean;
     completedAt: string | null;
+    /** Última limpieza PARCIAL del periodo (no cuenta como hecha). */
+    partial?: { done: number; total: number; at: string; recordId: string } | null;
   }[];
   summary: { total: number; done: number; pending: number; percent: number };
   alerts: { kind: AlertKind; recordId: string; message: string; createdAt: string }[];

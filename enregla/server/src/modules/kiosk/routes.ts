@@ -129,6 +129,30 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     throw new AppError(401, 'INVALID_PIN', 'PIN incorrecto');
   }
 
+  /**
+   * Comprobación del PIN al identificarse (antes de registrar): mismos contadores atómicos de
+   * fallos, bloqueo y límites por dispositivo que el alta de registros. El alta sigue exigiendo
+   * y verificando el PIN (la tablet lo guarda solo en memoria).
+   */
+  app.post('/verify-pin', async (req) => {
+    const ctx = deviceCtx(req);
+    const body = parse(S.kioskVerifyPinBody, req.body);
+    const staff = await db
+      .selectFrom('staff')
+      .selectAll()
+      .where('id', '=', body.staffId)
+      .where('organization_id', '=', ctx.org.id)
+      .executeTakeFirst();
+    if (!staff) throw notFound('Miembro del personal');
+    if (!staff.active) throw new AppError(400, 'VALIDATION_ERROR', 'Ese miembro del personal está desactivado', [{ path: 'staffId', message: 'Ese miembro del personal está desactivado' }]);
+    if (staff.pin_hash) {
+      if (!body.pin) throw new AppError(401, 'PIN_REQUIRED', 'Introduce tu PIN');
+      await enforce(rateLimiter, `pin:device:${ctx.deviceId}`, config.rateLimits.pinDevice);
+      await verifyPinWithReservation(ctx, staff.id, staff.pin_hash, body.pin, req.ip);
+    }
+    return { staff: { id: staff.id, name: staff.name, hasPin: staff.pin_hash != null } };
+  });
+
   app.post('/records', async (req, reply) => {
     const ctx = deviceCtx(req);
     if (!isWritable(ctx.org)) throw readOnly();
@@ -141,7 +165,7 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       .where('organization_id', '=', ctx.org.id)
       .executeTakeFirst();
     if (!staff) throw notFound('Miembro del personal');
-    if (!staff.active) throw new AppError(400, 'VALIDATION_ERROR', 'Ese miembro del personal está desactivado', [{ path: 'staffId', message: 'Desactivado' }]);
+    if (!staff.active) throw new AppError(400, 'VALIDATION_ERROR', 'Ese miembro del personal está desactivado', [{ path: 'staffId', message: 'Ese miembro del personal está desactivado' }]);
 
     if (staff.pin_hash) {
       if (!body.pin) throw new AppError(401, 'PIN_REQUIRED', 'Introduce tu PIN');

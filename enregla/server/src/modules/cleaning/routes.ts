@@ -76,10 +76,10 @@ export async function cleaningRoutes(app: FastifyInstance): Promise<void> {
     const weekday = body.weekday !== undefined ? body.weekday : current.weekday;
     const monthDay = body.monthDay !== undefined ? body.monthDay : current.month_day;
     if (frequency === 'weekly' && weekday == null) {
-      throw new AppError(400, 'VALIDATION_ERROR', 'Los datos enviados no son válidos', [{ path: 'weekday', message: 'Indica el día de la semana' }]);
+      throw new AppError(400, 'VALIDATION_ERROR', 'Indica el día de la semana', [{ path: 'weekday', message: 'Indica el día de la semana' }]);
     }
     if (frequency === 'monthly' && monthDay == null) {
-      throw new AppError(400, 'VALIDATION_ERROR', 'Los datos enviados no son válidos', [{ path: 'monthDay', message: 'Indica el día del mes' }]);
+      throw new AppError(400, 'VALIDATION_ERROR', 'Indica el día del mes', [{ path: 'monthDay', message: 'Indica el día del mes' }]);
     }
     const row = await db
       .updateTable('cleaning_plans')

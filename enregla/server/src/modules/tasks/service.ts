@@ -1,6 +1,7 @@
 import { sql } from 'kysely';
 import type { DB } from '../../db/index.js';
 import type { CleaningPlan, Organization } from '../../db/types.js';
+import { esNumber } from '../../schemas/index.js';
 import { addDays, dayOfMonth, eachDay, isoWeekday, localDate, startOfIsoWeek, startOfMonth } from '../../lib/dates.js';
 
 /** Registros vigentes: los que no han sido sustituidos por una enmienda. */
@@ -22,7 +23,7 @@ const startOf = (date: string, tz: string) => sql<Date>`(${date}::date)::timesta
 const endOf = (date: string, tz: string) => sql<Date>`(${date}::date + 1)::timestamp AT TIME ZONE ${tz}`;
 
 export interface AlertItem {
-  kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'plagas_con_indicios' | 'incidencia_abierta';
+  kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'recepcion_con_incidencia' | 'plagas_con_indicios' | 'incidencia_abierta';
   recordId: string;
   message: string;
   createdAt: string;
@@ -171,11 +172,13 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
     status: 'done' | 'pending';
     countsToday: boolean;
     completedAt: string | null;
+    partial: { done: number; total: number; at: string; recordId: string } | null;
   }[];
   for (const p of plans) {
-    const rec = await db
+    // Solo una limpieza COMPLETA (todas las zonas hechas) da la tarea por hecha.
+    const recs = await db
       .selectFrom('records as r')
-      .select(['r.effective_at'])
+      .select(['r.id', 'r.effective_at', 'r.data'])
       .where('r.organization_id', '=', org.id)
       .where('r.type', '=', 'limpieza')
       .where('r.cleaning_plan_id', '=', p.id)
@@ -183,15 +186,22 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
       .where('r.effective_at', '<', endOf(today, tz))
       .where(NOT_SUPERSEDED)
       .orderBy('r.effective_at', 'desc')
-      .executeTakeFirst();
+      .limit(50)
+      .execute();
+    const complete = recs.find((r) => r.data.completed === true);
+    const lastPartial = complete ? undefined : recs[0];
+    const partialItems = (lastPartial?.data.items as { done: boolean }[] | undefined) ?? [];
     const hist = plHist.get(p.id);
     cleaning.push({
       cleaningPlanId: p.id,
       name: p.name,
       frequency: p.frequency,
-      status: rec ? 'done' : 'pending',
+      status: complete ? 'done' : 'pending',
       countsToday: hist ? stateAt(hist, startToday)?.active === true : p.created_at.getTime() <= startToday.getTime(),
-      completedAt: rec?.effective_at.toISOString() ?? null,
+      completedAt: complete?.effective_at.toISOString() ?? null,
+      partial: lastPartial
+        ? { done: partialItems.filter((i) => i.done).length, total: partialItems.length, at: lastPartial.effective_at.toISOString(), recordId: lastPartial.id }
+        : null,
     });
   }
 
@@ -240,11 +250,14 @@ async function computeAlerts(db: DB, org: Organization, today: string): Promise<
     const d = r.data;
     const at = r.effective_at.toISOString();
     if (r.type === 'temperatura') {
-      out.push({ kind: 'temperatura_fuera_de_rango', recordId: r.id, createdAt: at, message: `${String(d.equipmentName)}: ${String(d.value)} °C fuera de rango` });
+      out.push({ kind: 'temperatura_fuera_de_rango', recordId: r.id, createdAt: at, message: `${String(d.equipmentName)}: ${esNumber(Number(d.value))} °C, fuera de rango` });
     } else if (r.type === 'aceite') {
-      out.push({ kind: 'aceite_fuera_de_limite', recordId: r.id, createdAt: at, message: `${String(d.fryerName)}: compuestos polares ${String(d.polarCompounds)} %` });
-    } else if (r.type === 'recepcion') {
+      out.push({ kind: 'aceite_fuera_de_limite', recordId: r.id, createdAt: at, message: `${String(d.fryerName)}: compuestos polares al ${esNumber(Number(d.polarCompounds))} %` });
+    } else if (r.type === 'recepcion' && d.accepted === false) {
       out.push({ kind: 'recepcion_rechazada', recordId: r.id, createdAt: at, message: `Mercancía rechazada: ${String(d.product)} (${String(d.supplierName)})` });
+    } else if (r.type === 'recepcion') {
+      const why = [d.expired ? 'caducada' : null, d.temperatureOutOfRange && typeof d.temperature === 'number' ? `a ${esNumber(d.temperature)} °C` : null].filter(Boolean).join(' y ');
+      out.push({ kind: 'recepcion_con_incidencia', recordId: r.id, createdAt: at, message: `Mercancía aceptada ${why || 'con incidencia'}: ${String(d.product)} (${String(d.supplierName)})` });
     } else if (r.type === 'plagas') {
       out.push({ kind: 'plagas_con_indicios', recordId: r.id, createdAt: at, message: 'Revisión de plagas con indicios' });
     }
@@ -304,6 +317,8 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
       .distinct()
       .where('r.organization_id', '=', org.id)
       .where('r.type', '=', 'limpieza')
+      // Una limpieza parcial no cuenta como tarea hecha.
+      .where(sql<boolean>`(r.data->>'completed')::boolean IS TRUE`)
       .where('r.effective_at', '>=', startOf(cleanFrom, tz))
       .where('r.effective_at', '<', endOf(last, tz))
       .where(NOT_SUPERSEDED)

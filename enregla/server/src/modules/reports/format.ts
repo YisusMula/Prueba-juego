@@ -2,7 +2,7 @@ import type { RecordRow } from '../../db/types.js';
 import type { RecordType } from '../../schemas/index.js';
 import { formatDateTimeEs } from '../../lib/dates.js';
 
-export type ReportRecord = RecordRow & { amended_by: string | null };
+export type ReportRecord = RecordRow & { amended_by: string | null; amended_at?: Date | null; amended_by_name?: string | null };
 
 export interface Column {
   header: string;
@@ -10,14 +10,16 @@ export interface Column {
   weight: number;
 }
 
+/** Número es-ES: coma decimal (en el PDF, además, signo menos tipográfico). */
 const num = (v: unknown): string => (typeof v === 'number' ? String(v).replace('.', ',') : '');
+const pdfNum = (v: unknown): string => num(v).replace('-', '−');
 const str = (v: unknown): string => (v == null ? '' : String(v));
 const range = (min: unknown, max: unknown): string => {
-  const a = typeof min === 'number' ? num(min) : null;
-  const b = typeof max === 'number' ? num(max) : null;
+  const a = typeof min === 'number' ? pdfNum(min) : null;
+  const b = typeof max === 'number' ? pdfNum(max) : null;
   if (a && b) return `${a} a ${b} °C`;
-  if (b) return `<= ${b} °C`;
-  if (a) return `>= ${a} °C`;
+  if (b) return `máx. ${b} °C`;
+  if (a) return `mín. ${a} °C`;
   return '—';
 };
 export const signer = (r: RecordRow): string => [r.staff_name, r.user_name && !r.staff_name ? r.user_name : null].filter(Boolean).join(' / ') || '—';
@@ -25,11 +27,15 @@ export const signer = (r: RecordRow): string => [r.staff_name, r.user_name && !r
 export function notes(r: ReportRecord, tz = 'UTC'): string {
   const parts: string[] = [];
   if (r.amends_record_id) {
+    parts.push(`CORRECCIÓN de un registro anterior, hecha el ${formatDateTimeEs(r.created_at, tz)} por ${signer(r)}. Motivo: ${r.amendment_reason ?? ''}`);
+  }
+  if (r.amended_by) {
     parts.push(
-      `ENMIENDA del registro ${r.amends_record_id.slice(0, 8)}, hecha el ${formatDateTimeEs(r.created_at, tz)} por ${signer(r)}. Motivo: ${r.amendment_reason ?? ''}`,
+      r.amended_at
+        ? `Corregido el ${formatDateTimeEs(r.amended_at, tz)} por ${r.amended_by_name ?? '—'} (ver la corrección a continuación)`
+        : 'Corregido (ver la corrección a continuación)',
     );
   }
-  if (r.amended_by) parts.push(`Corregido por el registro ${r.amended_by.slice(0, 8)}`);
   return parts.join(' · ');
 }
 
@@ -108,14 +114,14 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
   const when = formatDateTimeEs(r.effective_at, tz);
   switch (type) {
     case 'temperatura':
-      return [when, str(d.equipmentName), `${num(d.value)} °C`, range(d.minTemp, d.maxTemp), signer(r), str(d.correctiveAction), notes(r, tz)];
+      return [when, str(d.equipmentName), `${pdfNum(d.value)} °C`, range(d.minTemp, d.maxTemp), signer(r), str(d.correctiveAction), notes(r, tz)];
     case 'limpieza': {
       const items = (d.items as { area: string; done: boolean }[] | undefined) ?? [];
       const doneCount = items.filter((i) => i.done).length;
       return [
         when,
         str(d.planName),
-        `${doneCount}/${items.length}`,
+        doneCount === items.length ? `Completa (${doneCount} de ${items.length})` : `Parcial (${doneCount} de ${items.length})`,
         items.filter((i) => !i.done).map((i) => i.area).join('; '),
         signer(r),
         str(d.observations),
@@ -128,9 +134,13 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         str(d.supplierName),
         str(d.product),
         str(d.lot),
-        typeof d.temperature === 'number' ? `${num(d.temperature)} °C` : '',
-        esDate(d.expiryDate),
-        d.accepted ? 'Aceptada' : `Rechazada: ${str(d.rejectionReason)}`,
+        typeof d.temperature === 'number'
+          ? `${pdfNum(d.temperature)} °C${typeof d.maxTemperature === 'number' ? ` (máx. ${pdfNum(d.maxTemperature)} °C)` : ''}`
+          : '',
+        `${esDate(d.expiryDate)}${d.expired ? ' (caducada)' : ''}`,
+        d.accepted
+          ? `Aceptada${d.correctiveAction ? `. Motivo/acción: ${str(d.correctiveAction)}` : ''}`
+          : `Rechazada: ${str(d.rejectionReason)}`,
         signer(r),
         notes(r, tz),
       ];
@@ -139,7 +149,7 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         when,
         str(d.fryerName),
         d.action === 'cambiado' ? 'Cambiado' : 'Revisado',
-        typeof d.polarCompounds === 'number' ? `${num(d.polarCompounds)} %` : '',
+        typeof d.polarCompounds === 'number' ? `${pdfNum(d.polarCompounds)} %` : '',
         signer(r),
         str(d.correctiveAction),
         notes(r, tz),
@@ -196,6 +206,10 @@ export const CSV_HEADERS = [
   // Añadidas al final (compatibilidad): hora real de inserción y, en enmiendas, quién enmendó.
   'fecha_registro',
   'enmendado_por',
+  // Añadidas en la versión con limpieza parcial y recepción ampliada.
+  'estado_limpieza',
+  'temperatura_maxima_c',
+  'caducada',
 ];
 
 export function csvRow(r: ReportRecord, tz: string): string[] {
@@ -214,11 +228,14 @@ export function csvRow(r: ReportRecord, tz: string): string[] {
     enmienda_de: str(r.amends_record_id),
     motivo_enmienda: str(r.amendment_reason),
     corregido_por: str(r.amended_by),
+    estado_limpieza: r.type === 'limpieza' ? (items.every((i) => i.done) ? 'completa' : `parcial (${items.filter((i) => i.done).length} de ${items.length})`) : '',
+    temperatura_maxima_c: num(d.maxTemperature),
     equipo: str(d.equipmentName ?? d.fryerName),
     valor_c: num(d.value),
     minimo_c: num(d.minTemp),
     maximo_c: num(d.maxTemp),
     accion_correctora: str(d.correctiveAction),
+    caducada: r.type === 'recepcion' && d.expiryDate ? (d.expired ? 'sí' : 'no') : '',
     plan_limpieza: str(d.planName),
     items_realizados: r.type === 'limpieza' ? items.filter((i) => i.done).map((i) => i.area).join('; ') : '',
     items_no_realizados: r.type === 'limpieza' ? items.filter((i) => !i.done).map((i) => i.area).join('; ') : '',

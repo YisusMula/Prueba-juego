@@ -128,7 +128,7 @@ describe('resumen de cumplimiento', () => {
     await ins(d2, '09:00', 'temperatura', { equipment_id: eq.id });
     await ins(d2, '18:00', 'temperatura', { equipment_id: eq.id });
     await ins(d2, '19:00', 'temperatura', { equipment_id: eq.id }); // exceso: no cuenta más de lo requerido
-    await ins(d2, '20:00', 'limpieza', { cleaning_plan_id: plan.id });
+    await ins(d2, '20:00', 'limpieza', { cleaning_plan_id: plan.id, data: toJson({ completed: true }) });
     await ins(d1, '09:00', 'temperatura', { equipment_id: eq.id });
 
     const res = await client.get(`${base}/tasks/compliance?from=${addDays(today, -4)}&to=${addDays(today, 5)}`);

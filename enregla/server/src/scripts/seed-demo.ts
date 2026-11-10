@@ -109,7 +109,18 @@ try {
         { name: 'Mejillones a la marinera', category: 'Principales', a: { molluscs: 'contains', celery: 'contains', sulphites: 'contains' } },
         { name: 'Tarta de queso', category: 'Postres', a: { milk: 'contains', eggs: 'contains', gluten: 'contains', nuts: 'traces' } },
         { name: 'Flan casero', category: 'Postres', a: { milk: 'contains', eggs: 'contains' } },
-      ].map((d) => ({ organization_id: org.id, name: d.name, category: d.category, description: null, allergens: json({ ...allNo, ...d.a }) })),
+        { name: 'Agua mineral', category: 'Bebidas', a: {} },
+        // Plato recién añadido, con los alérgenos SIN REVISAR: no sale en la carta pública.
+        { name: 'Pulpo a la gallega', category: 'Principales', a: {}, pending: true },
+      ].map((d) => ({
+        organization_id: org.id,
+        name: d.name,
+        category: d.category,
+        description: null,
+        allergens: json({ ...allNo, ...d.a }),
+        allergens_reviewed: !('pending' in d),
+        allergens_reviewed_at: 'pending' in d ? null : startTs,
+      })),
     )
     .execute();
 

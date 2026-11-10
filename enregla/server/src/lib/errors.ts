@@ -42,7 +42,7 @@ export const forbidden = (msg = 'No tienes permiso para realizar esta acción') 
 export const unauthenticated = () => new AppError(401, 'UNAUTHENTICATED', 'Debes iniciar sesión');
 export const badRequest = (msg: string, details?: ErrorDetail[]) => new AppError(400, 'BAD_REQUEST', msg, details);
 export const conflict = (msg: string) => new AppError(409, 'CONFLICT', msg);
-export const invalidToken = () => new AppError(400, 'INVALID_TOKEN', 'El enlace no es válido o ha caducado');
+export const invalidToken = () => new AppError(400, 'INVALID_TOKEN', 'Este enlace no es válido: puede que haya caducado o que ya se haya usado.');
 export const rateLimited = (retryAfter: number, message = 'Demasiados intentos. Espera un momento y vuelve a intentarlo.') =>
   new AppError(429, 'RATE_LIMITED', message, undefined, {
     'Retry-After': String(retryAfter),

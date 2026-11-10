@@ -5,7 +5,7 @@ import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
 import { orgCtx, requireRole, requireUser, requireWritable } from '../../http/guards.js';
 import { AppError, conflict } from '../../lib/errors.js';
-import { emails } from '../../lib/emails.js';
+import { emails, mailCtxFrom } from '../../lib/emails.js';
 import { formatDateEs, localDate } from '../../lib/dates.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { verifySecret } from '../../lib/password.js';
@@ -114,7 +114,7 @@ export async function orgRootRoutes(app: FastifyInstance): Promise<void> {
 /** /api/orgs/:orgId (con contexto de organización cargado) */
 export async function orgRoutes(app: FastifyInstance): Promise<void> {
   const { db, config, rateLimiter } = app.deps;
-  const mailCtx = { appName: config.appName, appOrigin: config.appOrigin };
+  const mailCtx = mailCtxFrom(config);
 
   app.get('/', async (req) => {
     const ctx = orgCtx(req);

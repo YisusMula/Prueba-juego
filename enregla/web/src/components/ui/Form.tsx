@@ -2,7 +2,9 @@ import {
   createContext,
   forwardRef,
   useContext,
+  useEffect,
   useId,
+  useRef,
   useState,
   type InputHTMLAttributes,
   type ReactNode,
@@ -12,11 +14,34 @@ import {
 import { cn } from '@/lib/cn';
 import { Icon } from '@/components/icons/Icon';
 
-type FieldCtx = { id: string; describedBy?: string; invalid: boolean };
+type FieldCtx = { id: string; describedBy?: string; invalid: boolean; counterId?: string; onEdit?: () => void };
 const FieldContext = createContext<FieldCtx | null>(null);
 
 export function useField() {
   return useContext(FieldContext);
+}
+
+/**
+ * Error que desaparece en cuanto la persona cambia el valor del campo (B6) y vuelve a mostrarse
+ * si, al enviar otra vez el formulario, el error sigue ahí. Sirve para cualquier formulario sin
+ * que cada uno tenga que limpiar sus errores a mano.
+ */
+export function useDismissibleError<T extends HTMLElement>(error: string | null | undefined) {
+  const ref = useRef<T>(null);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  useEffect(() => {
+    const form = ref.current?.closest('form');
+    if (!form) return;
+    // Al enviar, se vuelven a mostrar los errores (antes de que el formulario calcule los nuevos).
+    const onSubmit = () => setDismissed(null);
+    form.addEventListener('submit', onSubmit, true);
+    return () => form.removeEventListener('submit', onSubmit, true);
+  }, []);
+  const visible = error && error !== dismissed ? error : null;
+  const onEdit = () => {
+    if (error) setDismissed(error);
+  };
+  return { ref, visible, onEdit };
 }
 
 /** Campo con etiqueta, ayuda y error asociados (aria-describedby / aria-invalid). */
@@ -39,12 +64,14 @@ export function Field({
 }) {
   const autoId = useId();
   const id = idProp ?? autoId;
+  const { ref, visible, onEdit } = useDismissibleError<HTMLDivElement>(error);
   const hintId = hint ? `${id}-hint` : undefined;
-  const errorId = error ? `${id}-error` : undefined;
+  const errorId = visible ? `${id}-error` : undefined;
+  const counterId = `${id}-count`;
   const describedBy = [hintId, errorId].filter(Boolean).join(' ') || undefined;
   return (
-    <FieldContext.Provider value={{ id, describedBy, invalid: !!error }}>
-      <div className={cn('flex flex-col gap-1.5', className)}>
+    <FieldContext.Provider value={{ id, describedBy, invalid: !!visible, counterId, onEdit }}>
+      <div ref={ref} className={cn('flex min-w-0 flex-col gap-1.5', className)} onInput={onEdit} onChange={onEdit}>
         <label htmlFor={id} className="font-semibold text-ink">
           {label}
           {optional ? <span className="ml-1 font-normal text-ink-muted">(opcional)</span> : null}
@@ -55,10 +82,10 @@ export function Field({
           </p>
         ) : null}
         {children}
-        {error ? (
+        {visible ? (
           <p id={errorId} className="flex items-start gap-1.5 text-sm font-semibold text-bad" role="alert">
             <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
-            {error}
+            {visible}
           </p>
         ) : null}
       </div>
@@ -69,28 +96,81 @@ export function Field({
 export const inputClasses =
   'w-full min-h-12 rounded-xl border border-line-strong bg-surface px-3.5 py-2.5 text-ink placeholder:text-ink-muted/70 shadow-[inset_0_1px_2px_rgb(0_0_0/0.04)] transition-colors hover:border-ink-muted focus:border-brand focus:outline-none focus-visible:outline-3 focus-visible:outline-focus disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-ink-muted aria-[invalid=true]:border-bad';
 
+/** Contador de caracteres: aparece al acercarse al límite (mismo límite que el servidor). */
+export function CharCounter({ value, max, id }: { value: string; max: number; id?: string }) {
+  if (value.length < Math.floor(max * 0.8)) return null;
+  const left = max - value.length;
+  return (
+    <span id={id} className={cn('-mt-0.5 self-end text-sm tabular', left <= 0 ? 'font-semibold text-bad' : 'text-ink-muted')} aria-live="polite">
+      {left <= 0 ? `Has llegado al máximo de ${max} caracteres` : `${value.length}/${max}`}
+    </span>
+  );
+}
+
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input({ className, id, ...rest }, ref) {
   const field = useField();
   // La API solo admite fechas entre los años 2000 y 2100.
   const dateLimits = rest.type === 'date' ? { min: '2000-01-01', max: '2100-12-31' } : {};
+  const counter = typeof rest.value === 'string' && typeof rest.maxLength === 'number' && rest.maxLength >= 20 && rest.type !== 'password';
+  const describedBy = [field?.describedBy, counter && field?.counterId ? field.counterId : null].filter(Boolean).join(' ') || undefined;
   return (
-    <input
-      {...dateLimits}
-      ref={ref}
-      id={id ?? field?.id}
-      aria-describedby={field?.describedBy}
-      aria-invalid={field?.invalid || undefined}
-      className={cn(inputClasses, className)}
-      {...rest}
-    />
+    <>
+      <input
+        {...dateLimits}
+        ref={ref}
+        id={id ?? field?.id}
+        aria-describedby={describedBy}
+        aria-invalid={field?.invalid || undefined}
+        className={cn(inputClasses, className)}
+        {...rest}
+      />
+      {counter && field ? <CharCounter value={rest.value as string} max={rest.maxLength!} id={field.counterId} /> : null}
+    </>
   );
 });
+
+/**
+ * Campo de PIN: solo cifras. Si se teclea otra cosa no se descarta en silencio: se avisa (B14).
+ */
+export const PinInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HTMLInputElement>, 'onChange' | 'value'> & { value: string; onChange: (v: string) => void; maxDigits?: number }>(
+  function PinInput({ value, onChange, maxDigits = 6, className, ...rest }, ref) {
+    const [warning, setWarning] = useState<string | null>(null);
+    return (
+      <>
+        <Input
+          ref={ref}
+          {...rest}
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          autoComplete="off"
+          value={value}
+          className={cn('max-w-48 tracking-[0.3em]', className)}
+          onChange={(e) => {
+            const raw = e.target.value;
+            const digits = raw.replace(/\D/g, '');
+            if (digits.length !== raw.length) setWarning('El PIN solo admite números (0–9).');
+            else if (digits.length > maxDigits) setWarning(`El PIN tiene como máximo ${maxDigits} cifras.`);
+            else setWarning(null);
+            onChange(digits.slice(0, maxDigits));
+          }}
+        />
+        {warning ? (
+          <p className="flex items-start gap-1.5 text-sm font-semibold text-warn" role="status">
+            <Icon name="info" size={16} className="mt-0.5 shrink-0" />
+            {warning}
+          </p>
+        ) : null}
+      </>
+    );
+  },
+);
 
 export const PasswordInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function PasswordInput(props, ref) {
   const [show, setShow] = useState(false);
   return (
     <div className="relative">
-      <Input ref={ref} {...props} type={show ? 'text' : 'password'} className="pr-14" />
+      <Input ref={ref} {...props} type={show ? 'text' : 'password'} className={cn('pr-14', props.className)} />
       <button
         type="button"
         onClick={() => setShow((s) => !s)}
@@ -214,10 +294,11 @@ export function ChoiceGroup<T extends string>({
 }) {
   const autoName = useId();
   const groupName = name ?? autoName;
-  const errorId = error ? `${groupName}-err` : undefined;
+  const { ref, visible, onEdit } = useDismissibleError<HTMLFieldSetElement>(error);
+  const errorId = visible ? `${groupName}-err` : undefined;
   const colClass = columns === 4 ? 'grid-cols-2 sm:grid-cols-4' : columns === 3 ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1 min-[400px]:grid-cols-2';
   return (
-    <fieldset aria-describedby={errorId}>
+    <fieldset ref={ref} aria-describedby={errorId} onChange={onEdit} className="min-w-0">
       <legend className="mb-1.5 font-semibold">{legend}</legend>
       <div className={cn('grid gap-2', colClass)}>
         {options.map((o) => {
@@ -264,9 +345,9 @@ export function ChoiceGroup<T extends string>({
           );
         })}
       </div>
-      {error ? (
+      {visible ? (
         <p id={errorId} className="mt-1.5 text-sm font-semibold text-bad" role="alert">
-          {error}
+          {visible}
         </p>
       ) : null}
     </fieldset>

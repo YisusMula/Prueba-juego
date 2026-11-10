@@ -6,7 +6,7 @@ import { orgCtx, requireRole, requireUser, requireWritable } from '../../http/gu
 import { conflict, forbidden, invalidToken, notFound } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { audit } from '../../lib/audit.js';
-import { emails } from '../../lib/emails.js';
+import { emails, mailCtxFrom } from '../../lib/emails.js';
 import { isWellFormedToken, randomToken, sha256 } from '../../lib/crypto.js';
 import type { DB } from '../../db/index.js';
 
@@ -52,7 +52,7 @@ function invitationView(i: { id: string; email: string; role: string; expires_at
 /** Rutas bajo /api/orgs/:orgId */
 export async function memberRoutes(app: FastifyInstance): Promise<void> {
   const { db, config, rateLimiter } = app.deps;
-  const ctxMail = { appName: config.appName, appOrigin: config.appOrigin };
+  const ctxMail = mailCtxFrom(config);
 
   app.get('/members', async (req) => {
     const ctx = orgCtx(req);

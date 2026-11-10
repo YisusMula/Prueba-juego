@@ -4,6 +4,7 @@ import type { DB } from '../../db/index.js';
 import { json } from '../../db/index.js';
 import type { Organization, RecordRow } from '../../db/types.js';
 import { AppError, conflict, notFound } from '../../lib/errors.js';
+import { localDate } from '../../lib/dates.js';
 
 export interface Actor {
   userId: string | null;
@@ -13,18 +14,14 @@ export interface Actor {
 }
 
 function validationError(path: string, message: string): AppError {
-  return new AppError(400, 'VALIDATION_ERROR', 'Los datos enviados no son válidos', [{ path, message }]);
+  return new AppError(400, 'VALIDATION_ERROR', message, [{ path, message }]);
 }
 
 function parseData<T extends z.ZodType>(schema: T, data: unknown): z.output<T> {
   const r = schema.safeParse(data ?? {});
   if (!r.success) {
-    throw new AppError(
-      400,
-      'VALIDATION_ERROR',
-      'Los datos enviados no son válidos',
-      r.error.issues.slice(0, 50).map((i) => ({ path: ['data', ...i.path.map(String)].join('.'), message: i.message })),
-    );
+    const details = r.error.issues.slice(0, 50).map((i) => ({ path: ['data', ...i.path.map(String)].join('.'), message: i.message }));
+    throw new AppError(400, 'VALIDATION_ERROR', S.validationSummary(details), details);
   }
   return r.data;
 }
@@ -40,7 +37,7 @@ interface Prepared {
   cleaningPlanId: string | null;
 }
 
-async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown): Promise<Prepared> {
+async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, today: string): Promise<Prepared> {
   switch (type) {
     case 'temperatura': {
       const d = parseData(S.temperaturaData, raw);
@@ -75,6 +72,7 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown):
         if (!plan.items.some((i) => i.id === id)) throw validationError('data.items', 'Hay ítems que no pertenecen al plan de limpieza');
       }
       const items = plan.items.map((i) => ({ itemId: i.id, area: i.area, done: done.get(i.id) ?? false }));
+      if (!items.some((i) => i.done)) throw validationError('data.items', 'Marca al menos una zona hecha');
       return {
         data: {
           cleaningPlanId: plan.id,
@@ -96,6 +94,17 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown):
         if (!s) throw notFound('Proveedor');
         supplierName = s.name;
       }
+      const temperatureOutOfRange = S.receptionOverTemperature(d);
+      // Caducidad anterior a hoy (fecha local del local).
+      const expired = d.expiryDate != null && d.expiryDate < today;
+      if (d.accepted && (expired || temperatureOutOfRange) && !d.correctiveAction) {
+        throw validationError(
+          'data.correctiveAction',
+          expired
+            ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas'
+            : 'La temperatura supera la máxima admisible: indica qué has hecho o por qué la aceptas',
+        );
+      }
       return {
         data: {
           supplierId: d.supplierId ?? null,
@@ -103,11 +112,16 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown):
           product: d.product,
           lot: d.lot,
           temperature: d.temperature ?? null,
+          maxTemperature: d.maxTemperature ?? null,
+          temperatureOutOfRange,
           expiryDate: d.expiryDate ?? null,
+          expired,
           accepted: d.accepted,
           rejectionReason: d.accepted ? null : d.rejectionReason,
+          correctiveAction: d.accepted ? d.correctiveAction : null,
         },
-        alert: !d.accepted,
+        // Alerta: rechazo, o aceptación de mercancía caducada o por encima de la temperatura máxima.
+        alert: !d.accepted || expired || temperatureOutOfRange,
         equipmentId: null,
         cleaningPlanId: null,
       };
@@ -155,6 +169,7 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown):
     }
     case 'formacion': {
       const d = parseData(S.formacionData, raw);
+      if (d.trainingDate > today) throw validationError('data.trainingDate', 'La fecha de la formación no puede ser futura');
       const st = await db.selectFrom('staff').select(['id', 'name']).where('id', '=', d.traineeStaffId).where('organization_id', '=', orgId).executeTakeFirst();
       if (!st) throw notFound('Miembro del personal');
       return {
@@ -203,7 +218,7 @@ export async function createRecord(
     const already = await db.selectFrom('records').select('id').where('amends_record_id', '=', original.id).executeTakeFirst();
     if (already) throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
   }
-  const prepared = await prepare(db, org.id, type, rawData);
+  const prepared = await prepare(db, org.id, type, rawData, localDate(opts.now ?? new Date(), org.timezone));
   let staffName: string | null = null;
   if (actor.staffId) staffName = (await resolveStaff(db, org.id, actor.staffId)).name;
   if (!actor.staffId && !actor.userId) throw validationError('staffId', 'Indica quién realiza el registro');

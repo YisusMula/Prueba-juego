@@ -1,7 +1,7 @@
 import { sql } from 'kysely';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AppDeps } from '../../http/context.js';
-import { emails } from '../../lib/emails.js';
+import { emails, mailCtxFrom } from '../../lib/emails.js';
 import { diffDays, formatDateEs, localDate } from '../../lib/dates.js';
 import { enqueueEmail, processOutbox, purgeOutbox } from '../../lib/outbox.js';
 import { audit } from '../../lib/audit.js';
@@ -21,7 +21,7 @@ export interface TickResult {
   emailsSent: number;
 }
 
-const mailCtx = (deps: AppDeps) => ({ appName: deps.config.appName, appOrigin: deps.config.appOrigin });
+const mailCtx = (deps: AppDeps) => mailCtxFrom(deps.config);
 
 /** Primer intento de envío, fuera de cualquier transacción. Nunca lanza por fallos de SMTP. */
 async function deliverQueued(deps: AppDeps, ids: string[]): Promise<number> {

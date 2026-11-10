@@ -32,6 +32,8 @@ const envSchema = z.object({
   PGDATABASE: z.string().optional(),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   APP_NAME: z.string().min(1).max(60).default('EnRegla'),
+  /** Email de soporte visible en los emails (opcional). */
+  SUPPORT_EMAIL: z.union([z.literal(''), z.email()]).optional(),
   APP_URL: z.url().default('http://localhost:5173'),
   DEV_ORIGINS: csv,
   TRUST_PROXY: z.string().default('false'),
@@ -75,6 +77,8 @@ export interface Config {
   databaseUrl: string;
   databasePoolMax: number;
   appName: string;
+  /** Email de soporte que se muestra en los emails (null si no se configura). */
+  supportEmail: string | null;
   /** Origen público de la aplicación (sin barra final), p. ej. https://app.enregla.es */
   appOrigin: string;
   /** Orígenes aceptados para CORS/CSRF (appOrigin + DEV_ORIGINS). */
@@ -265,6 +269,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     databaseUrl,
     databasePoolMax: e.DATABASE_POOL_MAX,
     appName: e.APP_NAME,
+    supportEmail: e.SUPPORT_EMAIL ? e.SUPPORT_EMAIL : null,
     appOrigin,
     allowedOrigins,
     trustProxy,

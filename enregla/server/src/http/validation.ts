@@ -1,16 +1,12 @@
 import type { z } from 'zod';
 import { AppError, notFound } from '../lib/errors.js';
-import { uuid } from '../schemas/index.js';
+import { uuid, validationSummary } from '../schemas/index.js';
 
 export function parse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
   const r = schema.safeParse(input ?? {});
   if (!r.success) {
-    throw new AppError(
-      400,
-      'VALIDATION_ERROR',
-      'Los datos enviados no son válidos',
-      r.error.issues.slice(0, 50).map((i) => ({ path: i.path.map(String).join('.'), message: i.message })),
-    );
+    const details = r.error.issues.slice(0, 50).map((i) => ({ path: i.path.map(String).join('.'), message: i.message }));
+    throw new AppError(400, 'VALIDATION_ERROR', validationSummary(details), details);
   }
   return r.data;
 }

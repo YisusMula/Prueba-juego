@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
 import * as fontkit from 'fontkit';
 import type { Organization } from '../../db/types.js';
-import { RECORD_TYPE_LABELS, BUSINESS_TYPE_LABELS, type RecordType } from '../../schemas/index.js';
+import { RECORD_TYPE_LABELS, BUSINESS_TYPE_LABELS, type RecordType, timezoneLabel } from '../../schemas/index.js';
 import { formatDateEs, formatDateTimeEs } from '../../lib/dates.js';
 import { COLUMNS, formatRow, pdfText as sanitize, type ReportRecord } from './format.js';
 
@@ -139,7 +139,7 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
       .font(F.regular)
       .fontSize(10)
       .fillColor(COLOR.muted)
-      .text(pdfText(`${BUSINESS_TYPE_LABELS[input.org.business_type as keyof typeof BUSINESS_TYPE_LABELS] ?? input.org.business_type} · Zona horaria: ${tz}`), { width })
+      .text(pdfText(`${BUSINESS_TYPE_LABELS[input.org.business_type as keyof typeof BUSINESS_TYPE_LABELS] ?? input.org.business_type} · ${timezoneLabel(tz)}`), { width })
       .text(pdfText(`Periodo: del ${formatDateEs(input.from)} al ${formatDateEs(input.to)}`), { width })
       .text(pdfText(`Tipos incluidos: ${input.types.map((t) => RECORD_TYPE_LABELS[t]).join(', ')}`), { width });
     doc.moveDown(0.4);
@@ -148,7 +148,7 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
       .fillColor(COLOR.muted)
       .text(
         pdfText(
-          'Documento generado a partir de los registros introducidos por el establecimiento. Los registros no se pueden modificar ni borrar: las correcciones figuran como enmiendas que referencian al registro original. Las filas destacadas en rojo indican valores fuera de los límites configurados por el local.',
+          'Documento generado a partir de los registros introducidos por el establecimiento. Los registros no se pueden modificar ni borrar: las correcciones figuran a continuación del registro original, con cuándo, quién y por qué se corrigió. Las filas destacadas en rojo indican valores fuera de los límites configurados por el local.',
         ),
         { width },
       );

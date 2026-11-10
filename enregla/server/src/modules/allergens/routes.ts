@@ -20,13 +20,17 @@ export function dishView(d: Selectable<DishesTable>) {
     category: d.category,
     description: d.description,
     allergens: d.allergens,
+    allergensReviewed: d.allergens_reviewed,
+    allergensReviewedAt: d.allergens_reviewed_at?.toISOString() ?? null,
     visible: d.visible,
     createdAt: d.created_at.toISOString(),
     updatedAt: d.updated_at.toISOString(),
   };
 }
 
-const ALLERGEN_LEGEND = S.ALLERGENS.map((id) => ({ id, label: S.ALLERGEN_LABELS[id] }));
+const ALLERGEN_LEGEND = S.ALLERGENS.map((id) => ({ id, label: S.ALLERGEN_LABELS[id], name: S.ALLERGEN_NAMES[id] }));
+export const PUBLIC_MENU_NOTICE =
+  'Información sobre alérgenos facilitada por el establecimiento. Si tienes alguna alergia o intolerancia, consulta siempre al personal antes de pedir: aunque un plato no declare alérgenos, puede haber trazas por contaminación cruzada en la cocina.';
 const listQuery = S.pagination.extend({ category: z.string().trim().max(100).optional() });
 
 /** Rutas bajo /api/orgs/:orgId */
@@ -64,6 +68,8 @@ export async function dishRoutes(app: FastifyInstance): Promise<void> {
         category: body.category,
         description: body.description,
         allergens: json(body.allergens),
+        allergens_reviewed: body.allergensReviewed,
+        allergens_reviewed_at: body.allergensReviewed ? sql<Date>`now()` : null,
         visible: body.visible,
       })
       .returningAll()
@@ -83,6 +89,9 @@ export async function dishRoutes(app: FastifyInstance): Promise<void> {
         ...(body.description !== undefined ? { description: body.description } : {}),
         ...(body.allergens !== undefined ? { allergens: json(body.allergens) } : {}),
         ...(body.visible !== undefined ? { visible: body.visible } : {}),
+        ...(body.allergensReviewed !== undefined
+          ? { allergens_reviewed: body.allergensReviewed, allergens_reviewed_at: body.allergensReviewed ? sql<Date>`now()` : null }
+          : {}),
         updated_at: sql<Date>`now()`,
       })
       .where('id', '=', id)
@@ -156,15 +165,18 @@ export async function publicMenuRoutes(app: FastifyInstance): Promise<void> {
       .executeTakeFirst();
     // En solo lectura (prueba caducada, impago, cancelada, pendiente de eliminación) la carta no se sirve.
     if (!org || !isWritable(org)) throw notFound('Carta');
-    const dishes = await db
-      .selectFrom('dishes')
-      .select(['name', 'category', 'description', 'allergens', 'updated_at'])
-      .where('organization_id', '=', org.id)
-      .where('visible', '=', true)
-      .orderBy(sql`coalesce(category, '')`)
-      .orderBy('name')
-      .limit(1000)
-      .execute();
+    // Solo platos visibles CON los alérgenos revisados: un plato sin revisar nunca se publica.
+    const dishes = (
+      await db
+        .selectFrom('dishes')
+        .select(['name', 'category', 'description', 'allergens', 'updated_at'])
+        .where('organization_id', '=', org.id)
+        .where('visible', '=', true)
+        .where('allergens_reviewed', '=', true)
+        .orderBy('name')
+        .limit(1000)
+        .execute()
+    ).sort((a, b) => S.compareMenuCategories(a.category, b.category) || a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
     reply.header('X-Robots-Tag', 'noindex, nofollow');
     const updatedAt = dishes.reduce<Date | null>((acc, d) => (!acc || d.updated_at > acc ? d.updated_at : acc), null);
     return {
@@ -173,7 +185,7 @@ export async function publicMenuRoutes(app: FastifyInstance): Promise<void> {
       statuses: S.ALLERGEN_STATUS_LABELS,
       dishes: dishes.map((d) => ({ name: d.name, category: d.category, description: d.description, allergens: d.allergens })),
       updatedAt: updatedAt?.toISOString() ?? null,
-      notice: 'Información sobre alérgenos facilitada por el establecimiento. Si tienes alguna alergia o intolerancia, consulta siempre al personal.',
+      notice: PUBLIC_MENU_NOTICE,
     };
   });
 }

@@ -161,8 +161,9 @@ export function useOrgMutation<TVars, TResult = unknown>(orgId: string, fn: (var
 
 export const orgApi = (orgId: string) => ({
   base: base(orgId),
-  createRecord: (body: { type: RecordType; data: unknown; staffId?: string | null }) =>
-    api.post<{ record: AppRecord }>(`${base(orgId)}/records`, body).then((r) => r.record),
-  amend: (recordId: string, body: { reason: string; data: unknown; staffId?: string | null }) =>
-    api.post<{ record: AppRecord }>(`${base(orgId)}/records/${recordId}/amendments`, body).then((r) => r.record),
+  /** `idempotencyKey`: la misma en los reintentos del mismo registro (API §1.7). 200 y 201 son éxito. */
+  createRecord: (body: { type: RecordType; data: unknown; staffId?: string | null }, idempotencyKey?: string) =>
+    api.post<{ record: AppRecord }>(`${base(orgId)}/records`, body, { idempotencyKey }).then((r) => r.record),
+  amend: (recordId: string, body: { reason: string; data: unknown; staffId?: string | null }, idempotencyKey?: string) =>
+    api.post<{ record: AppRecord }>(`${base(orgId)}/records/${recordId}/amendments`, body, { idempotencyKey }).then((r) => r.record),
 });

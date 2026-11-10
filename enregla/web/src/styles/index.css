@@ -38,6 +38,18 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* Cifras: Atkinson Hyperlegible dibuja el cero con barra (se confundía con «Ø» en «0 %», «120 €»,
+ * «07:25»). Para las cifras 0–9 la familia de texto usa las de Bricolage (cero sin barra, con cifras
+ * tabulares disponibles). Al declararse después, este tramo tiene prioridad para U+0030–0039. */
+@font-face {
+  font-family: 'Atkinson';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../../node_modules/@fontsource-variable/bricolage-grotesque/files/bricolage-grotesque-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0030-0039;
+}
+
 /* ---------------------------------------------------------------------------
  * Tokens de diseño. Paleta "cocina profesional": papel cálido, tinta azul pizarra,
  * marca petróleo (acero + agua) y semáforo verde/ámbar/rojo con significado.
@@ -93,7 +105,8 @@
     --warn-solid: #d4930f;
     --warn-soft: #3a2b0c;
     --bad: #ff978b;
-    --bad-solid: #d9402c;
+    /* Más oscuro que en claro para que el texto blanco de los botones rojos cumpla 4,5:1. */
+    --bad-solid: #b3311f;
     --bad-soft: #3e1814;
     --focus: #6fd0f0;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
@@ -171,6 +184,11 @@
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
+    /* Palabras larguísimas (p. ej. un nombre de local sin espacios) se parten en vez de desbordar. */
+    overflow-wrap: break-word;
+  }
+  h1, h2, h3, h4 {
+    overflow-wrap: anywhere;
   }
   h1, h2, h3, h4 {
     font-family: var(--font-display);

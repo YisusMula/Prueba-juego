@@ -229,7 +229,7 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     // desbordados…) provocados por entradas raras: 400, nunca 500.
     if (typeof e.code === 'string' && /^22[0-9A-Z]{3}$/.test(e.code) && !e.statusCode) {
       req.log.warn({ pgCode: e.code }, 'Entrada rechazada por la base de datos');
-      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: 'Los datos enviados no son válidos' } });
+      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: 'Algún dato no tiene un valor admitido (fecha, número o texto fuera de rango). Revísalo y vuelve a intentarlo.' } });
     }
     if (e.statusCode && e.statusCode >= 400 && e.statusCode < 500) {
       const message = e.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE' ? 'Tipo de contenido no admitido (usa application/json)' : 'Petición no válida';

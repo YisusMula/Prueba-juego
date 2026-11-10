@@ -7,7 +7,7 @@ import { AppError, badRequest, conflict } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { checkPasswordPolicy, hashSecret, verifySecret } from '../../lib/password.js';
 import { audit, pseudonymizeUserAudit } from '../../lib/audit.js';
-import { emails } from '../../lib/emails.js';
+import { emails, mailCtxFrom } from '../../lib/emails.js';
 import { subscriptionView } from '../billing/status.js';
 import { clearSessionCookie, deleteUserSessions } from '../auth/sessions.js';
 import { createEmailToken, invalidateUserTokens } from '../auth/tokens.js';
@@ -16,7 +16,7 @@ import { policyError, userView } from '../auth/routes.js';
 export async function accountRoutes(app: FastifyInstance): Promise<void> {
   const deps = app.deps;
   const { config, db, rateLimiter } = deps;
-  const ctx = { appName: config.appName, appOrigin: config.appOrigin };
+  const ctx = mailCtxFrom(config);
 
   async function checkPassword(userId: string, password: string, ip: string): Promise<{ id: string; email: string; name: string }> {
     await enforce(rateLimiter, `sensitive:user:${userId}`, config.rateLimits.sensitiveUser);

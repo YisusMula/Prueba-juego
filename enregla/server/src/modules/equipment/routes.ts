@@ -61,7 +61,7 @@ export async function equipmentRoutes(app: FastifyInstance): Promise<void> {
     const min = body.minTemp !== undefined ? body.minTemp : current.min_temp;
     const max = body.maxTemp !== undefined ? body.maxTemp : current.max_temp;
     if (min != null && max != null && min > max) {
-      throw new AppError(400, 'VALIDATION_ERROR', 'Los datos enviados no son válidos', [
+      throw new AppError(400, 'VALIDATION_ERROR', 'La temperatura mínima no puede ser mayor que la máxima', [
         { path: 'minTemp', message: 'La temperatura mínima no puede ser mayor que la máxima' },
       ]);
     }
