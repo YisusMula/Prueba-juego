@@ -11,7 +11,8 @@ export function safeNext(next: string | null | undefined, fallback = '/app'): st
     return fallback;
   }
   if (!value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return fallback;
-  if (/[\u0000-\u001f\u007f\\]/.test(value)) return fallback;
+  // Caracteres de control o barra invertida: se rechazan.
+  if ([...value].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f || c === '\\')) return fallback;
   try {
     const url = new URL(value, 'https://interno.invalid');
     if (url.origin !== 'https://interno.invalid') return fallback;

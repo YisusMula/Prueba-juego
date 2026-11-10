@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { BUSINESS_TYPES, BUSINESS_TYPE_LABELS, createOrgBody } from '@shared/schemas';
 import { api, errorMessage } from '@/api/client';
-import { keys, useAccount } from '@/api/queries';
+import { keys, useAccount, useOrg } from '@/api/queries';
 import type { BusinessType, Organization } from '@/api/types';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Callout } from '@/components/ui/Feedback';
@@ -12,6 +12,7 @@ import { Logo } from '@/components/ui/Logo';
 import { Icon, type IconName } from '@/components/icons/Icon';
 import { CleaningManager, EquipmentManager, StaffManager } from '@/features/ConfigLists';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { PRICING } from '@/config/brand';
 import { cn } from '@/lib/cn';
 
 const STEPS = ['Tu local', 'Equipos', 'Limpieza', 'Personal', 'Listo'] as const;
@@ -54,6 +55,8 @@ export function OnboardingPage() {
   const account = useAccount();
   const hasOrgs = (account.data?.organizations.length ?? 0) > 0;
   const effectiveStep = orgId ? Math.max(step, 1) : 0;
+  const orgQ = useOrg(orgId ?? '', !!orgId);
+  const ro = orgQ.data?.subscription.readOnly ?? false;
 
   return (
     <div className="min-h-dvh">
@@ -79,11 +82,11 @@ export function OnboardingPage() {
               onBack={() => go(0)}
               onNext={() => go(2)}
             >
-              <EquipmentManager orgId={orgId} readOnly={false} />
+              <EquipmentManager orgId={orgId} readOnly={ro} />
             </StepShell>
           ) : effectiveStep === 2 ? (
             <StepShell title="Revisa la limpieza" intro="Planes diarios, semanales y mensuales con sus zonas. Ajústalos a lo que de verdad hacéis." onBack={() => go(1)} onNext={() => go(3)}>
-              <CleaningManager orgId={orgId} readOnly={false} />
+              <CleaningManager orgId={orgId} readOnly={ro} />
             </StepShell>
           ) : effectiveStep === 3 ? (
             <StepShell
@@ -93,7 +96,7 @@ export function OnboardingPage() {
               onNext={() => go(4)}
               nextLabel="Terminar"
             >
-              <StaffManager orgId={orgId} readOnly={false} />
+              <StaffManager orgId={orgId} readOnly={ro} />
             </StepShell>
           ) : (
             <StepDone orgId={orgId} />
@@ -126,6 +129,9 @@ function StepShell({ title, intro, children, onBack, onNext, nextLabel = 'Siguie
 
 function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
   const qc = useQueryClient();
+  const account = useAccount();
+  const isAdditional = (account.data?.organizations.some((o) => o.role === 'owner') ?? false);
+  const [created, setCreated] = useState<Organization | null>(null);
   const [name, setName] = useState('');
   const [type, setType] = useState<BusinessType | null>(null);
   const [timezone, setTimezone] = useState('Europe/Madrid');
@@ -147,12 +153,34 @@ function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
     try {
       const r = await api.post<{ organization: Organization }>('/api/orgs', parsed.data);
       await qc.invalidateQueries({ queryKey: keys.account });
-      onCreated(r.organization);
+      // La prueba gratuita es una por cuenta: un local adicional puede nacer en solo lectura.
+      if (r.organization.subscription.readOnly) setCreated(r.organization);
+      else onCreated(r.organization);
     } catch (err) {
       setError(errorMessage(err));
       setLoading(false);
     }
   };
+
+  if (created) {
+    return (
+      <section className="space-y-5">
+        <h1 className="text-3xl font-extrabold">«{created.name}» está creado</h1>
+        <Callout tone="warn" icon="card" title="Este local necesita suscripción para empezar a registrar">
+          La prueba gratuita de {PRICING.trialDays} días es una por cuenta y ya la usaste en otro local. El nuevo local está en solo lectura hasta que
+          elijas un plan ({PRICING.monthly} €/mes o {PRICING.annual} €/año, IVA no incluido). Puedes ir revisando su configuración mientras tanto.
+        </Callout>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <LinkButton to={`/locales/${created.id}/facturacion`} size="lg" icon="card">
+            Elegir plan
+          </LinkButton>
+          <Button variant="secondary" size="lg" onClick={() => onCreated(created)}>
+            Revisar la configuración
+          </Button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <form onSubmit={onSubmit} noValidate className="space-y-6">
@@ -197,8 +225,14 @@ function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
           ))}
         </div>
       </fieldset>
+      {isAdditional ? (
+        <Callout tone="warn" title="Ya tienes un local">
+          La prueba gratuita es una por cuenta. Si ya la usaste, este nuevo local quedará en solo lectura hasta que contrates su suscripción
+          ({PRICING.monthly} €/mes o {PRICING.annual} €/año por local, IVA no incluido).
+        </Callout>
+      ) : null}
       <Callout tone="info">
-        Empiezas con <strong>14 días de prueba gratis</strong>, sin tarjeta. Cargaremos una plantilla orientativa de equipos y limpieza para tu tipo de
+        Si es tu primer local, empiezas con <strong>{PRICING.trialDays} días de prueba gratis</strong>, sin tarjeta. Cargaremos una plantilla orientativa de equipos y limpieza para tu tipo de
         negocio que podrás revisar en el siguiente paso.
       </Callout>
       {error ? <Callout tone="bad" live="assertive">{error}</Callout> : null}

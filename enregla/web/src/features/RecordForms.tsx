@@ -12,7 +12,7 @@ import {
 } from '@shared/schemas';
 import type { z } from 'zod';
 import type { CleaningItem, Frequency, RecordDataMap, RecordType, EquipmentType } from '@/api/types';
-import { ApiError } from '@/api/client';
+import { ApiError, errorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { Callout } from '@/components/ui/Feedback';
 import { Checkbox, ChoiceGroup, Field, Input, Select, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
@@ -57,7 +57,8 @@ export const OIL_ACTIONS = ['Aceite cambiado', 'Aceite filtrado', 'Freidora para
 
 const numText = (n: number | null | undefined) => (n == null ? '' : String(n).replace('.', ','));
 const fieldErrorsFrom = (e: unknown) => (e instanceof ApiError ? detailsToFieldErrors(e.details, 'data.') : {});
-const generalError = (e: unknown) => (e instanceof ApiError && e.code !== 'VALIDATION_ERROR' ? e.message : e instanceof ApiError && e.details.length === 0 ? e.message : null);
+const generalError = (e: unknown) =>
+  e instanceof ApiError && (e.code !== 'VALIDATION_ERROR' || e.details.length === 0) ? errorMessage(e) : null;
 
 function useValidated<S extends z.ZodType>(schema: S, onSubmit: (d: unknown) => void) {
   const [errors, setErrors] = useState<Record<string, string>>({});

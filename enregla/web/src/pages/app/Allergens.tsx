@@ -13,7 +13,7 @@ import { Card, PageHeader, SectionTitle } from '@/components/ui/Layout';
 import { Field, Input, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
 import { ConfirmDialog, Dialog, useToast } from '@/components/ui/Overlay';
 import { QrCode } from '@/components/ui/QrCode';
-import { AllergenIcon } from '@/components/icons/AllergenIcon';
+import { AllergenIcon, ALLERGEN_SHORT } from '@/components/icons/AllergenIcon';
 import { Icon } from '@/components/icons/Icon';
 import { WriteGuard } from '@/features/SubscriptionBanner';
 import { formatDateTime } from '@/lib/format';
@@ -107,12 +107,12 @@ export function AllergensPage() {
                                 {contains.length === 0 && traces.length === 0 ? <Badge tone="ok" icon="check">Sin alérgenos</Badge> : null}
                                 {contains.map((a) => (
                                   <span key={a} className="inline-flex items-center gap-1 rounded-full bg-surface-2 py-0.5 pr-2.5 pl-0.5 text-sm font-semibold" title={ALLERGEN_LABELS[a]}>
-                                    <AllergenIcon id={a} size={24} /> {ALLERGEN_LABELS[a].split(' ')[0]}
+                                    <AllergenIcon id={a} size={24} /> {ALLERGEN_SHORT[a]}
                                   </span>
                                 ))}
                                 {traces.map((a) => (
                                   <span key={a} className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong py-0.5 pr-2.5 pl-0.5 text-sm" title={`Trazas: ${ALLERGEN_LABELS[a]}`}>
-                                    <AllergenIcon id={a} size={24} status="traces" /> Trazas
+                                    <AllergenIcon id={a} size={24} status="traces" /> Trazas: {ALLERGEN_SHORT[a].toLowerCase()}
                                   </span>
                                 ))}
                                 {!d.visible ? <Badge icon="eyeOff">Oculto en la carta</Badge> : null}
@@ -306,11 +306,15 @@ function PublicMenuCard() {
         <div className="space-y-4">
           <Switch
             checked={q.data.enabled}
-            disabled={busy || readOnly}
+            // Desactivarla siempre está permitido; activarla requiere poder escribir.
+            disabled={busy || (readOnly && !q.data.enabled)}
             onChange={(v) => void update(() => api.patch(`/api/orgs/${orgId}/public-menu`, { enabled: v }), v ? 'Carta pública activada' : 'Carta pública desactivada')}
             label="Activar carta pública"
             description="Tus clientes la consultan desde el móvil escaneando el QR. Solo muestra los platos visibles."
           />
+          {readOnly ? (
+            <Callout tone="warn">Mientras el local esté en solo lectura, la carta pública no se muestra a los clientes.</Callout>
+          ) : null}
           {q.data.enabled ? (
             <>
               <div className="flex justify-center rounded-2xl border border-line bg-white p-3">

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { emailBody, loginBody, registerBody } from '@shared/schemas';
@@ -92,7 +92,7 @@ export function LoginPage() {
             </Callout>
           ) : (
             <Callout tone="bad" live="assertive">
-              {error.message}
+              {errorMessage(error)}
             </Callout>
           )
         ) : null}
@@ -444,8 +444,7 @@ export function InvitationPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const hashToken = useHashTokenOnce();
-  const tokenRef = useRef<string | null>(hashToken ?? pendingInvitationToken);
-  const token = tokenRef.current;
+  const [token] = useState<string | null>(() => hashToken ?? pendingInvitationToken);
   const account = useAccount();
   const [preview, setPreview] = useState<InvitationPreview | null>(null);
   const [error, setError] = useState<string | null>(token ? null : 'El enlace de invitación no es válido o está incompleto. Ábrelo de nuevo desde el email.');

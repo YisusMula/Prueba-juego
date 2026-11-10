@@ -17,7 +17,7 @@ export function PageHeader({ title, subtitle, actions, eyebrow }: { title: React
         <h1 className="text-[1.75rem] font-extrabold sm:text-4xl">{title}</h1>
         {subtitle ? <p className="mt-1 text-ink-muted">{subtitle}</p> : null}
       </div>
-      {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
+      {actions ? <div className="flex flex-wrap gap-2 sm:shrink-0 [&>*]:whitespace-nowrap">{actions}</div> : null}
     </header>
   );
 }

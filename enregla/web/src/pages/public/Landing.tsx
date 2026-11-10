@@ -75,7 +75,7 @@ function HeroMock() {
     { icon: 'sparkles', name: 'Limpieza diaria', value: 'Pendiente', state: 'pending' },
   ];
   return (
-    <div className="relative mx-auto w-full max-w-md lg:max-w-none" aria-hidden="true">
+    <div className="relative mx-auto mb-12 w-full max-w-md lg:max-w-none" aria-hidden="true">
       <div className="absolute -inset-6 -z-10 rounded-[3rem] bg-gradient-to-br from-brand-soft via-transparent to-[color-mix(in_oklab,var(--mint)_40%,transparent)]" />
       <div className="rotate-[-1.5deg] rounded-[2rem] border border-line bg-surface p-5 shadow-pop sm:p-6">
         <div className="flex items-center justify-between">
@@ -119,7 +119,7 @@ function HeroMock() {
           ))}
         </ul>
       </div>
-      <div className="absolute -bottom-6 -left-2 w-56 rotate-[3deg] rounded-2xl border border-line bg-surface p-4 shadow-pop sm:-left-8">
+      <div className="absolute -bottom-16 -left-2 w-56 rotate-[3deg] rounded-2xl border border-line bg-surface p-4 shadow-pop sm:-left-8">
         <p className="text-sm font-bold text-bad">Fuera de rango</p>
         <p className="mt-1 text-sm">¿Qué has hecho?</p>
         <div className="mt-2 flex flex-wrap gap-1.5">

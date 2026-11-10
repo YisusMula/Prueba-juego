@@ -20,6 +20,7 @@ export type ErrorCode =
   | 'PAYLOAD_TOO_LARGE'
   | 'RATE_LIMITED'
   | 'PIN_LOCKED'
+  | 'REPORT_TOO_LARGE'
   | 'BILLING_ERROR'
   | 'BILLING_NOT_CONFIGURED'
   | 'INTERNAL_ERROR'
@@ -132,6 +133,21 @@ export function qs(params: Record<string, string | number | boolean | null | und
 
 /** Mensaje apto para el usuario a partir de cualquier error. */
 export function errorMessage(e: unknown): string {
-  if (isApiError(e)) return e.message;
+  if (isApiError(e)) {
+    if ((e.code === 'RATE_LIMITED' || e.code === 'PIN_LOCKED') && e.retryAfter) {
+      return `${e.message} Inténtalo de nuevo en ${formatWait(e.retryAfter)}.`;
+    }
+    return e.message;
+  }
   return 'Algo no ha ido bien. Inténtalo de nuevo.';
+}
+
+/** 45 → "45 segundos"; 130 → "3 minutos"; 4000 → "1 hora y 7 minutos". */
+export function formatWait(seconds: number): string {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} ${Math.round(seconds) === 1 ? 'segundo' : 'segundos'}`;
+  const min = Math.ceil(seconds / 60);
+  if (min < 60) return `${min} ${min === 1 ? 'minuto' : 'minutos'}`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${h} ${h === 1 ? 'hora' : 'horas'}${m ? ` y ${m} ${m === 1 ? 'minuto' : 'minutos'}` : ''}`;
 }

@@ -172,3 +172,21 @@ export function AllergenIcon({ id, size = 36, status = 'contains', decorative = 
     </svg>
   );
 }
+
+/** Nombres cortos para los chips del filtro (la leyenda oficial completa se muestra abajo). */
+export const ALLERGEN_SHORT: Record<AllergenId, string> = {
+  gluten: 'Gluten',
+  crustaceans: 'Crustáceos',
+  eggs: 'Huevo',
+  fish: 'Pescado',
+  peanuts: 'Cacahuete',
+  soybeans: 'Soja',
+  milk: 'Leche',
+  nuts: 'Frutos de cáscara',
+  celery: 'Apio',
+  mustard: 'Mostaza',
+  sesame: 'Sésamo',
+  sulphites: 'Sulfitos',
+  lupin: 'Altramuces',
+  molluscs: 'Moluscos',
+};

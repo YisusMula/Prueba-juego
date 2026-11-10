@@ -3,7 +3,7 @@ import { useParams } from 'react-router';
 import { ALLERGENS, ALLERGEN_LABELS } from '@shared/schemas';
 import { api, isApiError } from '@/api/client';
 import type { AllergenId, PublicMenu } from '@/api/types';
-import { AllergenIcon } from '@/components/icons/AllergenIcon';
+import { AllergenIcon, ALLERGEN_SHORT } from '@/components/icons/AllergenIcon';
 import { Icon } from '@/components/icons/Icon';
 import { Skeleton } from '@/components/ui/Feedback';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
@@ -13,23 +13,6 @@ import { cn } from '@/lib/cn';
 
 type State = { status: 'loading' } | { status: 'ok'; menu: PublicMenu } | { status: 'notfound' } | { status: 'error'; message: string };
 
-/** Nombres cortos para los chips del filtro (la leyenda oficial completa se muestra abajo). */
-const SHORT: Record<AllergenId, string> = {
-  gluten: 'Gluten',
-  crustaceans: 'Crustáceos',
-  eggs: 'Huevo',
-  fish: 'Pescado',
-  peanuts: 'Cacahuete',
-  soybeans: 'Soja',
-  milk: 'Leche',
-  nuts: 'Frutos de cáscara',
-  celery: 'Apio',
-  mustard: 'Mostaza',
-  sesame: 'Sésamo',
-  sulphites: 'Sulfitos',
-  lupin: 'Altramuces',
-  molluscs: 'Moluscos',
-};
 
 export function PublicMenuPage() {
   const { slug = '' } = useParams();
@@ -123,7 +106,7 @@ export function PublicMenuPage() {
                       )}
                     >
                       <AllergenIcon id={a} size={34} />
-                      {SHORT[a]}
+                      {ALLERGEN_SHORT[a]}
                       {on ? <Icon name="check" size={16} strokeWidth={3} /> : null}
                     </button>
                   );
@@ -202,7 +185,7 @@ export function PublicMenuPage() {
                                       <ul className="mt-1 flex flex-wrap gap-1.5">
                                         {contains.map((a) => (
                                           <li key={a} className={cn('inline-flex items-center gap-1.5 rounded-full py-0.5 pr-3 pl-0.5 text-sm font-semibold', hits.includes(a) ? 'bg-bad-solid text-white' : 'bg-surface-2')}>
-                                            <AllergenIcon id={a} size={26} /> {SHORT[a]}
+                                            <AllergenIcon id={a} size={26} /> {ALLERGEN_SHORT[a]}
                                           </li>
                                         ))}
                                       </ul>
@@ -214,7 +197,7 @@ export function PublicMenuPage() {
                                       <ul className="mt-1 flex flex-wrap gap-1.5">
                                         {mayContain.map((a) => (
                                           <li key={a} className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-line-strong py-0.5 pr-3 pl-0.5 text-sm">
-                                            <AllergenIcon id={a} size={26} status="traces" /> {SHORT[a]}
+                                            <AllergenIcon id={a} size={26} status="traces" /> {ALLERGEN_SHORT[a]}
                                           </li>
                                         ))}
                                       </ul>

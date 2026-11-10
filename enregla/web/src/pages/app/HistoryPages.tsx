@@ -57,8 +57,8 @@ export function HistoryPage() {
       <PageHeader title="Historial" subtitle="Todos los registros, del más reciente al más antiguo. Los registros no se borran: las correcciones quedan enlazadas." />
       <Card className="mb-6">
         <h2 className="sr-only">Filtros</h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Field label="Tipo">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Field label="Tipo" className="col-span-2 lg:col-span-1">
             <Select value={filters.type} onChange={(e) => setFilter('tipo', e.target.value)}>
               <option value="">Todos</option>
               {RECORD_TYPES.map((t) => (
@@ -74,7 +74,7 @@ export function HistoryPage() {
           <Field label="Hasta">
             <Input type="date" value={filters.to} onChange={(e) => setFilter('hasta', e.target.value)} />
           </Field>
-          <div className="flex items-end">
+          <div className="col-span-2 flex items-end lg:col-span-1">
             <Switch checked={filters.alert === 'true'} onChange={(v) => setFilter('alertas', v ? '1' : '')} label="Solo alertas" />
           </div>
         </div>
@@ -111,7 +111,7 @@ export function HistoryPage() {
         <div className="space-y-6" aria-live="polite">
           {groups.map(([date, list]) => (
             <section key={date} aria-labelledby={`d-${date}`}>
-              <h2 id={`d-${date}`} className="mb-2 text-base font-bold text-ink-muted capitalize">
+              <h2 id={`d-${date}`} className="mb-2 text-base font-bold text-ink-muted first-letter:uppercase">
                 {formatLongDate(date)}
               </h2>
               <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface shadow-card">

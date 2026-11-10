@@ -67,7 +67,7 @@ export type AuditEvent = {
 };
 
 export type Staff = { id: string; name: string; hasPin: boolean; active: boolean; lockedUntil: string | null; createdAt: string };
-export type Device = { id: string; name: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null; active: boolean };
+export type Device = { id: string; name: string; createdByName?: string | null; createdAt: string; lastUsedAt: string | null; revokedAt: string | null; active: boolean };
 
 export type Equipment = {
   id: string;

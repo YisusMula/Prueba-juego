@@ -33,6 +33,17 @@ export function Dialog({
     onCloseRef.current = onClose;
   }, [onClose]);
 
+  // Clic en el fondo (el propio <dialog>) cierra; con teclado se cierra con Esc (onCancel).
+  useEffect(() => {
+    const d = ref.current;
+    if (!d || !dismissible) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.target === d) onCloseRef.current();
+    };
+    d.addEventListener('click', onClick);
+    return () => d.removeEventListener('click', onClick);
+  }, [dismissible]);
+
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -52,9 +63,6 @@ export function Dialog({
       onCancel={(e) => {
         e.preventDefault();
         if (dismissible) onCloseRef.current();
-      }}
-      onClick={(e) => {
-        if (dismissible && e.target === ref.current) onCloseRef.current();
       }}
       className={cn(
         'm-auto w-[calc(100%-1.5rem)] rounded-3xl border border-line bg-surface p-0 text-ink shadow-pop backdrop:bg-[rgb(10_20_25/0.55)] backdrop:backdrop-blur-[2px] open:animate-pop',

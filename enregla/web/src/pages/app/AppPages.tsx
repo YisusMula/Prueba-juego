@@ -10,8 +10,9 @@ import { Badge, Callout, EmptyState, ErrorState, ProgressRing, Skeleton } from '
 import { Card, PageHeader, SectionTitle } from '@/components/ui/Layout';
 import { Checkbox, Field, Input } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
-import { ALERT_LABELS, RECORD_ICON, RECORD_SHORT, RECORD_TINT } from '@/features/recordMeta';
+import { ALERT_LABELS, RECORD_ICON, RECORD_TINT } from '@/features/recordMeta';
 import { STATUS_LABELS } from '@/features/SubscriptionBanner';
+import { DownloadButton } from '@/features/DownloadButton';
 import { addDaysIso, formatLocalDate, formatLongDate, formatRange, formatTemp, formatTime, localDateIn, relativeDays } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -26,8 +27,8 @@ export function TodayPage() {
   return (
     <>
       <PageHeader
-        eyebrow={q.data ? formatLongDate(q.data.date) : 'Hoy'}
-        title={org.name}
+        eyebrow={org.name}
+        title={q.data ? <span className="inline-block first-letter:uppercase">{formatLongDate(q.data.date)}</span> : 'Hoy'}
         actions={
           <>
             <LinkButton to={path('registrar/temperatura')} icon="thermometer" size="lg" className="max-sm:flex-1">
@@ -60,7 +61,7 @@ export function TodayPage() {
 }
 
 function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
-  const { path, org, isOwner } = useOrgContext();
+  const { path } = useOrgContext();
   const pendingTemps = data.temperatures.filter((t) => t.status === 'pending');
   const doneTemps = data.temperatures.filter((t) => t.status === 'done');
   const pendingClean = data.cleaning.filter((c) => c.status === 'pending');
@@ -110,8 +111,8 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     <Icon name="alert" size={22} />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block font-bold">{ALERT_LABELS[a.kind]}</span>
-                    <span className="block text-ink">{a.message}</span>
+                    <span className="sr-only">{ALERT_LABELS[a.kind]}: </span>
+                    <span className="block font-bold">{a.message}</span>
                     <span className="block text-sm text-ink-muted">
                       {a.kind === 'incidencia_abierta' ? `Desde el ${formatLocalDate(localDateIn(tz, new Date(a.createdAt)))}` : `A las ${formatTime(a.createdAt, tz)}`}
                       {a.kind === 'incidencia_abierta' ? ' · toca para cerrarla' : ''}
@@ -203,7 +204,6 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
         </>
       )}
 
-      {isOwner && org.subscription.readOnly ? null : null}
     </div>
   );
 }
@@ -403,16 +403,16 @@ export function ReportsPage() {
           ) : null}
 
           <h2 className="mt-6 text-xl font-bold">3. Descargar</h2>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <DownloadLink enabled={canDownload} href={`/api/orgs/${orgId}/reports/pdf?${query}`} icon="report" primary>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+            <DownloadButton disabled={!canDownload} url={`/api/orgs/${orgId}/reports/pdf?${query}`} fallbackName="registros.pdf" icon="report" variant="primary">
               Informe PDF
-            </DownloadLink>
-            <DownloadLink enabled={canDownload} href={`/api/orgs/${orgId}/reports/csv?${query}`} icon="download">
+            </DownloadButton>
+            <DownloadButton disabled={!canDownload} url={`/api/orgs/${orgId}/reports/csv?${query}`} fallbackName="registros.csv">
               Hoja de cálculo (CSV)
-            </DownloadLink>
+            </DownloadButton>
           </div>
           <p className="mt-3 text-sm text-ink-muted">
-            El PDF incluye los datos de {org.name}, una tabla por tipo, lo que está fuera de rango señalado y las correcciones con su motivo.
+            El PDF incluye los datos de {org.name}, una tabla por tipo, lo que está fuera de rango señalado y las correcciones con su motivo. Si el periodo tiene demasiados registros para un PDF, acota las fechas o usa el CSV.
           </p>
         </Card>
         <Card>
@@ -438,28 +438,13 @@ export function ReportsPage() {
   );
 }
 
-function DownloadLink({ href, enabled, icon, children, primary }: { href: string; enabled: boolean; icon: 'report' | 'download'; children: React.ReactNode; primary?: boolean }) {
-  if (!enabled) {
-    return (
-      <span aria-disabled="true" className={buttonClasses(primary ? 'primary' : 'secondary', 'lg', 'cursor-not-allowed opacity-55')}>
-        <Icon name={icon} size={20} /> {children}
-      </span>
-    );
-  }
-  return (
-    <a href={href} download className={buttonClasses(primary ? 'primary' : 'secondary', 'lg')}>
-      <Icon name={icon} size={20} /> {children}
-    </a>
-  );
-}
-
 /** Gráfico de barras propio (SVG): % de tareas hechas por día. Con tabla accesible. */
 export function ComplianceChart({ data }: { data: Compliance }) {
   const [showTable, setShowTable] = useState(false);
   const days = data.days;
   const W = 640;
   const H = 200;
-  const pad = { l: 34, r: 8, t: 10, b: 26 };
+  const pad = { l: 40, r: 8, t: 10, b: 28 };
   const innerW = W - pad.l - pad.r;
   const innerH = H - pad.t - pad.b;
   const bw = days.length ? innerW / days.length : innerW;
@@ -492,7 +477,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
             return (
               <g key={g}>
                 <line x1={pad.l} x2={W - pad.r} y1={y} y2={y} stroke="var(--line)" strokeDasharray={g === 0 ? undefined : '3 4'} />
-                <text x={pad.l - 6} y={y + 4} textAnchor="end" fontSize="11" fill="var(--ink-muted)">
+                <text x={pad.l - 6} y={y + 4} textAnchor="end" fontSize="13" fill="var(--ink-muted)">
                   {g}%
                 </text>
               </g>
@@ -513,7 +498,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                   </rect>
                 )}
                 {i % labelEvery === 0 ? (
-                  <text x={x + bw * 0.35} y={H - 8} textAnchor="middle" fontSize="11" fill="var(--ink-muted)">
+                  <text x={x + bw * 0.35} y={H - 8} textAnchor="middle" fontSize="13" fill="var(--ink-muted)">
                     {formatLocalDate(d.date, { day: 'numeric', month: 'short' }).replace('.', '')}
                   </text>
                 ) : null}
@@ -559,4 +544,3 @@ export function ComplianceChart({ data }: { data: Compliance }) {
   );
 }
 
-export { RECORD_SHORT };

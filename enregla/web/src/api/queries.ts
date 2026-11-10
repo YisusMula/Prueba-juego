@@ -40,8 +40,9 @@ export function useAccount() {
   });
 }
 
-export function useOrg(orgId: string) {
+export function useOrg(orgId: string, enabled = true) {
   return useQuery({
+    enabled: enabled && !!orgId,
     queryKey: keys.org(orgId),
     queryFn: () => api.get<{ organization: Organization }>(base(orgId)).then((r) => r.organization),
     staleTime: 30_000,

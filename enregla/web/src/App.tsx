@@ -6,8 +6,8 @@ import { Root, RouteError } from '@/layouts/Root';
 import { RequireAuth, AppIndexRedirect } from '@/layouts/RequireAuth';
 import { PageLoader } from '@/layouts/PageLoader';
 
-function page(loader: () => Promise<Record<string, ComponentType>>, name: string): ReactNode {
-  const C = lazy(() => loader().then((m) => ({ default: m[name]! })));
+function page<M, K extends keyof M>(loader: () => Promise<M>, name: K): ReactNode {
+  const C = lazy(() => loader().then((m) => ({ default: m[name] as unknown as ComponentType })));
   return (
     <Suspense fallback={<PageLoader />}>
       <C />
