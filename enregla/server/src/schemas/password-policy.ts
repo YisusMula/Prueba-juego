@@ -8,7 +8,7 @@
  *  - no puede basarse en tus datos personales. Comparando sin mayúsculas, tildes, espacios ni signos:
  *    se rechaza si es tu email, si CONTIENE la parte del email antes de la @ o tu nombre (completo o
  *    cualquiera de sus palabras) cuando estos tienen 5 o más caracteres (`juanperez1` con
- *    juanperez@…), o si es uno de ellos con pocos caracteres añadidos (como mucho 6 al principio y/o
+ *    juanperez@…), o si es uno de ellos con pocos caracteres añadidos (como mucho 7 al principio y/o
  *    al final: `ana2026xyz` con ana@…).
  */
 import { COMMON_PASSWORDS } from './common-passwords.js';
@@ -32,7 +32,7 @@ const alnum = (s: string) =>
 const CONTAINS_MIN = 5;
 /** Datos personales más cortos (3–4): se rechaza si la contraseña es el dato con pocos caracteres añadidos. */
 const SHORT_MIN = 3;
-const MAX_ADDED = 6;
+const MAX_ADDED = 7;
 
 function isPersonal(password: string, context: PasswordContext): boolean {
   if (password.length === 0) return false;

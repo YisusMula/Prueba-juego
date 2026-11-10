@@ -45,34 +45,39 @@ describe('H1 DoS con informes PDF', () => {
     }
   });
 
-  it('H1b: semáforo global de PDF: con los huecos ocupados responde 429 con Retry-After (sin cola)', async () => {
-    const { client, base } = await setupOwner(ctx);
-    expect(ctx.config.reports.pdfConcurrency).toBe(2);
-    const a = ctx.app.pdfSlots.tryAcquire()!;
-    const b = ctx.app.pdfSlots.tryAcquire()!;
+  it('H1b: semáforo global de PDF: con los huecos ocupados espera en cola acotada y, si no hay hueco a tiempo, 429 con Retry-After', async () => {
+    const quick = await createTestApp({ now: () => FIXED_NOW, config: { reports: { ...testConfig().reports, pdfQueueMaxWaitMs: 100 } } });
     try {
-      const busy = await client.get(`${base}/reports/pdf?from=${today()}&to=${today()}`);
-      expect(busy.statusCode).toBe(429);
-      expect(json(busy).error.code).toBe('RATE_LIMITED');
-      expect(Number(busy.headers['retry-after'])).toBeGreaterThan(0);
+      await resetDb(quick);
+      const { client, base } = await setupOwner(quick);
+      expect(quick.config.reports.pdfConcurrency).toBe(2);
+      const a = quick.app.pdfSlots.tryAcquire()!;
+      const b = quick.app.pdfSlots.tryAcquire()!;
+      try {
+        const busy = await client.get(`${base}/reports/pdf?from=${today()}&to=${today()}`);
+        expect(busy.statusCode).toBe(429);
+        expect(json(busy).error.code).toBe('RATE_LIMITED');
+        expect(Number(busy.headers['retry-after'])).toBeGreaterThan(0);
+      } finally {
+        a();
+      }
+      const ok = await client.get(`${base}/reports/pdf?from=${today()}&to=${today()}`);
+      expect(ok.statusCode).toBe(200);
+      b();
+      // El hueco se libera al terminar cada PDF.
+      expect(quick.app.pdfSlots.inUse).toBe(0);
     } finally {
-      a();
+      await closeTestApp(quick);
     }
-    const ok = await client.get(`${base}/reports/pdf?from=${today()}&to=${today()}`);
-    expect(ok.statusCode).toBe(200);
-    b();
-    // El hueco se libera al terminar cada PDF.
-    expect(ctx.app.pdfSlots.inUse).toBe(0);
   });
 
-  it('H1b: concurrencia real: 6 PDF a la vez → como mucho 2 se generan, el resto 429', async () => {
+  it('H1b: concurrencia real: 6 PDF a la vez del mismo local → solo 1 se genera, el resto 429 (B-2: 1 por local)', async () => {
     const { client, base, org } = await setupOwner(ctx);
     await seedTemperatures(ctx, org.id, 600);
     const url = `${base}/reports/pdf?from=${today()}&to=${today()}`;
     const results = await Promise.all(Array.from({ length: 6 }, () => client.get(url)));
     const codes = results.map((r) => r.statusCode);
-    expect(codes.filter((c) => c === 200).length).toBeGreaterThanOrEqual(1);
-    expect(codes.filter((c) => c === 200).length).toBeLessThanOrEqual(2);
+    expect(codes.filter((c) => c === 200).length).toBe(1);
     expect(codes.every((c) => c === 200 || c === 429)).toBe(true);
     expect(ctx.app.pdfSlots.inUse).toBe(0);
   });

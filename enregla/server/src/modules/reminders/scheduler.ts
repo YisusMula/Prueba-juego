@@ -187,7 +187,7 @@ export interface RetentionResult {
  * de email caducados o usados hace > 7 días, invitaciones caducadas/revocadas hace > 30 días
  * y filas de rate limit vencidas.
  */
-export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?: Pick<FastifyBaseLogger, 'warn' | 'error'> } = {}): Promise<RetentionResult> {
+export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?: { error: (o: object, msg: string) => void } } = {}): Promise<RetentionResult> {
   const none: RetentionResult = {
     ran: false,
     auditEvents: 0,
