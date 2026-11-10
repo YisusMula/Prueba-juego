@@ -1,17 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
-import { addMember, closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, testConfig, type TestCtx } from './helpers.js';
-import { localDate } from '../src/lib/dates.js';
+import { addMember, closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, testConfig, type TestCtx, FIXED_NOW, FIXED_TODAY, backdateConfig } from './helpers.js';
 import { computeCompliance } from '../src/modules/tasks/service.js';
 
 let ctx: TestCtx;
 beforeAll(async () => {
-  ctx = await createTestApp();
+  ctx = await createTestApp({ now: () => FIXED_NOW });
 });
 afterAll(async () => closeTestApp(ctx));
 beforeEach(async () => resetDb(ctx));
 
-const today = () => localDate(new Date(), 'Europe/Madrid');
+// Reloj fijo: los tests no dependen de la hora real (ni fallan al cruzar la medianoche).
+const today = () => FIXED_TODAY;
 
 async function seedTemperatures(c: TestCtx, orgId: string, n: number) {
   const fridge = await firstEquipment(c, orgId, 'camara');
@@ -20,7 +20,7 @@ async function seedTemperatures(c: TestCtx, orgId: string, n: number) {
     INSERT INTO records (organization_id, type, data, staff_id, staff_name, equipment_id, alert, created_at)
     SELECT ${orgId}, 'temperatura',
       jsonb_build_object('equipmentId', ${fridge.id}::text, 'equipmentName', 'Cámara frigorífica principal', 'value', (g % 9)::float, 'minTemp', null, 'maxTemp', 4, 'outOfRange', g % 9 > 4, 'correctiveAction', CASE WHEN g % 9 > 4 THEN 'Se revisa la puerta y se traslada el género a otra cámara' END),
-      ${st.id}, 'Ana', ${fridge.id}, g % 9 > 4, now() - (g || ' seconds')::interval
+      ${st.id}, 'Ana', ${fridge.id}, g % 9 > 4, ${FIXED_NOW.toISOString()}::timestamptz - (g || ' seconds')::interval
     FROM generate_series(1, ${n}) g`.execute(c.deps.db);
 }
 

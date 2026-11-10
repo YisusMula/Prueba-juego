@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js';
 import { loadConfig, type Config } from '../src/config.js';
 import { createDeps } from '../src/deps.js';
 import type { AppDeps } from '../src/http/context.js';
-import { MemoryMailer } from '../src/lib/mailer.js';
+import { MemoryMailer, type Mailer } from '../src/lib/mailer.js';
 import { hashSecret } from '../src/lib/password.js';
 import type { BillingProvider } from '../src/modules/billing/provider.js';
 import { createOrganization } from '../src/modules/orgs/routes.js';
@@ -35,10 +35,16 @@ export function testConfig(overrides: Partial<Config> = {}, env: Record<string, 
   );
 }
 
-export async function createTestApp(opts: { config?: Partial<Config>; billing?: BillingProvider | null; env?: Record<string, string> } = {}): Promise<TestCtx> {
+export async function createTestApp(
+  opts: { config?: Partial<Config>; billing?: BillingProvider | null; env?: Record<string, string>; now?: () => Date; mailer?: Mailer } = {},
+): Promise<TestCtx> {
   const config = testConfig(opts.config, opts.env);
   const mailer = new MemoryMailer();
-  const deps = createDeps(config, { mailer, ...(opts.billing !== undefined ? { billing: opts.billing } : {}) });
+  const deps = createDeps(config, {
+    mailer: opts.mailer ?? mailer,
+    ...(opts.billing !== undefined ? { billing: opts.billing } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
+  });
   const app = await buildApp(deps, { logger: false });
   await app.ready();
   return { app, deps, mailer, config };
@@ -51,6 +57,10 @@ export async function closeTestApp(ctx: TestCtx): Promise<void> {
 
 const TABLES = [
   'job_runs',
+  'email_outbox',
+  'idempotency_keys',
+  'equipment_config_history',
+  'cleaning_plan_config_history',
   'records',
   'audit_events',
   'rate_limits',
@@ -178,3 +188,23 @@ export async function createStaff(ctx: TestCtx, orgId: string, name: string, pin
 export const ALL_NO = Object.fromEntries(
   ['gluten', 'crustaceans', 'eggs', 'fish', 'peanuts', 'soybeans', 'milk', 'nuts', 'celery', 'mustard', 'sesame', 'sulphites', 'lupin', 'molluscs'].map((a) => [a, 'no']),
 ) as Record<string, 'no' | 'contains' | 'traces'>;
+
+/**
+ * Reloj fijo para los tests que dependen de "hoy" (no fallan al cruzar la medianoche de Madrid).
+ * Martes 10/11/2026, 11:00 en Madrid.
+ */
+export const FIXED_NOW = new Date('2026-11-10T10:00:00Z');
+export const FIXED_TODAY = '2026-11-10';
+
+/**
+ * Da por creados (y vigentes) los equipos y planes del local desde hace `days` días respecto a
+ * `ref`: mueve su fecha de alta y el primer tramo de su historial de configuración.
+ */
+export async function backdateConfig(ctx: TestCtx, orgId: string, ref: Date = FIXED_NOW, days = 30): Promise<void> {
+  const at = new Date(ref.getTime() - days * 86_400_000);
+  await ctx.deps.db.updateTable('equipment').set({ created_at: at }).where('organization_id', '=', orgId).execute();
+  await ctx.deps.db.updateTable('cleaning_plans').set({ created_at: at }).where('organization_id', '=', orgId).execute();
+  // Tramos insertados por cambios posteriores (now() real) tampoco deben quedar en el futuro del reloj fijo.
+  await ctx.deps.db.updateTable('equipment_config_history').set({ valid_from: at }).where('organization_id', '=', orgId).where('valid_from', '>', ref).execute();
+  await ctx.deps.db.updateTable('cleaning_plan_config_history').set({ valid_from: at }).where('organization_id', '=', orgId).where('valid_from', '>', ref).execute();
+}

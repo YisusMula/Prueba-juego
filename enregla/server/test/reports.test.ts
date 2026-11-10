@@ -1,19 +1,20 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
-import { addMember, closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, type TestCtx } from './helpers.js';
-import { csvCell, pdfText } from '../src/modules/reports/format.js';
+import { addMember, closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, type TestCtx, FIXED_NOW, FIXED_TODAY, backdateConfig } from './helpers.js';
+import { csvCell } from '../src/modules/reports/format.js';
+import { pdfText } from '../src/modules/reports/pdf.js';
 import { runReminderTick } from '../src/modules/reminders/scheduler.js';
-import { localDate } from '../src/lib/dates.js';
 import { json as toJson } from '../src/db/index.js';
 
 let ctx: TestCtx;
 beforeAll(async () => {
-  ctx = await createTestApp();
+  ctx = await createTestApp({ now: () => FIXED_NOW });
 });
 afterAll(async () => closeTestApp(ctx));
 beforeEach(async () => resetDb(ctx));
 
-const today = () => localDate(new Date(), 'Europe/Madrid');
+// Reloj fijo: los tests no dependen de la hora real (ni fallan al cruzar la medianoche).
+const today = () => FIXED_TODAY;
 
 describe('informe PDF', () => {
   it('genera un PDF válido con varias páginas y queda auditado', async () => {
@@ -25,7 +26,7 @@ describe('informe PDF', () => {
       INSERT INTO records (organization_id, type, data, staff_id, staff_name, equipment_id, alert, created_at)
       SELECT ${org.id}, 'temperatura',
         jsonb_build_object('equipmentId', ${fridge.id}::text, 'equipmentName', 'Cámara', 'value', (g % 9)::float, 'minTemp', null, 'maxTemp', 4, 'outOfRange', g % 9 > 4, 'correctiveAction', CASE WHEN g % 9 > 4 THEN 'Revisado ≤ 4 °C' END),
-        ${st.id}, 'Ana', ${fridge.id}, g % 9 > 4, now() - (g || ' minutes')::interval
+        ${st.id}, 'Ana', ${fridge.id}, g % 9 > 4, ${FIXED_NOW.toISOString()}::timestamptz - (g || ' minutes')::interval
       FROM generate_series(1, 300) g`.execute(ctx.deps.db);
     const r = json(await client.post(`${base}/records`, { type: 'incidencia', data: { description: 'Rotura 😀 de cámara\u0007', closed: false } })).record;
     await client.post(`${base}/records/${r.id}/amendments`, { reason: 'Cerrada', data: { description: 'Rotura de cámara', closed: true } });
@@ -54,12 +55,12 @@ describe('informe PDF', () => {
     expect((await mgr.get(`${base}/reports/pdf?from=2025-01-01&to=2025-01-31`)).statusCode).toBe(200);
   });
 
-  it('saneado de texto para PDF', () => {
-    expect(pdfText('Temperatura ≤ 4 °C — ok')).toBe('Temperatura <= 4 °C — ok');
-    expect(pdfText('a\u0000b\nc')).toBe('a b c');
-    expect(pdfText('emoji 😀')).toBe('emoji ?');
-    expect(pdfText('x'.repeat(1000)).length).toBe(600);
-    expect(pdfText('Ñandú €')).toBe('Ñandú €');
+  it('saneado de texto para PDF: Unicode completo, sin recortes, marcador para glifos sin soporte', () => {
+    expect(pdfText('Temperatura ≤ 4 °C — ok')).toBe('Temperatura ≤ 4 °C — ok');
+    expect(pdfText('a\u0000b\nc')).toBe('a b\nc');
+    expect(pdfText('emoji 🥑👍🏽 fin 中文')).toBe('emoji □ fin □');
+    expect(pdfText('x'.repeat(1000)).length).toBe(1000);
+    expect(pdfText('Ñandú € Ștefan Łódź Kőszeg Борщ')).toBe('Ñandú € Ștefan Łódź Kőszeg Борщ');
   });
 });
 
@@ -104,6 +105,8 @@ describe('recordatorio diario', () => {
     const { user: quiet } = await addMember(ctx, owner.org.id, 'q@example.com', 'manager');
     await ctx.deps.db.updateTable('memberships').set({ daily_reminder: false }).where('user_id', '=', quiet.id).execute();
     await ctx.deps.db.updateTable('organizations').set({ reminder_hour: 0 }).where('id', '=', owner.org.id).execute();
+    // El día de alta de un equipo/plan no es exigible: se dan por creados hace días.
+    await backdateConfig(ctx, owner.org.id);
     ctx.mailer.clear();
     return { ...owner, mgr };
   }
@@ -148,7 +151,7 @@ describe('recordatorio diario', () => {
 
   it('no envía a locales en solo lectura', async () => {
     const { org } = await prepare();
-    await ctx.deps.db.updateTable('organizations').set({ trial_ends_at: new Date(Date.now() - 1000) }).where('id', '=', org.id).execute();
+    await ctx.deps.db.updateTable('organizations').set({ trial_ends_at: new Date(FIXED_NOW.getTime() - 1000) }).where('id', '=', org.id).execute();
     expect((await runReminderTick(ctx.deps)).emailsSent).toBe(0);
   });
 

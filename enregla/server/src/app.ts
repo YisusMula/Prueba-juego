@@ -98,7 +98,7 @@ export function loggerOptions(config: Pick<Config, 'env' | 'logLevel'>, resolve:
 }
 
 /** keep-alive mayor que el de los balanceadores habituales (60–120 s) para evitar 502 por carreras. */
-export const HTTP_TIMEOUTS = { keepAliveMs: 125_000, headersMs: 130_000, requestMs: 300_000 };
+export const HTTP_TIMEOUTS = { keepAliveMs: 125_000, headersMs: 130_000, requestMs: 300_000, connectionMs: 130_000 };
 
 /** Rutas de la SPA que no son públicas (o no aportan nada indexadas): llevan X-Robots-Tag: noindex. */
 const PRIVATE_SPA_PREFIXES = [
@@ -126,6 +126,8 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     logger: opts.logger ?? loggerOptions(config),
     keepAliveTimeout: HTTP_TIMEOUTS.keepAliveMs,
     requestTimeout: HTTP_TIMEOUTS.requestMs,
+    // Inactividad del socket (sin lecturas ni escrituras): corta conexiones colgadas.
+    connectionTimeout: HTTP_TIMEOUTS.connectionMs,
     trustProxy: typeof config.trustProxy === 'number' ? trustHops(config.trustProxy) : config.trustProxy,
     bodyLimit: 256 * 1024,
     routerOptions: { ignoreTrailingSlash: true, maxParamLength: 200 },

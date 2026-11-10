@@ -168,11 +168,13 @@ describe('H8 borrar un local cancela su suscripción de Stripe', () => {
     return owner;
   }
 
-  it.each(['active', 'trialing', 'past_due'])('suscripción %s: se cancela en Stripe y después se borra', async (status) => {
+  it.each(['active', 'trialing', 'past_due'])('suscripción %s: se cancela en Stripe y después queda pendiente de eliminación', async (status) => {
     const { client, base, org } = await withSubscription(status);
     expect((await client.delete(base, { password: PASSWORD })).statusCode).toBe(204);
     expect(provider.cancelCalls).toEqual(['sub_live_1']);
-    expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', org.id).executeTakeFirst()).toBeUndefined();
+    const o = await ctx.deps.db.selectFrom('organizations').selectAll().where('id', '=', org.id).executeTakeFirstOrThrow();
+    expect(o.deletion_scheduled_at).not.toBeNull();
+    expect(o.subscription_status).toBe('canceled');
   });
 
   it('si la cancelación falla NO se borra y se devuelve un error claro', async () => {

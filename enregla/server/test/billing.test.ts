@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import Stripe from 'stripe';
 import { addMember, closeTestApp, createTestApp, json, resetDb, setupOwner, type TestCtx } from './helpers.js';
-import { StripeBillingProvider, type CheckoutParams } from '../src/modules/billing/provider.js';
+import { StripeBillingProvider, type CheckoutParams, type SubscriptionState } from '../src/modules/billing/provider.js';
 
 const WEBHOOK_SECRET = 'whsec_test_c2VjcmV0LWRlLXBydWViYXMtZW5yZWdsYQ';
 const STRIPE_CFG = {
@@ -15,6 +15,27 @@ const STRIPE_CFG = {
 class FakeStripeProvider extends StripeBillingProvider {
   checkoutCalls: CheckoutParams[] = [];
   portalCalls: { customerId: string; returnUrl: string }[] = [];
+  /** Estado "actual" de cada suscripción en Stripe (lo que devuelve retrieveSubscription). */
+  subs = new Map<string, SubscriptionState>();
+  failRetrieve = false;
+  retrieveCalls: string[] = [];
+  override retrieveSubscription(id: string) {
+    this.retrieveCalls.push(id);
+    if (this.failRetrieve) return Promise.reject(Object.assign(new Error('Stripe no disponible'), { statusCode: 500 }));
+    return Promise.resolve(this.subs.get(id) ?? null);
+  }
+  setSub(id: string, status: string, opts: Partial<SubscriptionState> = {}) {
+    this.subs.set(id, {
+      id,
+      status,
+      customerId: 'cus_test_1',
+      metadata: {},
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: Math.floor(Date.now() / 1000) + 30 * 86400,
+      priceId: 'price_monthly_test',
+      ...opts,
+    });
+  }
   override createCheckoutSession(p: CheckoutParams) {
     this.checkoutCalls.push(p);
     return Promise.resolve({ url: 'https://checkout.stripe.com/c/pay/cs_test_123' });
@@ -48,11 +69,30 @@ beforeEach(async () => {
   await resetDb(ctx);
   provider.checkoutCalls = [];
   provider.portalCalls = [];
+  provider.subs.clear();
+  provider.failRetrieve = false;
+  provider.retrieveCalls = [];
 });
 
 let evtSeq = 0;
-function subscriptionEvent(type: string, orgId: string, status: string, opts: { created?: number; subId?: string; price?: string; cancelAtPeriodEnd?: boolean } = {}) {
+/**
+ * Evento de suscripción. Por defecto fija también el estado ACTUAL en el Stripe falso (lo que el
+ * webhook recupera como fuente de verdad); con `stale: true` el evento llega pero Stripe ya dice otra cosa.
+ */
+function subscriptionEvent(
+  type: string,
+  orgId: string,
+  status: string,
+  opts: { created?: number; subId?: string; price?: string; cancelAtPeriodEnd?: boolean; stale?: boolean } = {},
+) {
   evtSeq += 1;
+  if (!opts.stale) {
+    provider.setSub(opts.subId ?? 'sub_test_1', status, {
+      metadata: { organization_id: orgId },
+      priceId: opts.price ?? 'price_monthly_test',
+      cancelAtPeriodEnd: opts.cancelAtPeriodEnd ?? false,
+    });
+  }
   return {
     id: `evt_test_${evtSeq}_${Date.now()}`,
     object: 'event',
@@ -124,6 +164,7 @@ describe('Checkout y portal', () => {
   it('portal: requiere cliente de Stripe (vinculado por el webhook de Checkout)', async () => {
     const { client, base, org } = await setupOwner(ctx);
     expect((await client.post(`${base}/billing/portal`)).statusCode).toBe(409);
+    provider.setSub('sub_test_1', 'active', { metadata: { organization_id: org.id, plan: 'monthly' } });
     const completed = {
       id: 'evt_checkout_1',
       object: 'event',
@@ -135,6 +176,8 @@ describe('Checkout y portal', () => {
     const res = await client.post(`${base}/billing/portal`);
     expect(res.statusCode).toBe(200);
     expect(provider.portalCalls[0]!.customerId).toBe('cus_test_1');
+    // (d) checkout.session.completed aplica el estado real de la suscripción, no la deja sin estado.
+    expect(json(await client.get(`${base}/billing`)).subscription).toMatchObject({ status: 'active', readOnly: false, plan: 'monthly' });
   });
 });
 
@@ -179,17 +222,79 @@ describe('webhook', () => {
     expect((await client.post(`${base}/billing/checkout`, { plan: 'monthly' })).statusCode).toBe(409);
   });
 
-  it('ignora eventos desordenados más antiguos', async () => {
+  it('(a) eventos desordenados en el mismo segundo: se aplica el estado actual de Stripe', async () => {
     const { client, base, org } = await setupOwner(ctx);
     const now = Math.floor(Date.now() / 1000);
+    // Stripe: la suscripción ya está activa. Llegan "active" y después, con el mismo `created`, "incomplete".
     await postWebhook(ctx, subscriptionEvent('customer.subscription.updated', org.id, 'active', { created: now }));
-    await postWebhook(ctx, subscriptionEvent('customer.subscription.updated', org.id, 'incomplete', { created: now - 100 }));
+    const late = await postWebhook(ctx, subscriptionEvent('customer.subscription.created', org.id, 'incomplete', { created: now, stale: true }));
+    expect(late.statusCode).toBe(200);
     expect(json(await client.get(`${base}/billing`)).subscription.status).toBe('active');
   });
 
-  it('eventos de organizaciones desconocidas se aceptan sin efecto', async () => {
+  it('(b) un evento tardío de una suscripción antigua no pisa la actual', async () => {
+    const { client, base, org } = await setupOwner(ctx);
+    await postWebhook(ctx, subscriptionEvent('customer.subscription.created', org.id, 'active', { subId: 'sub_new' }));
+    provider.setSub('sub_old', 'canceled', { metadata: { organization_id: org.id } });
+    const res = await postWebhook(ctx, subscriptionEvent('customer.subscription.deleted', org.id, 'canceled', { subId: 'sub_old', stale: true }));
+    expect(res.statusCode).toBe(200);
+    expect(json(await client.get(`${base}/billing`)).subscription.status).toBe('active');
+    const o = await ctx.deps.db.selectFrom('organizations').selectAll().where('id', '=', org.id).executeTakeFirstOrThrow();
+    expect(o.stripe_subscription_id).toBe('sub_new');
+    // Pero si la actual está terminada y llega otra viva (nueva contratación), la sustituye.
+    await postWebhook(ctx, subscriptionEvent('customer.subscription.deleted', org.id, 'canceled', { subId: 'sub_new' }));
+    await postWebhook(ctx, subscriptionEvent('customer.subscription.created', org.id, 'active', { subId: 'sub_newer' }));
+    const o2 = await ctx.deps.db.selectFrom('organizations').selectAll().where('id', '=', org.id).executeTakeFirstOrThrow();
+    expect(o2).toMatchObject({ stripe_subscription_id: 'sub_newer', subscription_status: 'active' });
+  });
+
+  it('(c) sin local asociable o con Stripe caído: 5xx sin marcar el evento (Stripe reintenta)', async () => {
+    const { client, base, org } = await setupOwner(ctx);
+    // Suscripción sin metadatos y cliente aún desconocido.
+    provider.setSub('sub_orphan', 'active', { customerId: 'cus_unknown' });
+    const ev = subscriptionEvent('customer.subscription.created', org.id, 'active', { subId: 'sub_orphan', stale: true });
+    (ev.data.object as { metadata: object; customer: string }).metadata = {};
+    (ev.data.object as { customer: string }).customer = 'cus_unknown';
+    const r1 = await postWebhook(ctx, ev);
+    expect(r1.statusCode).toBe(503);
+    expect(await ctx.deps.db.selectFrom('stripe_events').selectAll().execute()).toHaveLength(0);
+    // Stripe caído al recuperar la suscripción.
+    provider.failRetrieve = true;
+    const ev2 = subscriptionEvent('customer.subscription.updated', org.id, 'active');
+    expect((await postWebhook(ctx, ev2)).statusCode).toBe(503);
+    expect(await ctx.deps.db.selectFrom('stripe_events').selectAll().execute()).toHaveLength(0);
+    // El reintento, con Stripe ya disponible, se aplica.
+    provider.failRetrieve = false;
+    expect((await postWebhook(ctx, ev2)).statusCode).toBe(200);
+    expect(json(await client.get(`${base}/billing`)).subscription.status).toBe('active');
+    // Y el huérfano, una vez vinculado el cliente al local, también.
+    await ctx.deps.db.updateTable('organizations').set({ stripe_customer_id: 'cus_unknown', stripe_subscription_id: null }).where('id', '=', org.id).execute();
+    const r2 = await postWebhook(ctx, ev);
+    expect(r2.statusCode).toBe(200);
+  });
+
+  it('eventos de un local ya eliminado se aceptan sin efecto', async () => {
     const res = await postWebhook(ctx, subscriptionEvent('customer.subscription.updated', '00000000-0000-4000-8000-000000000000', 'active'));
     expect(res.statusCode).toBe(200);
+    expect(await ctx.deps.db.selectFrom('stripe_events').selectAll().execute()).toHaveLength(1);
+  });
+
+  it('las facturas (invoice.*) también actualizan el estado desde Stripe', async () => {
+    const { client, base, org } = await setupOwner(ctx);
+    await postWebhook(ctx, subscriptionEvent('customer.subscription.created', org.id, 'active'));
+    provider.setSub('sub_test_1', 'past_due', { metadata: { organization_id: org.id } });
+    const inv = {
+      id: `evt_inv_${Date.now()}`,
+      object: 'event',
+      type: 'invoice.payment_failed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: 'in_1', object: 'invoice', customer: 'cus_test_1', parent: { subscription_details: { subscription: 'sub_test_1', metadata: { organization_id: org.id } } } } },
+    };
+    expect((await postWebhook(ctx, inv)).statusCode).toBe(200);
+    const sub = json(await client.get(`${base}/billing`)).subscription;
+    // past_due: periodo de gracia, se puede seguir escribiendo con aviso de pago fallido.
+    expect(sub).toMatchObject({ status: 'past_due', readOnly: false, paymentFailed: true });
+    expect((await client.post(`${base}/records`, { type: 'plagas', data: { result: 'sin_indicios' } })).statusCode).toBe(201);
   });
 });
 
@@ -223,7 +328,7 @@ describe('solo lectura por suscripción', () => {
     expect(provider.checkoutCalls[0]!.trialEnd).toBeNull();
   });
 
-  it.each(['past_due', 'unpaid', 'canceled'])('suscripción %s → solo lectura; activa → vuelve a escritura', async (status) => {
+  it.each(['unpaid', 'canceled', 'incomplete_expired'])('suscripción %s → solo lectura; activa → vuelve a escritura', async (status) => {
     const { client, base, org } = await setupOwner(ctx);
     const type = status === 'canceled' ? 'customer.subscription.deleted' : 'customer.subscription.updated';
     await postWebhook(ctx, subscriptionEvent(type, org.id, status, { created: Math.floor(Date.now() / 1000) - 10 }));

@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
@@ -13,9 +13,50 @@ import type { DB } from '../../db/index.js';
 import type { Organization } from '../../db/types.js';
 import { amendedBySelect } from '../records/routes.js';
 import { CSV_HEADERS, csvLine, csvRow, type ReportRecord } from './format.js';
-import { createReportPdf } from './pdf.js';
+import { createReportPdf, type PdfInput } from './pdf.js';
+import { guardSlowDownload } from '../../http/slow-download.js';
 
 export const MAX_REPORT_DAYS = 366;
+/** Tope defensivo de tamaño de un PDF en memoria (5.000 filas ocupan bastante menos). */
+export const MAX_PDF_BYTES = 64 * 1024 * 1024;
+
+/** Genera el PDF entero en un búfer. Se aborta si el cliente se desconecta o se supera el tope. */
+export function renderPdfToBuffer(input: PdfInput, reply: FastifyReply, maxBytes = MAX_PDF_BYTES): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const done = (err: Error | null, buf?: Buffer) => {
+      if (settled) return;
+      settled = true;
+      reply.raw.off('close', onAbort);
+      if (err) reject(err);
+      else resolve(buf!);
+    };
+    const doc = createReportPdf(input, (err) => reply.request.log.error({ err }, 'Error generando PDF'));
+    const onAbort = () => {
+      // Conexión cerrada por el cliente antes de terminar (la respuesta aún no se ha enviado,
+      // así que 'close' de la respuesta solo puede ser un aborto): se deja de generar.
+      if (!doc.readableEnded) {
+        doc.destroy();
+        done(new Error('Petición cancelada durante la generación del PDF'));
+      }
+    };
+    reply.raw.once('close', onAbort);
+    doc.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        doc.destroy();
+        done(new AppError(400, 'REPORT_TOO_LARGE', 'El informe PDF es demasiado grande. Acota el periodo o los tipos de registro, o descarga el CSV.'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    doc.once('end', () => done(null, Buffer.concat(chunks, size)));
+    doc.once('error', (err: Error) => done(err));
+    doc.once('close', () => done(new Error('La generación del PDF se interrumpió')));
+  });
+}
 const BATCH = 500;
 
 /** Itera los registros de un tipo en el rango [from, to] (fechas locales) por lotes. */
@@ -107,7 +148,10 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         );
       }
       await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'pdf', from: q.from, to: q.to, types: q.types } });
-      const doc = createReportPdf(
+      // Se genera COMPLETO en memoria (acotado: máx. maxPdfRows filas y MAX_PDF_BYTES) y el hueco
+      // del semáforo se libera en cuanto termina la GENERACIÓN, no la descarga: un cliente lento
+      // que no lee la respuesta no puede retener los huecos y dejar sin PDF al resto.
+      const pdf = await renderPdfToBuffer(
         {
           appName: config.appName,
           org: ctx.org,
@@ -117,20 +161,17 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
           records: (type) => iterateRecords(db, ctx.org, q.from, q.to, [type]),
           maxRows,
         },
-        (err) => req.log.error({ err }, 'Error generando PDF'),
+        reply,
       );
-      // Se libera el hueco al terminar, fallar o cortarse la descarga.
-      doc.once('close', release);
-      doc.once('error', release);
-      reply.raw.once('close', () => {
-        release();
-        if (!doc.destroyed && !doc.readableEnded) doc.destroy();
-      });
-      reply.type('application/pdf').header('Content-Disposition', `attachment; filename="${filename(ctx.org, q.from, q.to, 'pdf')}"`);
-      return reply.send(doc);
-    } catch (err) {
       release();
-      throw err;
+      guardSlowDownload(reply);
+      reply
+        .type('application/pdf')
+        .header('Content-Length', String(pdf.length))
+        .header('Content-Disposition', `attachment; filename="${filename(ctx.org, q.from, q.to, 'pdf')}"`);
+      return reply.send(pdf);
+    } finally {
+      release();
     }
   });
 
@@ -158,6 +199,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         yield chunk;
       }
     }
+    guardSlowDownload(reply);
     reply.type('text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="${filename(ctx.org, q.from, q.to, 'csv')}"`);
     return reply.send(Readable.from(generate()));
   });

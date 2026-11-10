@@ -111,7 +111,15 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     // (o una baja y una salida) no dejen un local sin owner. La cuenta nunca arrastra
     // locales: si es el único propietario, hay que eliminarlos o transferirlos antes.
     await db.transaction().execute(async (trx) => {
-      const mine = await trx.selectFrom('memberships').select('organization_id').where('user_id', '=', user.id).where('role', '=', 'owner').execute();
+      // Los locales ya pendientes de eliminación no bloquean: se purgarán en su fecha.
+      const mine = await trx
+        .selectFrom('memberships as m')
+        .innerJoin('organizations as o', 'o.id', 'm.organization_id')
+        .select('m.organization_id')
+        .where('m.user_id', '=', user.id)
+        .where('m.role', '=', 'owner')
+        .where('o.deletion_scheduled_at', 'is', null)
+        .execute();
       const orgIds = mine.map((m) => m.organization_id);
       if (orgIds.length > 0) {
         const owners = await trx

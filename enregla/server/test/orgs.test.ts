@@ -179,7 +179,7 @@ describe('RGPD: exportación y borrado', () => {
     expect(audit).toHaveLength(1);
   });
 
-  it('eliminar organización exige owner y contraseña; borra registros en cascada', async () => {
+  it('eliminar organización exige owner y contraseña; queda pendiente y la eliminación definitiva borra en cascada', async () => {
     const { client, base, org } = await setupOwner(ctx);
     await client.post(`${base}/records`, { type: 'incidencia', data: { description: 'X', closed: true } });
     const { client: mgr } = await addMember(ctx, org.id, 'm@example.com', 'manager');
@@ -187,6 +187,10 @@ describe('RGPD: exportación y borrado', () => {
     expect((await client.delete(base, { password: 'incorrecta-1' })).statusCode).toBe(401);
     expect((await client.delete(base, {})).statusCode).toBe(400);
     expect((await client.delete(base, { password: PASSWORD })).statusCode).toBe(204);
+    // Borrado diferido: los registros se conservan durante el plazo.
+    expect(await ctx.deps.db.selectFrom('records').selectAll().execute()).toHaveLength(1);
+    expect(json(await client.get(base)).organization.deletionScheduledAt).not.toBeNull();
+    expect((await client.delete(`${base}/permanent`, { password: PASSWORD })).statusCode).toBe(204);
     expect(await ctx.deps.db.selectFrom('records').selectAll().execute()).toHaveLength(0);
     expect(await ctx.deps.db.selectFrom('organizations').selectAll().execute()).toHaveLength(0);
     const audit = await ctx.deps.db.selectFrom('audit_events').selectAll().where('event', '=', 'org.deleted').execute();

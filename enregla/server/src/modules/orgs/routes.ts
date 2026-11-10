@@ -17,6 +17,7 @@ import { TEMPLATES } from './templates.js';
 import { hasLiveStripeSubscription } from '../billing/status.js';
 import { keysetAfter } from '../../lib/pagination.js';
 import { orgView, recordView } from '../views.js';
+import { guardSlowDownload } from '../../http/slow-download.js';
 
 export function newItemId(): string {
   return crypto.randomUUID();
@@ -344,6 +345,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       yield `,"auditEvents":${JSON.stringify(auditRows)}}`;
     }
     const date = new Date().toISOString().slice(0, 10);
+    guardSlowDownload(reply);
     reply
       .type('application/json; charset=utf-8')
       .header('Content-Disposition', `attachment; filename="exportacion-${date}.json"`);

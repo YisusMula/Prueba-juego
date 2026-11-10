@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
-import { closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, type TestCtx } from './helpers.js';
+import { closeTestApp, createStaff, createTestApp, firstEquipment, json, resetDb, setupOwner, type TestCtx, FIXED_NOW, FIXED_TODAY, backdateConfig } from './helpers.js';
 import { addDays, localDate, isoWeekday, localHour } from '../src/lib/dates.js';
 import { isDue, periodStart } from '../src/modules/tasks/service.js';
 import { json as toJson } from '../src/db/index.js';
 
 let ctx: TestCtx;
 beforeAll(async () => {
-  ctx = await createTestApp();
+  ctx = await createTestApp({ now: () => FIXED_NOW });
 });
 afterAll(async () => closeTestApp(ctx));
 beforeEach(async () => resetDb(ctx));
@@ -38,8 +38,9 @@ describe('utilidades de fechas y frecuencias', () => {
 describe('tareas de hoy', () => {
   it('calcula pendientes y hechas según equipos, frecuencias y planes', async () => {
     const { client, base, org } = await setupOwner(ctx);
+    await backdateConfig(ctx, org.id);
     const t0 = json(await client.get(`${base}/tasks/today`));
-    expect(t0.date).toBe(localDate(new Date(), TZ));
+    expect(t0.date).toBe(FIXED_TODAY);
     expect(t0.timezone).toBe(TZ);
     // restaurante: 2 cámaras x2, congelador x1, mesa caliente x3 (la freidora no tiene controles de temperatura)
     expect(t0.temperatures.map((t: { required: number }) => t.required).sort()).toEqual([1, 2, 2, 3]);
@@ -102,7 +103,7 @@ describe('resumen de cumplimiento', () => {
     const db = ctx.deps.db;
     await db.updateTable('equipment').set({ active: false }).where('organization_id', '=', org.id).execute();
     await db.updateTable('cleaning_plans').set({ active: false }).where('organization_id', '=', org.id).execute();
-    const today = localDate(new Date(), TZ);
+    const today = FIXED_TODAY;
     const d2 = addDays(today, -2);
     const d1 = addDays(today, -1);
     const created = sql<Date>`((${addDays(today, -3)}::date)::timestamp AT TIME ZONE ${TZ})`;

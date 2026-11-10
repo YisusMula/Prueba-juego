@@ -132,8 +132,10 @@ describe('listado y detalle', () => {
     expect(json(await client.get(`${base}/records?alert=true`)).items).toHaveLength(1);
     expect(json(await client.get(`${base}/records?equipmentId=${fridge.id}`)).items).toHaveLength(5);
     expect(json(await client.get(`${base}/records?from=2000-01-01&to=2000-01-31`)).items).toHaveLength(0);
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid' }).format(new Date());
-    expect(json(await client.get(`${base}/records?from=${today}&to=${today}`)).items).toHaveLength(6);
+    // Rango a partir de las horas de los propios registros (no de la hora real): no falla a medianoche.
+    const all = json(await client.get(`${base}/records`)).items as { effectiveAt: string }[];
+    const days = all.map((r) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid' }).format(new Date(r.effectiveAt))).sort();
+    expect(json(await client.get(`${base}/records?from=${days[0]}&to=${days.at(-1)}`)).items).toHaveLength(6);
     expect((await client.get(`${base}/records?type=nada`)).statusCode).toBe(400);
     expect((await client.get(`${base}/records?from=hoy`)).statusCode).toBe(400);
   });
