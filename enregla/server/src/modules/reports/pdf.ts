@@ -68,6 +68,15 @@ const COLOR = {
 const YIELD_EVERY_ROWS = 20;
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** Cumplimiento de un día con tareas dadas por hechas gracias a correcciones hechas otro día (I-1). */
+export interface DayNote {
+  date: string;
+  expected: number;
+  done: number;
+  /** Tareas del día cumplidas solo gracias a una corrección hecha en un día posterior. */
+  correctedLater: number;
+}
+
 export interface PdfInput {
   appName: string;
   org: Organization;
@@ -77,6 +86,8 @@ export interface PdfInput {
   /** Iterador de registros por tipo (en lotes, para no cargarlo todo en memoria). */
   records: (type: RecordType) => AsyncIterable<ReportRecord[]>;
   maxRows: number;
+  /** Días del periodo con `correctedLater > 0` (nota por día). */
+  dayNotes?: DayNote[];
 }
 
 /**
@@ -153,6 +164,34 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
         { width },
       );
     doc.moveDown(0.8);
+
+    // I-1: días cuyo cumplimiento mejoró por correcciones hechas en un día posterior.
+    const notesWithLate = (input.dayNotes ?? []).filter((d) => d.correctedLater > 0);
+    if (notesWithLate.length > 0) {
+      doc.font(F.bold).fontSize(11).fillColor(COLOR.brand).text(pdfText('Cumplimiento completado con correcciones posteriores'), left, doc.y, { width });
+      doc.moveDown(0.2);
+      doc
+        .font(F.regular)
+        .fontSize(8)
+        .fillColor(COLOR.muted)
+        .text(
+          pdfText(
+            'En estos días, alguna tarea prevista figura como cumplida gracias a una corrección (enmienda) registrada en un día POSTERIOR al del hecho. Cada corrección figura en las tablas, junto al registro original, con su fecha real, autor y motivo.',
+          ),
+          { width },
+        );
+      doc.moveDown(0.2);
+      for (const d of notesWithLate) {
+        if (doc.y + 14 > bottomLimit()) doc.addPage();
+        const pct = d.expected > 0 ? ` (cumplimiento del día: ${d.done} de ${d.expected})` : '';
+        doc
+          .font(F.regular)
+          .fontSize(8.5)
+          .fillColor(COLOR.text)
+          .text(pdfText(`${formatDateEs(d.date)}: ${d.correctedLater} tarea(s) cumplida(s) mediante una corrección hecha en un día posterior${pct}.`), left, doc.y, { width });
+      }
+      doc.moveDown(0.8);
+    }
 
     let totalRows = 0;
     for (const type of input.types) {

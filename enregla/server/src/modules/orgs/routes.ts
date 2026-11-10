@@ -4,7 +4,7 @@ import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
 import { orgCtx, requireRole, requireUser, requireWritable } from '../../http/guards.js';
-import { AppError, conflict } from '../../lib/errors.js';
+import { AppError, conflict, notFound } from '../../lib/errors.js';
 import { emails, mailCtxFrom } from '../../lib/emails.js';
 import { formatDateEs, localDate } from '../../lib/dates.js';
 import { enforce } from '../../lib/rate-limit.js';
@@ -15,6 +15,7 @@ import { json } from '../../db/index.js';
 import type { DB } from '../../db/index.js';
 import { TEMPLATES } from './templates.js';
 import { hasLiveStripeSubscription } from '../billing/status.js';
+import { BillingTeardownError, stopOrgBilling } from '../billing/teardown.js';
 import { keysetAfter } from '../../lib/pagination.js';
 import { orgView, recordView } from '../views.js';
 import { guardSlowDownload } from '../../http/slow-download.js';
@@ -176,6 +177,16 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       }
       await audit(db, { event: 'billing.subscription_canceled', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { reason: 'org_deleted' } });
     }
+    // M-1 (c): una sesión de Checkout abierta se expira: ya no se podrá completar el pago y crear
+    // una suscripción para un local que se va a borrar. Si falla, no se marca nada.
+    if (org.stripe_checkout_session_id && app.deps.billing) {
+      try {
+        await app.deps.billing.expireCheckoutSession(org.stripe_checkout_session_id);
+      } catch (err) {
+        req.log.error({ err: (err as Error).message }, 'Error expirando la sesión de Checkout al eliminar el local');
+        throw new AppError(502, 'BILLING_ERROR', 'No se ha podido anular el pago pendiente en Stripe, así que el local NO se ha eliminado. Inténtalo de nuevo en unos minutos.');
+      }
+    }
     const graceDays = config.orgDeletionGraceDays;
     const queued = await db.transaction().execute(async (trx) => {
       const updated = await trx
@@ -186,11 +197,21 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
           deletion_requested_by: ctx.userId,
           // La cancelación ya está hecha en Stripe; el webhook lo confirmará.
           ...(hasLiveStripeSubscription(org) ? { subscription_status: 'canceled', cancel_at_period_end: false } : {}),
+          stripe_checkout_session_id: null,
           updated_at: sql<Date>`now()`,
         })
         .where('id', '=', ctx.org.id)
         .returning(['deletion_scheduled_at', 'name', 'timezone'])
         .executeTakeFirstOrThrow();
+      // B-1: las invitaciones pendientes se anulan (nadie puede unirse a un local que se va a borrar).
+      const invitationsRevoked = await trx
+        .updateTable('invitations')
+        .set({ revoked_at: sql<Date>`now()` })
+        .where('organization_id', '=', ctx.org.id)
+        .where('accepted_at', 'is', null)
+        .where('revoked_at', 'is', null)
+        .returning('id')
+        .execute();
       const revoked = await trx
         .updateTable('devices')
         .set({ revoked_at: sql<Date>`now()` })
@@ -203,7 +224,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
         organizationId: ctx.org.id,
         userId: ctx.userId,
         ip: req.ip,
-        metadata: { scheduledFor: updated.deletion_scheduled_at!.toISOString(), devicesRevoked: revoked.length },
+        metadata: { scheduledFor: updated.deletion_scheduled_at!.toISOString(), devicesRevoked: revoked.length, invitationsRevoked: invitationsRevoked.length },
       });
       const owners = await trx
         .selectFrom('memberships as m')
@@ -225,12 +246,20 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
   app.post('/restore', async (req) => {
     const ctx = requireRole(req, 'owner');
     if (!ctx.org.deletion_scheduled_at) throw conflict('Este local no está pendiente de eliminación.');
+    // B-6: la purga diaria (o una eliminación inmediata) puede haberlo borrado mientras tanto.
+    // Solo se restaura lo que de verdad sigue pendiente; nunca un 500.
     const org = await db
       .updateTable('organizations')
       .set({ deletion_requested_at: null, deletion_scheduled_at: null, deletion_requested_by: null, updated_at: sql<Date>`now()` })
       .where('id', '=', ctx.org.id)
+      .where('deletion_scheduled_at', 'is not', null)
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirst();
+    if (!org) {
+      const still = await db.selectFrom('organizations').select('id').where('id', '=', ctx.org.id).executeTakeFirst();
+      if (!still) throw notFound('Local');
+      throw conflict('Este local no está pendiente de eliminación.');
+    }
     await audit(db, { event: 'org.restored', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip });
     return { organization: orgView(org, ctx.role) };
   });
@@ -245,7 +274,31 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     if (!ctx.org.deletion_scheduled_at) {
       throw conflict('Primero solicita la eliminación del local; la eliminación inmediata solo está disponible para locales pendientes de eliminación.');
     }
-    await db.deleteFrom('organizations').where('id', '=', ctx.org.id).where('deletion_scheduled_at', 'is not', null).execute();
+    // M-1 (a): nada en Stripe puede seguir cobrando. Si no se puede cancelar, NO se borra.
+    try {
+      const stopped = await stopOrgBilling(app.deps.billing, ctx.org);
+      if (stopped.subscriptionCanceled) {
+        await audit(db, {
+          event: 'billing.subscription_canceled',
+          organizationId: ctx.org.id,
+          userId: ctx.userId,
+          ip: req.ip,
+          metadata: { reason: 'org_deleted_permanently', subscriptionId: stopped.subscriptionCanceled },
+        });
+      }
+    } catch (err) {
+      req.log.error({ err: (err as Error).message }, 'Error cancelando en Stripe antes de la eliminación definitiva');
+      if (err instanceof BillingTeardownError && err.notConfigured) {
+        throw new AppError(503, 'BILLING_NOT_CONFIGURED', 'Este local tiene una suscripción activa y la facturación no está configurada en el servidor: no se puede cancelar, así que el local no se ha eliminado.');
+      }
+      throw new AppError(502, 'BILLING_ERROR', 'No se ha podido cancelar la suscripción en Stripe, así que el local NO se ha eliminado. Inténtalo de nuevo en unos minutos.');
+    }
+    const del = await db.deleteFrom('organizations').where('id', '=', ctx.org.id).where('deletion_scheduled_at', 'is not', null).executeTakeFirst();
+    if (Number(del.numDeletedRows) === 0) {
+      const still = await db.selectFrom('organizations').select('id').where('id', '=', ctx.org.id).executeTakeFirst();
+      if (still) throw conflict('Este local ya no está pendiente de eliminación.');
+      throw notFound('Local');
+    }
     await audit(db, { event: 'org.deleted', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { name: ctx.org.name, reason: 'permanent_request' } });
     return reply.status(204).send();
   });

@@ -11,8 +11,11 @@ import type { Mailer, MailMessage } from './mailer.js';
  * - Segura con varias instancias: cada fila se "reclama" con FOR UPDATE SKIP LOCKED y un
  *   arrendamiento (next_attempt_at en el futuro), así que nunca la envían dos procesos a la vez
  *   y, si un proceso muere a mitad de envío, otra instancia la reintenta al vencer el arrendamiento.
- * - Almacenamiento temporal: los cuerpos pueden llevar enlaces con token. Las enviadas se purgan
- *   a las SENT_RETENTION_HOURS y las fallidas definitivas a los FAILED_RETENTION_DAYS.
+ * - Se reclama DE UNA EN UNA (justo antes de enviarla): un SMTP lento nunca deja filas reservadas
+ *   sin enviar cuyo arrendamiento caduque y otra instancia las vuelva a enviar (B-5).
+ * - Almacenamiento temporal: los cuerpos pueden llevar enlaces con token. Se VACÍAN en el mismo
+ *   UPDATE que marca el email como enviado o como fallido definitivo (B-3); las filas se purgan a
+ *   las SENT_RETENTION_HOURS (enviadas) y a los FAILED_RETENTION_DAYS (fallidas).
  */
 
 /** Espera tras el intento n (1-based) antes del siguiente. Suma ≈ 24 h. */
@@ -87,7 +90,12 @@ export interface OutboxResult {
 async function deliver(db: DB, mailer: Mailer, row: OutboxRow, onError?: (err: unknown, row: OutboxRow) => void): Promise<'sent' | 'retried' | 'failed'> {
   try {
     await mailer.send({ to: row.to_address, subject: row.subject, text: row.text_body, html: row.html_body });
-    await db.updateTable('email_outbox').set({ status: 'sent', sent_at: sql<Date>`now()`, last_error: null }).where('id', '=', row.id).execute();
+    // Enviado: los cuerpos (enlaces con token) se vacían en el mismo UPDATE.
+    await db
+      .updateTable('email_outbox')
+      .set({ status: 'sent', sent_at: sql<Date>`now()`, last_error: null, text_body: '', html_body: '' })
+      .where('id', '=', row.id)
+      .execute();
     return 'sent';
   } catch (err) {
     onError?.(err, row);
@@ -99,6 +107,8 @@ async function deliver(db: DB, mailer: Mailer, row: OutboxRow, onError?: (err: u
       .set({
         status: final ? 'failed' : 'pending',
         last_error: summarizeError(err),
+        // Fallido definitivo: ya no se enviará, así que los cuerpos (con enlaces de un solo uso) se vacían.
+        ...(final ? { text_body: '', html_body: '' } : {}),
         next_attempt_at: final ? sql<Date>`now()` : sql<Date>`now() + make_interval(secs => ${wait})`,
       })
       .where('id', '=', row.id)
@@ -117,8 +127,13 @@ export async function processOutbox(
   opts: { ids?: string[]; limit?: number; onError?: (err: unknown, row: OutboxRow) => void } = {},
 ): Promise<OutboxResult> {
   const result: OutboxResult = { sent: 0, retried: 0, failed: 0 };
-  const rows = await claim(db, { ids: opts.ids, limit: opts.limit ?? 20 });
-  for (const row of rows) result[await deliver(db, mailer, row, opts.onError)] += 1;
+  const limit = opts.limit ?? 20;
+  // De una en una: el arrendamiento de cada fila empieza justo antes de SU envío.
+  for (let i = 0; i < limit; i++) {
+    const [row] = await claim(db, { ids: opts.ids, limit: 1 });
+    if (!row) break;
+    result[await deliver(db, mailer, row, opts.onError)] += 1;
+  }
   return result;
 }
 

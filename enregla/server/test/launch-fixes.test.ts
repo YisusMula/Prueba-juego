@@ -87,7 +87,9 @@ describe('contraseñas: solo coincidencia exacta y mensaje que explica el motivo
     expect(S.checkPasswordPolicy('CONTRASENA1')).toMatch(/más usadas/);
     expect(S.checkPasswordPolicy('ana.martin.cocina', { email: 'ana.martin.cocina@example.com' })).toMatch(/email ni a tu nombre/);
     expect(S.checkPasswordPolicy('Ana Martín Gil', { name: 'ana martín gil' })).toMatch(/email ni a tu nombre/);
-    expect(S.checkPasswordPolicy('anamartingil-2026', { name: 'Ana Martín Gil', email: 'ana@example.com' })).toBeNull();
+    // I-5: contener el nombre (≥ 5 caracteres, sin tildes ni espacios) también se rechaza.
+    expect(S.checkPasswordPolicy('anamartingil-2026', { name: 'Ana Martín Gil', email: 'ana@example.com' })).toMatch(/email ni a tu nombre/);
+    expect(S.checkPasswordPolicy('Cocina-Limpia-2026', { name: 'Ana Martín Gil', email: 'ana@example.com' })).toBeNull();
     expect(S.checkPasswordPolicy('zzzzzzzzzzzz')).toMatch(/repetido/);
     expect(S.passwordRules('corta').find((r) => !r.ok)?.id).toBe('length');
   });

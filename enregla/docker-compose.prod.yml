@@ -68,6 +68,10 @@ services:
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 20s
+    # Límite de memoria recomendado (docs/OPERACIONES.md, «Memoria del contenedor»): proceso
+    # principal (~250 MB) + hasta PDF_MAX_CONCURRENCY (2) workers de PDF con el heap acotado a
+    # 256 MB cada uno + búferes de los PDF. Con más PDF simultáneos, súbelo ~350 MB por cada uno.
+    mem_limit: 1g
     networks: [internal, edge]
 
   # Copias de seguridad diarias con pg_dump (deploy/backup.sh), retención local de

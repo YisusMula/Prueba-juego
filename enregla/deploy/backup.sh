@@ -10,16 +10,26 @@
 #                           BACKUP_POST_HOOK='rclone copy "$BACKUP_FILE" remoto:enregla-backups'
 #                           (en server/.env para docker compose, escribe $$BACKUP_FILE)
 #
+# Datos EXCLUIDOS del volcado (se copia su estructura, no sus filas; ver docs/OPERACIONES.md):
+#   email_outbox      cuerpos de emails con enlaces de un solo uso (tokens en claro)
+#   sessions          sesiones abiertas (tras restaurar, todos vuelven a iniciar sesión)
+#   email_tokens      tokens de verificación / restablecimiento / cambio de email
+#   rate_limits       contadores de límites de peticiones
+#   idempotency_keys  claves de idempotencia de altas (7 días)
+#
 # Uso:   PGHOST=... PGUSER=... PGPASSWORD=... PGDATABASE=... ./deploy/backup.sh
 # Salida: $BACKUP_DIR/enregla-AAAAMMDD-HHMMSS.dump (+ .sha256). Código distinto de 0 si falla.
 # Restaurar: ver docs/OPERACIONES.md («Restaurar una copia»).
 set -eu
+# Las copias contienen datos personales: solo legibles por el usuario que las crea.
+umask 077
 
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 : "${PGDATABASE:?Define PGDATABASE}"
 
 mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
 stamp="$(date -u +%Y%m%d-%H%M%S)"
 final="$BACKUP_DIR/enregla-$stamp.dump"
 tmp="$final.partial"
@@ -28,7 +38,13 @@ log() { echo "[backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 trap 'rm -f "$tmp"' EXIT
 
 log "Volcando la base $PGDATABASE..."
-pg_dump --format=custom --compress=6 --no-owner --no-privileges --file="$tmp" "$PGDATABASE"
+pg_dump --format=custom --compress=6 --no-owner --no-privileges \
+  --exclude-table-data=email_outbox \
+  --exclude-table-data=sessions \
+  --exclude-table-data=email_tokens \
+  --exclude-table-data=rate_limits \
+  --exclude-table-data=idempotency_keys \
+  --file="$tmp" "$PGDATABASE"
 
 # Comprobación mínima de que el fichero es un volcado legible (lista su contenido).
 pg_restore --list "$tmp" > /dev/null

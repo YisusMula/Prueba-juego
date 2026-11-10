@@ -65,6 +65,10 @@ export interface OrganizationsTable {
   deletion_requested_at: TimestampNullable;
   deletion_scheduled_at: TimestampNullable;
   deletion_requested_by: string | null;
+  /** Sesión de Checkout abierta (se expira al pedir el borrado del local). */
+  stripe_checkout_session_id: string | null;
+  /** Desde cuándo la suscripción está en `past_due` (null si no lo está). */
+  past_due_since: TimestampNullable;
   created_at: Timestamp;
   updated_at: Timestamp;
 }

@@ -196,16 +196,24 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const row = await consumeEmailToken(deps, token, 'email_change');
     if (!row?.new_email) throw invalidToken();
     const old = await db.selectFrom('users').select(['email']).where('id', '=', row.user_id).executeTakeFirstOrThrow();
+    const newEmail = row.new_email;
     try {
-      await db
-        .updateTable('users')
-        .set({ email: row.new_email, email_verified_at: sql<Date>`now()`, updated_at: sql<Date>`now()` })
-        .where('id', '=', row.user_id)
-        .execute();
+      await db.transaction().execute(async (trx) => {
+        await trx
+          .updateTable('users')
+          .set({ email: newEmail, email_verified_at: sql<Date>`now()`, updated_at: sql<Date>`now()` })
+          .where('id', '=', row.user_id)
+          .execute();
+        // I-7: los enlaces ya emitidos (restablecer contraseña al email ANTIGUO, otros cambios de
+        // email, verificación) dejan de valer: quien controlara el buzón antiguo ya no puede usarlos.
+        await invalidateUserTokens(trx, row.user_id);
+      });
     } catch (err) {
       if ((err as { code?: string }).code === '23505') throw conflict('Ese email ya está en uso por otra cuenta');
       throw err;
     }
+    // I-7: se cierran las demás sesiones (se conserva solo la de quien confirma, si es el titular).
+    await deleteUserSessions(deps, row.user_id, req.auth?.user.id === row.user_id ? req.auth.sessionId : undefined);
     await audit(db, { event: 'auth.email_changed', userId: row.user_id, ip: req.ip, metadata: { from: old.email, to: row.new_email } });
     app.sendMail(emails.emailChangedNotice(ctx, old.email, row.new_email));
     return { message: 'Email actualizado.' };

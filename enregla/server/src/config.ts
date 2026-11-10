@@ -61,6 +61,14 @@ const envSchema = z.object({
   AUDIT_RETENTION_MONTHS: z.coerce.number().int().min(1).max(120).default(12),
   UNVERIFIED_ACCOUNT_DAYS: z.coerce.number().int().min(1).max(90).default(7),
   PDF_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
+  /** Espera máxima en la cola de PDF (segundos) antes de responder 429. */
+  PDF_QUEUE_MAX_WAIT_SECONDS: z.coerce.number().int().min(0).max(120).default(20),
+  /** Segundos de generación de PDF por local y hora. */
+  PDF_BUDGET_SECONDS_PER_HOUR: z.coerce.number().int().min(10).max(3600).default(180),
+  /** Generar los PDF en un worker_thread (recomendado). */
+  PDF_WORKER: bool.default(true),
+  /** Días en past_due tras los que el local pasa a solo lectura (salvaguarda, I-3). */
+  PAST_DUE_READ_ONLY_DAYS: z.coerce.number().int().min(1).max(90).default(21),
 });
 
 export interface RateLimitRule {
@@ -148,6 +156,18 @@ export interface Config {
     pdfConcurrency: number;
     /** Segundos sugeridos en Retry-After cuando no hay hueco para otro PDF. */
     pdfBusyRetrySeconds: number;
+    /** Espera máxima (ms) en la cola justa de PDF antes de responder 429. */
+    pdfQueueMaxWaitMs: number;
+    /** Peticiones de PDF esperando a la vez en la cola (por encima, 429 inmediato). */
+    pdfQueueMaxLength: number;
+    /** Presupuesto de tiempo de generación de PDF por local y hora (ms). */
+    pdfBudgetMsPerHour: number;
+    /** Genera el PDF en un worker_thread (no compite con el event loop de la API). */
+    pdfWorker: boolean;
+  };
+  billing: {
+    /** Días en `past_due` tras los que el local pasa a solo lectura. */
+    pastDueReadOnlyDays: number;
   };
   retention: {
     auditMonths: number;
@@ -318,7 +338,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     },
     pinMaxFailures: 5,
     pinLockMinutes: 15,
-    reports: { maxPdfRows: 5_000, maxCsvRows: 500_000, pdfConcurrency: e.PDF_MAX_CONCURRENCY, pdfBusyRetrySeconds: 15 },
+    reports: {
+      maxPdfRows: 5_000,
+      maxCsvRows: 500_000,
+      pdfConcurrency: e.PDF_MAX_CONCURRENCY,
+      pdfBusyRetrySeconds: 15,
+      pdfQueueMaxWaitMs: e.PDF_QUEUE_MAX_WAIT_SECONDS * 1000,
+      pdfQueueMaxLength: 50,
+      pdfBudgetMsPerHour: e.PDF_BUDGET_SECONDS_PER_HOUR * 1000,
+      pdfWorker: e.PDF_WORKER,
+    },
+    billing: { pastDueReadOnlyDays: e.PAST_DUE_READ_ONLY_DAYS },
     retention: { auditMonths: e.AUDIT_RETENTION_MONTHS, unverifiedAccountDays: e.UNVERIFIED_ACCOUNT_DAYS },
   };
   return { ...config, ...overrides };

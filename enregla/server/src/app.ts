@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { AppDeps } from './http/context.js';
 import { AppError } from './lib/errors.js';
 import { TrySemaphore } from './lib/semaphore.js';
+import { configureBillingStatus } from './modules/billing/status.js';
 import { checkCsrf, isCsrfExempt, registerSecurity } from './http/security.js';
 import { loadSession, clearSessionCookie } from './modules/auth/sessions.js';
 import { loadOrgContext } from './http/guards.js';
@@ -100,28 +101,26 @@ export function loggerOptions(config: Pick<Config, 'env' | 'logLevel'>, resolve:
 /** keep-alive mayor que el de los balanceadores habituales (60–120 s) para evitar 502 por carreras. */
 export const HTTP_TIMEOUTS = { keepAliveMs: 125_000, headersMs: 130_000, requestMs: 300_000, connectionMs: 130_000 };
 
-/** Rutas de la SPA que no son públicas (o no aportan nada indexadas): llevan X-Robots-Tag: noindex. */
-const PRIVATE_SPA_PREFIXES = [
-  '/app',
-  '/locales',
-  '/nuevo-local',
-  '/cocina',
-  '/carta',
-  '/entrar',
-  '/registro',
-  '/revisa-tu-correo',
-  '/verificar-email',
-  '/recuperar-contrasena',
-  '/restablecer-contrasena',
-  '/confirmar-email',
-  '/invitacion',
-];
+/**
+ * I-4: X-Robots-Tag por LISTA BLANCA. Solo la portada y las páginas legales, con su ruta EXACTA
+ * (tal como llega, sin normalizar mayúsculas, barras dobles ni %2F), son indexables; cualquier otra
+ * ruta (API, app privada, carta pública, ficheros, variantes como `/Locales/x`, `//locales/x` o
+ * `/locales%2Fx`) lleva `noindex, nofollow`.
+ */
+export const INDEXABLE_PATHS = new Set(['/', '/aviso-legal', '/privacidad', '/terminos', '/cookies']);
+export function isIndexablePath(rawUrl: string): boolean {
+  const q = rawUrl.indexOf('?');
+  const pathname = q >= 0 ? rawUrl.slice(0, q) : rawUrl;
+  return INDEXABLE_PATHS.has(pathname);
+}
+/** @deprecated Se mantiene por compatibilidad: ahora es privado todo lo que no es indexable. */
 export function isPrivateSpaPath(pathname: string): boolean {
-  return PRIVATE_SPA_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  return !isIndexablePath(pathname);
 }
 
 export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOptions['logger'] } = {}): Promise<FastifyInstance> {
   const { config } = deps;
+  configureBillingStatus({ pastDueReadOnlyDays: config.billing.pastDueReadOnlyDays });
   const app = Fastify({
     logger: opts.logger ?? loggerOptions(config),
     keepAliveTimeout: HTTP_TIMEOUTS.keepAliveMs,
@@ -188,7 +187,7 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     while (pendingJobs.size > 0) await Promise.all([...pendingJobs]);
   });
   app.addHook('onClose', async () => app.drainBackground());
-  app.decorate('pdfSlots', new TrySemaphore(config.reports.pdfConcurrency));
+  app.decorate('pdfSlots', new TrySemaphore(config.reports.pdfConcurrency, config.reports.pdfQueueMaxLength));
   app.decorateRequest('auth', null);
   app.decorateRequest('orgCtx', null);
   app.decorateRequest('deviceCtx', null);
@@ -302,10 +301,9 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
     });
   }
 
-  // X-Robots-Tag: la API, la carta pública y la app privada no deben indexarse.
+  // X-Robots-Tag por lista blanca: solo la portada y las páginas legales exactas se indexan.
   app.addHook('onSend', async (req, reply, payload) => {
-    const pathname = req.url.split('?')[0]!;
-    if (pathname === '/api' || pathname.startsWith('/api/') || isPrivateSpaPath(pathname)) reply.header('X-Robots-Tag', 'noindex, nofollow');
+    if (!isIndexablePath(req.url)) reply.header('X-Robots-Tag', 'noindex, nofollow');
     return payload;
   });
 

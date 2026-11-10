@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
@@ -13,50 +13,35 @@ import type { DB } from '../../db/index.js';
 import type { Organization } from '../../db/types.js';
 import { amendedBySelect } from '../records/routes.js';
 import { CSV_HEADERS, csvLine, csvRow, type ReportRecord } from './format.js';
-import { createReportPdf, type PdfInput } from './pdf.js';
+import { MAX_PDF_BYTES, renderPdfInProcess, renderPdfInWorker, type PdfJob } from './pdf-render.js';
+import { computeCompliance } from '../tasks/service.js';
 import { guardSlowDownload } from '../../http/slow-download.js';
 
 export const MAX_REPORT_DAYS = 366;
-/** Tope defensivo de tamaño de un PDF en memoria (5.000 filas ocupan bastante menos). */
-export const MAX_PDF_BYTES = 64 * 1024 * 1024;
+export { MAX_PDF_BYTES };
 
-/** Genera el PDF entero en un búfer. Se aborta si el cliente se desconecta o se supera el tope. */
-export function renderPdfToBuffer(input: PdfInput, reply: FastifyReply, maxBytes = MAX_PDF_BYTES): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let settled = false;
-    const done = (err: Error | null, buf?: Buffer) => {
-      if (settled) return;
-      settled = true;
-      reply.raw.off('close', onAbort);
-      if (err) reject(err);
-      else resolve(buf!);
-    };
-    const doc = createReportPdf(input, (err) => reply.request.log.error({ err }, 'Error generando PDF'));
-    const onAbort = () => {
-      // Conexión cerrada por el cliente antes de terminar (la respuesta aún no se ha enviado,
-      // así que 'close' de la respuesta solo puede ser un aborto): se deja de generar.
-      if (!doc.readableEnded) {
-        doc.destroy();
-        done(new Error('Petición cancelada durante la generación del PDF'));
-      }
-    };
-    reply.raw.once('close', onAbort);
-    doc.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > maxBytes) {
-        doc.destroy();
-        done(new AppError(400, 'REPORT_TOO_LARGE', 'El informe PDF es demasiado grande. Acota el periodo o los tipos de registro, o descarga el CSV.'));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    doc.once('end', () => done(null, Buffer.concat(chunks, size)));
-    doc.once('error', (err: Error) => done(err));
-    doc.once('close', () => done(new Error('La generación del PDF se interrumpió')));
-  });
+/**
+ * Presupuesto de tiempo de generación de PDF por local y hora (B-2), en la tabla `rate_limits`
+ * (compartida entre instancias): `count` acumula milisegundos de generación en la ventana.
+ */
+const PDF_BUDGET_WINDOW_SECONDS = 3600;
+async function pdfBudgetUsed(db: DB, key: string): Promise<{ usedMs: number; retryAfter: number }> {
+  const r = await sql<{ count: number; retry: number }>`
+    SELECT count, CEIL(EXTRACT(EPOCH FROM (reset_at - now())))::int AS retry
+    FROM rate_limits WHERE key = ${key} AND reset_at > now()`.execute(db);
+  const row = r.rows[0];
+  return { usedMs: row?.count ?? 0, retryAfter: Math.max(1, row?.retry ?? 1) };
 }
+async function addPdfBudget(db: DB, key: string, ms: number): Promise<void> {
+  const add = Math.max(1, Math.min(Math.round(ms), 2_000_000_000));
+  await sql`
+    INSERT INTO rate_limits (key, count, reset_at)
+    VALUES (${key}, ${add}, now() + make_interval(secs => ${PDF_BUDGET_WINDOW_SECONDS}))
+    ON CONFLICT (key) DO UPDATE SET
+      count = CASE WHEN rate_limits.reset_at <= now() THEN ${add} ELSE least(rate_limits.count::bigint + ${add}, 2000000000)::int END,
+      reset_at = CASE WHEN rate_limits.reset_at <= now() THEN now() + make_interval(secs => ${PDF_BUDGET_WINDOW_SECONDS}) ELSE rate_limits.reset_at END`.execute(db);
+}
+
 const BATCH = 500;
 
 /** Itera los registros de un tipo en el rango [from, to] (fechas locales) por lotes. */
@@ -131,17 +116,40 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     await enforce(rateLimiter, `report:${kind}:user:${userId}`, rule, msg);
   }
 
+  // Un PDF en generación (o esperando en la cola) a la vez por local y por usuario (B-2).
+  const pdfBusyOrgs = new Set<string>();
+  const pdfBusyUsers = new Set<string>();
+
   app.get('/pdf', async (req, reply) => {
     const ctx = orgCtx(req);
     const q = parseQuery(req.query);
-    // Hueco global por proceso: si ya hay N PDF generándose, 429 inmediato (sin cola).
-    const release = app.pdfSlots.tryAcquire();
-    if (!release) {
-      throw rateLimited(config.reports.pdfBusyRetrySeconds, 'Ahora mismo se están generando otros informes PDF. Inténtalo de nuevo en unos segundos.');
+    const r = config.reports;
+    if (pdfBusyOrgs.has(ctx.org.id)) {
+      throw rateLimited(r.pdfBusyRetrySeconds, 'Ya se está generando un informe PDF de este local. Espera a que termine y vuelve a intentarlo.');
     }
+    if (pdfBusyUsers.has(ctx.userId)) {
+      throw rateLimited(r.pdfBusyRetrySeconds, 'Ya estás generando otro informe PDF. Espera a que termine y vuelve a intentarlo.');
+    }
+    pdfBusyOrgs.add(ctx.org.id);
+    pdfBusyUsers.add(ctx.userId);
+    let release: (() => void) | null = null;
+    const abort = new AbortController();
+    const onClose = () => {
+      // Conexión cerrada por el cliente antes de responder: se deja de esperar/generar.
+      if (!reply.raw.writableEnded) abort.abort();
+    };
+    reply.raw.once('close', onClose);
     try {
       await limit('pdf', ctx.org.id, ctx.userId);
-      const maxRows = config.reports.maxPdfRows;
+      const budgetKey = `pdf-budget:org:${ctx.org.id}`;
+      const budget = await pdfBudgetUsed(db, budgetKey);
+      if (budget.usedMs >= r.pdfBudgetMsPerHour) {
+        throw rateLimited(
+          budget.retryAfter,
+          'Este local ha agotado el tiempo de generación de informes PDF de esta hora. Inténtalo más tarde o descarga el CSV.',
+        );
+      }
+      const maxRows = r.maxPdfRows;
       const n = await countRecords(db, ctx.org, q.from, q.to, q.types, maxRows + 1);
       if (n > maxRows) {
         throw new AppError(
@@ -150,31 +158,56 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
           `El informe PDF tendría más de ${maxRows.toLocaleString('es-ES')} registros. Acota el periodo o los tipos de registro, o descarga el CSV (admite muchas más filas).`,
         );
       }
+      // Cola corta y justa (FIFO) para los huecos globales: espera como mucho pdfQueueMaxWaitMs.
+      release = await app.pdfSlots.acquire(r.pdfQueueMaxWaitMs, abort.signal);
+      if (!release) {
+        throw rateLimited(r.pdfBusyRetrySeconds, 'Ahora mismo se están generando muchos informes PDF. Inténtalo de nuevo en unos segundos.');
+      }
+      // Datos acotados (máx. maxRows filas) cargados aquí; la maquetación va a un worker_thread.
+      const records: PdfJob['records'] = {};
+      let loaded = 0;
+      for (const type of q.types) {
+        const list: ReportRecord[] = [];
+        for await (const batch of iterateRecords(db, ctx.org, q.from, q.to, [type])) {
+          for (const rec of batch) if (loaded < maxRows) {
+            list.push(rec);
+            loaded += 1;
+          }
+          if (loaded >= maxRows) break;
+        }
+        records[type] = list;
+      }
+      const compliance = await computeCompliance(db, ctx.org, q.from, q.to, app.deps.now());
+      const dayNotes = compliance.days.filter((d) => d.correctedLater > 0);
       await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'pdf', from: q.from, to: q.to, types: q.types } });
-      // Se genera COMPLETO en memoria (acotado: máx. maxPdfRows filas y MAX_PDF_BYTES) y el hueco
-      // del semáforo se libera en cuanto termina la GENERACIÓN, no la descarga: un cliente lento
-      // que no lee la respuesta no puede retener los huecos y dejar sin PDF al resto.
-      const pdf = await renderPdfToBuffer(
-        {
-          appName: config.appName,
-          org: ctx.org,
-          from: q.from,
-          to: q.to,
-          types: q.types,
-          records: (type) => iterateRecords(db, ctx.org, q.from, q.to, [type]),
-          maxRows,
-        },
-        reply,
-      );
+      const job: PdfJob = { appName: config.appName, org: ctx.org, from: q.from, to: q.to, types: q.types, records, maxRows, dayNotes, maxBytes: MAX_PDF_BYTES };
+      const t0 = performance.now();
+      let pdf: Buffer;
+      try {
+        pdf = r.pdfWorker ? await renderPdfInWorker(job, abort.signal) : await renderPdfInProcess(job, abort.signal);
+      } finally {
+        // El tiempo de generación cuenta para el presupuesto del local aunque falle o se cancele.
+        await addPdfBudget(db, budgetKey, performance.now() - t0).catch((err: unknown) => req.log.warn({ err }, 'No se pudo anotar el presupuesto de PDF'));
+      }
+      // El hueco se libera al terminar la GENERACIÓN, no la descarga: un cliente lento que no
+      // lee la respuesta no puede retener los huecos y dejar sin PDF al resto.
       release();
+      pdfBusyOrgs.delete(ctx.org.id);
+      pdfBusyUsers.delete(ctx.userId);
       guardSlowDownload(reply);
       reply
         .type('application/pdf')
         .header('Content-Length', String(pdf.length))
         .header('Content-Disposition', `attachment; filename="${filename(ctx.org, q.from, q.to, 'pdf')}"`);
       return reply.send(pdf);
+    } catch (err) {
+      if (abort.signal.aborted && !(err instanceof AppError)) req.log.info('Generación de PDF cancelada por el cliente');
+      throw err;
     } finally {
-      release();
+      reply.raw.off('close', onClose);
+      release?.();
+      pdfBusyOrgs.delete(ctx.org.id);
+      pdfBusyUsers.delete(ctx.userId);
     }
   });
 

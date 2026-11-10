@@ -4,8 +4,12 @@
  *  - 10–128 caracteres;
  *  - no puede ser un único carácter repetido;
  *  - no puede COINCIDIR exactamente (sin distinguir mayúsculas) con una contraseña de la lista de
- *    las más usadas, con tu email, con la parte de tu email antes de la @ ni con tu nombre.
- *    Contener una palabra común ("Contrasena-Larga-77x") está permitido: solo se rechaza la coincidencia exacta.
+ *    las más usadas. Contener una palabra común ("Contrasena-Larga-77x") está permitido;
+ *  - no puede basarse en tus datos personales. Comparando sin mayúsculas, tildes, espacios ni signos:
+ *    se rechaza si es tu email, si CONTIENE la parte del email antes de la @ o tu nombre (completo o
+ *    cualquiera de sus palabras) cuando estos tienen 5 o más caracteres (`juanperez1` con
+ *    juanperez@…), o si es uno de ellos con pocos caracteres añadidos (como mucho 6 al principio y/o
+ *    al final: `ana2026xyz` con ana@…).
  */
 import { COMMON_PASSWORDS } from './common-passwords.js';
 
@@ -16,19 +20,45 @@ export type PasswordContext = { email?: string; name?: string };
 export type PasswordRule = { id: 'length' | 'repeat' | 'common' | 'personal'; label: string; ok: boolean; message: string };
 
 const norm = (s: string) => s.normalize('NFKC').trim().toLowerCase();
+/** Solo letras y dígitos, sin tildes ni mayúsculas (para comparar con los datos personales). */
+const alnum = (s: string) =>
+  s
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+
+/** Datos personales con 5 o más caracteres: la contraseña no puede contenerlos. */
+const CONTAINS_MIN = 5;
+/** Datos personales más cortos (3–4): se rechaza si la contraseña es el dato con pocos caracteres añadidos. */
+const SHORT_MIN = 3;
+const MAX_ADDED = 6;
+
+function isPersonal(password: string, context: PasswordContext): boolean {
+  if (password.length === 0) return false;
+  const lower = norm(password);
+  const email = context.email ? norm(context.email) : '';
+  if (email !== '' && lower === email) return true;
+  const pw = alnum(password);
+  if (pw === '') return false;
+  const tokens = new Set<string>();
+  const local = alnum(email.split('@')[0] ?? '');
+  if (local) tokens.add(local);
+  if (context.name) {
+    tokens.add(alnum(context.name));
+    for (const word of context.name.split(/[\s.,_-]+/)) tokens.add(alnum(word));
+  }
+  for (const t of tokens) {
+    if (t.length >= CONTAINS_MIN && pw.includes(t)) return true;
+    if (t.length >= SHORT_MIN && pw.length - t.length <= MAX_ADDED && (pw.startsWith(t) || pw.endsWith(t))) return true;
+  }
+  return false;
+}
 
 /** Estado de cada regla (para el medidor del formulario). */
 export function passwordRules(password: string, context: PasswordContext = {}): PasswordRule[] {
   const lower = norm(password);
-  const email = context.email ? norm(context.email) : '';
-  const local = email.split('@')[0] ?? '';
-  const name = context.name ? norm(context.name) : '';
-  const compactName = name.replace(/\s+/g, '');
-  const personal =
-    password.length > 0 &&
-    ((email !== '' && lower === email) ||
-      (local.length >= 3 && lower === local) ||
-      (name.length >= 3 && (lower === name || lower === compactName)));
+  const personal = isPersonal(password, context);
   return [
     {
       id: 'length',
@@ -53,9 +83,10 @@ export function passwordRules(password: string, context: PasswordContext = {}): 
     },
     {
       id: 'personal',
-      label: 'No es tu email ni tu nombre',
+      label: 'No contiene tu email ni tu nombre',
       ok: password.length > 0 && !personal,
-      message: 'La contraseña no puede ser igual a tu email ni a tu nombre',
+      message:
+        'La contraseña no puede ser igual a tu email ni a tu nombre, ni contenerlos (por ejemplo, «juanperez1» si tu email es juanperez@…). Elige algo que no tenga que ver con tus datos',
     },
   ];
 }

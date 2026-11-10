@@ -9,6 +9,8 @@ export interface CheckoutParams {
   plan: 'monthly' | 'annual';
   /** Fin de la prueba (segundos UNIX) si quedan ≥ 48 h de prueba local. */
   trialEnd: number | null;
+  /** Sesión de Checkout anterior del local (ya expirada), si la había. */
+  previousSessionId?: string | null;
   successUrl: string;
   cancelUrl: string;
 }
@@ -31,13 +33,21 @@ export interface SubscriptionState {
   /** Segundos UNIX. */
   currentPeriodEnd: number | null;
   priceId: string | null;
+  /** Creación de la suscripción (segundos UNIX), para conservar la más reciente si hay dos vivas. */
+  created?: number;
 }
 
 /** Abstracción sobre Stripe para poder sustituir las llamadas de red en tests. */
 export interface BillingProvider {
   readonly priceMonthly: string;
   readonly priceAnnual: string;
-  createCheckoutSession(params: CheckoutParams): Promise<{ url: string }>;
+  /** Crea la sesión de Checkout; `id` se guarda en el local para poder expirarla. */
+  createCheckoutSession(params: CheckoutParams): Promise<{ url: string; id?: string }>;
+  /**
+   * Expira una sesión de Checkout abierta (ya no se podrá pagar). Una sesión que ya no existe,
+   * ya expirada o ya completada cuenta como hecha. Lanza ante errores de red/servidor.
+   */
+  expireCheckoutSession(sessionId: string): Promise<void>;
   createPortalSession(params: { customerId: string; returnUrl: string }): Promise<{ url: string }>;
   /** Cancela de inmediato una suscripción (al eliminar el local). Una suscripción que ya no existe cuenta como cancelada. */
   cancelSubscription(subscriptionId: string): Promise<void>;
@@ -63,7 +73,7 @@ export class StripeBillingProvider implements BillingProvider {
     this.priceAnnual = cfg.priceAnnual;
   }
 
-  async createCheckoutSession(p: CheckoutParams): Promise<{ url: string }> {
+  async createCheckoutSession(p: CheckoutParams): Promise<{ url: string; id?: string }> {
     const session = await this.stripe.checkout.sessions.create(
       {
         mode: 'subscription',
@@ -82,10 +92,25 @@ export class StripeBillingProvider implements BillingProvider {
         success_url: p.successUrl,
         cancel_url: p.cancelUrl,
       },
-      { idempotencyKey: `checkout-${p.organizationId}-${p.plan}-${Math.floor(Date.now() / 60_000)}` },
+      // La clave incluye la sesión anterior (que se acaba de expirar): con la misma clave Stripe
+      // devolvería esa sesión ya expirada durante 24 h.
+      { idempotencyKey: `checkout-${p.organizationId}-${p.plan}-${p.previousSessionId ?? 'none'}-${Math.floor(Date.now() / 60_000)}` },
     );
     if (!session.url) throw new Error('Stripe no devolvió URL de Checkout');
-    return { url: session.url };
+    return { url: session.url, id: session.id };
+  }
+
+  async expireCheckoutSession(sessionId: string): Promise<void> {
+    try {
+      await this.stripe.checkout.sessions.expire(sessionId, undefined, { idempotencyKey: `expire-${sessionId}` });
+    } catch (err) {
+      const e = err as { code?: string; statusCode?: number };
+      if (e.code === 'resource_missing' || e.statusCode === 404) return;
+      // Solo se pueden expirar sesiones abiertas: si ya está completada o expirada, no hay nada que hacer.
+      const session = await this.stripe.checkout.sessions.retrieve(sessionId).catch(() => null);
+      if (session && session.status !== 'open') return;
+      throw err;
+    }
   }
 
   async createPortalSession(p: { customerId: string; returnUrl: string }): Promise<{ url: string }> {
@@ -99,6 +124,9 @@ export class StripeBillingProvider implements BillingProvider {
     } catch (err) {
       const e = err as { code?: string; statusCode?: number };
       if (e.code === 'resource_missing' || e.statusCode === 404) return;
+      // Ya cancelada (o expirada) en Stripe: cuenta como cancelada.
+      const sub = await this.stripe.subscriptions.retrieve(subscriptionId).catch(() => null);
+      if (sub && (sub.status === 'canceled' || sub.status === 'incomplete_expired')) return;
       throw err;
     }
   }
@@ -116,6 +144,7 @@ export class StripeBillingProvider implements BillingProvider {
         cancelAtPeriodEnd: sub.cancel_at_period_end === true,
         currentPeriodEnd: item?.current_period_end ?? legacyEnd ?? null,
         priceId: item?.price?.id ?? null,
+        created: sub.created,
       };
     } catch (err) {
       const e = err as { code?: string; statusCode?: number };

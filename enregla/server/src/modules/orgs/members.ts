@@ -223,6 +223,8 @@ export async function invitationPublicRoutes(app: FastifyInstance): Promise<void
       .where('i.accepted_at', 'is', null)
       .where('i.revoked_at', 'is', null)
       .where('i.expires_at', '>', sql<Date>`now()`)
+      // B-1: un local pendiente de eliminación no admite nuevos miembros.
+      .where('o.deletion_scheduled_at', 'is', null)
       .executeTakeFirst();
   }
 
@@ -252,6 +254,9 @@ export async function invitationPublicRoutes(app: FastifyInstance): Promise<void
       throw forbidden('Esta invitación es para otro email. Inicia sesión con la cuenta correspondiente.');
     }
     const accepted = await db.transaction().execute(async (trx) => {
+      // B-1: se bloquea el local (compartido) para que no pase a pendiente de eliminación a la vez.
+      const org = await trx.selectFrom('organizations').select('deletion_scheduled_at').where('id', '=', inv.organization_id).forShare().executeTakeFirst();
+      if (!org || org.deletion_scheduled_at) return false;
       const r = await trx
         .updateTable('invitations')
         .set({ accepted_at: sql<Date>`now()` })

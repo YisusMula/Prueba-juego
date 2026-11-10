@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+# Acciones fijadas a su versión MAYOR estable (v4). Recomendado para endurecer la cadena de
+# suministro: fijarlas por SHA de commit completo (p. ej. `actions/checkout@<sha-de-40-caracteres> # v4.x.y`),
+# tomando el SHA de la página de releases oficial de cada acción, y actualizarlas con Dependabot
+# (package-ecosystem: github-actions). No se han fijado por SHA aquí para no introducir SHAs sin verificar.
+
 concurrency:
   group: enregla-ci-${{ github.ref }}
   cancel-in-progress: true

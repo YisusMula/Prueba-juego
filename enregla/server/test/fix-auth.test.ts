@@ -66,20 +66,20 @@ describe('H9 re-registro sobre una cuenta sin verificar', () => {
   it('no sobrescribe contraseña ni nombre; solo reenvía la verificación con la misma respuesta', async () => {
     const c = new Client(ctx.app);
     const first = await c.post('/api/auth/register', { email: 'dueno@example.com', password: PASSWORD, name: 'Dueño' });
-    const second = await c.post('/api/auth/register', { email: 'dueno@example.com', password: 'Clave-Del-Atacante-1', name: 'Atacante' });
+    const second = await c.post('/api/auth/register', { email: 'dueno@example.com', password: 'Clave-Del-Intruso-1', name: 'Atacante' });
     expect(first.statusCode).toBe(202);
     expect(second.statusCode).toBe(202);
     expect(second.body).toBe(first.body);
     const u = await ctx.deps.db.selectFrom('users').selectAll().where('email', '=', 'dueno@example.com').executeTakeFirstOrThrow();
     expect(u.name).toBe('Dueño');
     expect(await verifySecret(u.password_hash, PASSWORD)).toBe(true);
-    expect(await verifySecret(u.password_hash, 'Clave-Del-Atacante-1')).toBe(false);
+    expect(await verifySecret(u.password_hash, 'Clave-Del-Intruso-1')).toBe(false);
     const mails = ctx.mailer.outbox.filter((m) => m.to === 'dueno@example.com');
     expect(mails).toHaveLength(2);
     expect(mails[1]!.text).toMatch(/recuperar-contrasena/);
     // El enlace nuevo funciona y el login sigue siendo con la contraseña original.
     await c.post('/api/auth/verify-email', { token: tokenFromMail(ctx.mailer, 'dueno@example.com') });
-    expect((await c.post('/api/auth/login', { email: 'dueno@example.com', password: 'Clave-Del-Atacante-1' })).statusCode).toBe(401);
+    expect((await c.post('/api/auth/login', { email: 'dueno@example.com', password: 'Clave-Del-Intruso-1' })).statusCode).toBe(401);
     expect((await c.post('/api/auth/login', { email: 'dueno@example.com', password: PASSWORD })).statusCode).toBe(200);
   });
 

@@ -159,7 +159,7 @@ export async function publicMenuRoutes(app: FastifyInstance): Promise<void> {
     if (!/^[A-Za-z0-9_-]{22}$/.test(slug)) throw notFound('Carta');
     const org = await db
       .selectFrom('organizations')
-      .select(['id', 'name', 'subscription_status', 'trial_ends_at', 'stripe_subscription_id', 'deletion_scheduled_at'])
+      .select(['id', 'name', 'subscription_status', 'trial_ends_at', 'stripe_subscription_id', 'deletion_scheduled_at', 'past_due_since'])
       .where('public_menu_slug', '=', slug)
       .where('public_menu_enabled', '=', true)
       .executeTakeFirst();

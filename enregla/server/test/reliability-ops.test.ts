@@ -269,20 +269,25 @@ describe('12. el semáforo de PDF no lo retienen clientes lentos', () => {
   it('con los 2 huecos usados por clientes que no leen la respuesta, otra organización obtiene su PDF', async () => {
     const app = await createTestApp({ now: () => FIXED_NOW });
     try {
-      const slow = await setupOwner(app, 'lento@example.com');
-      const st = await createStaff(app, slow.org.id, 'S');
-      // Texto aleatorio (poco comprimible): un PDF muy por encima del búfer de la respuesta.
-      await sql`
-        INSERT INTO records (organization_id, type, data, staff_id, staff_name, alert, created_at)
-        SELECT ${slow.org.id}, 'incidencia',
-          jsonb_build_object('description', (SELECT string_agg(md5(random()::text || g || x), ' ') FROM generate_series(1, 10) x), 'closed', true),
-          ${st.id}, 'S', false, ${FIXED_NOW.toISOString()}::timestamptz - (g || ' seconds')::interval
-        FROM generate_series(1, 300) g`.execute(app.deps.db);
-      const cookie = [...slow.client.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
-      const url = `${slow.base}/reports/pdf?from=${FIXED_TODAY}&to=${FIXED_TODAY}`;
+      // Dos locales distintos (B-2: como mucho un PDF a la vez por local y por usuario).
+      const slows = [await setupOwner(app, 'lento@example.com'), await setupOwner(app, 'lento2@example.com')];
+      for (const slow of slows) {
+        const st = await createStaff(app, slow.org.id, 'S');
+        // Texto aleatorio (poco comprimible): un PDF muy por encima del búfer de la respuesta.
+        await sql`
+          INSERT INTO records (organization_id, type, data, staff_id, staff_name, alert, created_at)
+          SELECT ${slow.org.id}, 'incidencia',
+            jsonb_build_object('description', (SELECT string_agg(md5(random()::text || g || x), ' ') FROM generate_series(1, 10) x), 'closed', true),
+            ${st.id}, 'S', false, ${FIXED_NOW.toISOString()}::timestamptz - (g || ' seconds')::interval
+          FROM generate_series(1, 300) g`.execute(app.deps.db);
+      }
       // Dos clientes que piden el PDF y NO leen la respuesta (contrapresión: el flujo no avanza).
       const slowResponses = await Promise.all(
-        [0, 1].map(() => app.app.inject({ method: 'GET', url, headers: { cookie }, payloadAsStream: true })),
+        slows.map((slow) => {
+          const cookie = [...slow.client.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
+          const url = `${slow.base}/reports/pdf?from=${FIXED_TODAY}&to=${FIXED_TODAY}`;
+          return app.app.inject({ method: 'GET', url, headers: { cookie }, payloadAsStream: true });
+        }),
       );
       for (const r of slowResponses) expect(r.statusCode).toBe(200);
       // Con el arreglo, los huecos se liberan al terminar la GENERACIÓN, no la descarga.

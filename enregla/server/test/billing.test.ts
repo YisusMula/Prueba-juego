@@ -44,6 +44,18 @@ class FakeStripeProvider extends StripeBillingProvider {
     this.portalCalls.push(p);
     return Promise.resolve({ url: 'https://billing.stripe.com/p/session/test_123' });
   }
+  cancelCalls: string[] = [];
+  override cancelSubscription(id: string) {
+    this.cancelCalls.push(id);
+    const cur = this.subs.get(id);
+    if (cur) this.subs.set(id, { ...cur, status: 'canceled' });
+    return Promise.resolve();
+  }
+  expireCalls: string[] = [];
+  override expireCheckoutSession(id: string) {
+    this.expireCalls.push(id);
+    return Promise.resolve();
+  }
 }
 
 const signer = new Stripe('sk_test_signer');
@@ -72,6 +84,8 @@ beforeEach(async () => {
   provider.subs.clear();
   provider.failRetrieve = false;
   provider.retrieveCalls = [];
+  provider.cancelCalls = [];
+  provider.expireCalls = [];
 });
 
 let evtSeq = 0;
@@ -273,10 +287,15 @@ describe('webhook', () => {
     expect(r2.statusCode).toBe(200);
   });
 
-  it('eventos de un local ya eliminado se aceptan sin efecto', async () => {
+  it('eventos de un local ya eliminado se aceptan sin efecto (y si la suscripción sigue viva, se cancela: M-1)', async () => {
     const res = await postWebhook(ctx, subscriptionEvent('customer.subscription.updated', '00000000-0000-4000-8000-000000000000', 'active'));
     expect(res.statusCode).toBe(200);
     expect(await ctx.deps.db.selectFrom('stripe_events').selectAll().execute()).toHaveLength(1);
+    expect(provider.cancelCalls).toEqual(['sub_test_1']);
+    // Ya cancelada: se acepta sin volver a cancelarla.
+    const again = await postWebhook(ctx, subscriptionEvent('customer.subscription.deleted', '00000000-0000-4000-8000-000000000000', 'canceled'));
+    expect(again.statusCode).toBe(200);
+    expect(provider.cancelCalls).toEqual(['sub_test_1']);
   });
 
   it('las facturas (invoice.*) también actualizan el estado desde Stripe', async () => {

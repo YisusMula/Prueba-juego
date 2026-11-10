@@ -7,6 +7,7 @@ import { enqueueEmail, processOutbox, purgeOutbox } from '../../lib/outbox.js';
 import { audit } from '../../lib/audit.js';
 import { IDEMPOTENCY_RETENTION_DAYS } from '../records/idempotency.js';
 import { isWritable } from '../billing/status.js';
+import { stopOrgBilling } from '../billing/teardown.js';
 import { computeToday, pendingLabels } from '../tasks/service.js';
 
 const REMINDER_LOCK_KEY = 72_017_002;
@@ -172,6 +173,8 @@ export interface RetentionResult {
   rateLimits: number;
   /** Locales pendientes de eliminación cuyo plazo ha vencido (purgados definitivamente). */
   organizations: number;
+  /** Locales vencidos que NO se han purgado porque no se pudo cancelar su facturación en Stripe (se reintenta al día siguiente). */
+  organizationsDeferred: number;
   idempotencyKeys: number;
   emailOutbox: number;
 }
@@ -184,8 +187,20 @@ export interface RetentionResult {
  * de email caducados o usados hace > 7 días, invitaciones caducadas/revocadas hace > 30 días
  * y filas de rate limit vencidas.
  */
-export async function runRetention(deps: AppDeps, opts: { force?: boolean } = {}): Promise<RetentionResult> {
-  const none: RetentionResult = { ran: false, auditEvents: 0, unverifiedUsers: 0, sessions: 0, emailTokens: 0, invitations: 0, rateLimits: 0, organizations: 0, idempotencyKeys: 0, emailOutbox: 0 };
+export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?: Pick<FastifyBaseLogger, 'warn' | 'error'> } = {}): Promise<RetentionResult> {
+  const none: RetentionResult = {
+    ran: false,
+    auditEvents: 0,
+    unverifiedUsers: 0,
+    sessions: 0,
+    emailTokens: 0,
+    invitations: 0,
+    rateLimits: 0,
+    organizations: 0,
+    organizationsDeferred: 0,
+    idempotencyKeys: 0,
+    emailOutbox: 0,
+  };
   const { auditMonths, unverifiedAccountDays } = deps.config.retention;
   return deps.db.transaction().execute(async (trx) => {
     const lock = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(${RETENTION_LOCK_KEY}) AS ok`.execute(trx);
@@ -229,8 +244,44 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean } = {}
     );
     const rateLimits = n(await trx.deleteFrom('rate_limits').where('reset_at', '<', sql<Date>`now() - interval '1 hour'`).execute());
     // Borrado diferido: los locales cuyo plazo de 30 días ha vencido se eliminan con todos sus datos.
-    const purged = await trx.deleteFrom('organizations').where('deletion_scheduled_at', '<=', sql<Date>`now()`).returning(['id', 'name']).execute();
-    for (const o of purged) await audit(trx, { event: 'org.deleted', organizationId: o.id, metadata: { name: o.name, reason: 'scheduled_deletion' } });
+    // I-6: también los pendientes que se han quedado SIN NINGÚN miembro (p. ej. el único owner borró su
+    // cuenta y no había más miembros): nadie puede verlos ni restaurarlos, así que no se conservan más.
+    // Un pendiente sin owner pero con encargados se conserva hasta su fecha (pueden exportar sus datos).
+    // Las filas se bloquean (FOR UPDATE): una restauración simultánea espera y, si llega tarde, recibe 404.
+    const due = await trx
+      .selectFrom('organizations as o')
+      .select(['o.id', 'o.name', 'o.stripe_subscription_id', 'o.subscription_status', 'o.stripe_checkout_session_id'])
+      .where('o.deletion_scheduled_at', 'is not', null)
+      .where((eb) =>
+        eb.or([
+          eb('o.deletion_scheduled_at', '<=', sql<Date>`now()`),
+          eb.not(eb.exists(eb.selectFrom('memberships as m').select('m.user_id').whereRef('m.organization_id', '=', 'o.id'))),
+        ]),
+      )
+      .orderBy('o.deletion_scheduled_at')
+      .limit(200)
+      .forUpdate()
+      .execute();
+    const purged: { id: string; name: string }[] = [];
+    let organizationsDeferred = 0;
+    for (const o of due) {
+      // M-1 (a): antes de borrar, nada en Stripe puede seguir cobrando. Si no se puede asegurar,
+      // NO se borra: queda en el log y se reintenta en la purga del día siguiente.
+      try {
+        const stopped = await stopOrgBilling(deps.billing, o);
+        if (stopped.subscriptionCanceled) {
+          await audit(trx, { event: 'billing.subscription_canceled', organizationId: o.id, metadata: { reason: 'org_purged', subscriptionId: stopped.subscriptionCanceled } });
+        }
+      } catch (err) {
+        organizationsDeferred += 1;
+        opts.log?.error({ err: (err as Error).message, organizationId: o.id }, 'Purga de local aplazada: no se pudo cancelar su facturación en Stripe (se reintentará mañana)');
+        continue;
+      }
+      const del = await trx.deleteFrom('organizations').where('id', '=', o.id).where('deletion_scheduled_at', 'is not', null).executeTakeFirst();
+      if (Number(del.numDeletedRows) === 0) continue;
+      purged.push(o);
+      await audit(trx, { event: 'org.deleted', organizationId: o.id, metadata: { name: o.name, reason: 'scheduled_deletion' } });
+    }
     const idempotencyKeys = n(
       await trx.deleteFrom('idempotency_keys').where('created_at', '<', sql<Date>`now() - make_interval(days => ${IDEMPOTENCY_RETENTION_DAYS})`).execute(),
     );
@@ -241,7 +292,7 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean } = {}
       .values({ name: RETENTION_JOB, last_run_at: sql<Date>`now()` })
       .onConflict((oc) => oc.column('name').doUpdateSet({ last_run_at: sql<Date>`now()` }))
       .execute();
-    return { ran: true, auditEvents, unverifiedUsers, sessions, emailTokens, invitations, rateLimits, organizations: purged.length, idempotencyKeys, emailOutbox };
+    return { ran: true, auditEvents, unverifiedUsers, sessions, emailTokens, invitations, rateLimits, organizations: purged.length, organizationsDeferred, idempotencyKeys, emailOutbox };
   });
 }
 
@@ -257,7 +308,7 @@ export function startScheduler(deps: AppDeps, log: FastifyBaseLogger): () => voi
       const t = await runTrialNotices(deps);
       if (t.emailsQueued > 0) log.info(t, 'Avisos de fin de prueba encolados');
       if (ticks++ % 60 === 0) await runCleanup(deps);
-      const ret = await runRetention(deps);
+      const ret = await runRetention(deps, { log });
       if (ret.ran) log.info(ret, 'Purga diaria de datos caducados');
     } catch (err) {
       log.error({ err }, 'Error en la tarea programada');

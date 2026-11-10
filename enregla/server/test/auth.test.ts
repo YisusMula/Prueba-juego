@@ -228,7 +228,10 @@ describe('cambio de email', () => {
     expect((await c.get('/api/account')).json().user.email).toBe('u@example.com');
     const conf = await new Client(ctx.app).post('/api/auth/email-change/confirm', { token });
     expect(conf.statusCode).toBe(200);
-    expect((await c.get('/api/account')).json().user.email).toBe('nuevo@example.com');
+    // I-7: al confirmar se cierran las demás sesiones (esta no era la que confirmó).
+    expect((await c.get('/api/account')).statusCode).toBe(401);
+    const c2 = await login(ctx, 'nuevo@example.com');
+    expect((await c2.get('/api/account')).json().user.email).toBe('nuevo@example.com');
     expect(ctx.mailer.outbox.some((m) => m.to === 'u@example.com' && m.subject.includes('email ha cambiado'))).toBe(true);
   });
 

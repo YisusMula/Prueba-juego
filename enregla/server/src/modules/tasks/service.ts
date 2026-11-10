@@ -19,6 +19,13 @@ export function periodStart(plan: Pick<CleaningPlan, 'frequency'>, date: string)
   return date;
 }
 
+/**
+ * El registro es una corrección (enmienda) hecha en un día local POSTERIOR al del hecho: cuenta en
+ * el día del original (effective_at), pero se registró más tarde (I-1).
+ */
+const lateAmendment = (tz: string) =>
+  sql<boolean>`(r.amends_record_id IS NOT NULL AND (r.created_at AT TIME ZONE ${tz})::date > (r.effective_at AT TIME ZONE ${tz})::date)`;
+
 const startOf = (date: string, tz: string) => sql<Date>`(${date}::date)::timestamp AT TIME ZONE ${tz}`;
 const endOf = (date: string, tz: string) => sql<Date>`(${date}::date + 1)::timestamp AT TIME ZONE ${tz}`;
 
@@ -128,6 +135,7 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
   const readings = await db
     .selectFrom('records as r')
     .select(['r.equipment_id', 'r.data', 'r.effective_at', 'r.alert'])
+    .select(lateAmendment(tz).as('late'))
     .where('r.organization_id', '=', org.id)
     .where('r.type', '=', 'temperatura')
     .where('r.effective_at', '>=', startOf(today, tz))
@@ -140,6 +148,8 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
     const mine = readings.filter((r) => r.equipment_id === e.id);
     const last = mine[mine.length - 1];
     const done = Math.min(mine.length, e.checks_per_day);
+    // Lecturas que solo cuentan gracias a correcciones hechas otro día posterior.
+    const correctedLater = done - Math.min(mine.filter((r) => !r.late).length, e.checks_per_day);
     const hist = eqHist.get(e.id);
     // Sin historial (no debería ocurrir tras la migración 0003): se usa la fecha de alta.
     const countsToday = hist ? stateAt(hist, startToday)?.active === true : e.created_at.getTime() <= startToday.getTime();
@@ -152,6 +162,7 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
       required: e.checks_per_day,
       done,
       status: done >= e.checks_per_day ? ('done' as const) : ('pending' as const),
+      correctedLater,
       /** false si el equipo se dio de alta (o se reactivó) hoy: hoy no es exigible ni cuenta en el resumen. */
       countsToday,
       lastReading: last
@@ -171,6 +182,7 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
     frequency: string;
     status: 'done' | 'pending';
     countsToday: boolean;
+    correctedLater: boolean;
     completedAt: string | null;
     partial: { done: number; total: number; at: string; recordId: string } | null;
   }[];
@@ -179,6 +191,7 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
     const recs = await db
       .selectFrom('records as r')
       .select(['r.id', 'r.effective_at', 'r.data'])
+      .select(lateAmendment(tz).as('late'))
       .where('r.organization_id', '=', org.id)
       .where('r.type', '=', 'limpieza')
       .where('r.cleaning_plan_id', '=', p.id)
@@ -197,6 +210,8 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
       name: p.name,
       frequency: p.frequency,
       status: complete ? 'done' : 'pending',
+      // Hecha, pero solo gracias a una corrección hecha en un día posterior al del hecho.
+      correctedLater: complete != null && !recs.some((r) => r.data.completed === true && !r.late),
       countsToday: hist ? stateAt(hist, startToday)?.active === true : p.created_at.getTime() <= startToday.getTime(),
       completedAt: complete?.effective_at.toISOString() ?? null,
       partial: lastPartial
@@ -211,12 +226,13 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
   const countedCleaning = cleaning.filter((c) => c.countsToday);
   const total = counted.reduce((a, t) => a + t.required, 0) + countedCleaning.length;
   const done = counted.reduce((a, t) => a + t.done, 0) + countedCleaning.filter((c) => c.status === 'done').length;
+  const correctedLater = counted.reduce((a, t) => a + t.correctedLater, 0) + countedCleaning.filter((c) => c.correctedLater).length;
   return {
     date: today,
     timezone: tz,
     temperatures,
     cleaning,
-    summary: { total, done, pending: total - done, percent: total === 0 ? 100 : Math.round((done / total) * 100) },
+    summary: { total, done, pending: total - done, percent: total === 0 ? 100 : Math.round((done / total) * 100), correctedLater },
     alerts,
   };
 }
@@ -292,15 +308,21 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
   const tz = org.timezone;
   const today = localDate(now, tz);
   const last = to > today ? today : to;
-  const days: { date: string; expected: number; done: number; percent: number | null }[] = [];
+  const days: { date: string; expected: number; done: number; percent: number | null; correctedLater: number }[] = [];
   let totalExpected = 0;
   let totalDone = 0;
+  let totalCorrectedLater = 0;
   if (from <= last) {
     const [eqHist, plHist, starts] = await Promise.all([equipmentHistory(db, org.id), planHistory(db, org.id), dayStarts(db, from, addDays(last, 1), tz)]);
 
     const tempCounts = await db
       .selectFrom('records as r')
-      .select([sql<string>`((r.effective_at AT TIME ZONE ${tz})::date)::text`.as('day'), 'r.equipment_id', sql<number>`count(*)::int`.as('n')])
+      .select([
+        sql<string>`((r.effective_at AT TIME ZONE ${tz})::date)::text`.as('day'),
+        'r.equipment_id',
+        sql<number>`count(*)::int`.as('n'),
+        sql<number>`(count(*) FILTER (WHERE ${lateAmendment(tz)}))::int`.as('late'),
+      ])
       .where('r.organization_id', '=', org.id)
       .where('r.type', '=', 'temperatura')
       .where('r.effective_at', '>=', startOf(from, tz))
@@ -309,12 +331,17 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
       .groupBy(['day', 'r.equipment_id'])
       .execute();
     const tempMap = new Map(tempCounts.map((r) => [`${r.day}|${r.equipment_id}`, r.n]));
+    const tempLateMap = new Map(tempCounts.map((r) => [`${r.day}|${r.equipment_id}`, r.late]));
 
     const cleanFrom = startOfMonth(from) < startOfIsoWeek(from) ? startOfMonth(from) : startOfIsoWeek(from);
     const cleanDays = await db
       .selectFrom('records as r')
-      .select([sql<string>`((r.effective_at AT TIME ZONE ${tz})::date)::text`.as('day'), 'r.cleaning_plan_id'])
-      .distinct()
+      .select([
+        sql<string>`((r.effective_at AT TIME ZONE ${tz})::date)::text`.as('day'),
+        'r.cleaning_plan_id',
+        // true si TODAS las limpiezas completas de ese día son correcciones hechas otro día posterior.
+        sql<boolean>`bool_and(${lateAmendment(tz)})`.as('all_late'),
+      ])
       .where('r.organization_id', '=', org.id)
       .where('r.type', '=', 'limpieza')
       // Una limpieza parcial no cuenta como tarea hecha.
@@ -322,12 +349,13 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
       .where('r.effective_at', '>=', startOf(cleanFrom, tz))
       .where('r.effective_at', '<', endOf(last, tz))
       .where(NOT_SUPERSEDED)
+      .groupBy(['day', 'r.cleaning_plan_id'])
       .execute();
-    const cleanByPlan = new Map<string, string[]>();
+    const cleanByPlan = new Map<string, { day: string; allLate: boolean }[]>();
     for (const r of cleanDays) {
       if (!r.cleaning_plan_id) continue;
       const list = cleanByPlan.get(r.cleaning_plan_id) ?? [];
-      list.push(r.day);
+      list.push({ day: r.day, allLate: r.all_late });
       cleanByPlan.set(r.cleaning_plan_id, list);
     }
 
@@ -337,22 +365,34 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
       const end = isToday ? now : starts.get(addDays(day, 1))!;
       let expected = 0;
       let done = 0;
+      // Tareas que solo cuentan como hechas gracias a correcciones hechas en un día posterior
+      // (informativo: no cambia el cálculo de `done`).
+      let correctedLater = 0;
       for (const [equipmentId, hist] of eqHist) {
         const st = requiredState(hist, start, end, isToday);
         if (!st || st.checks_per_day <= 0) continue;
         expected += st.checks_per_day;
-        done += Math.min(tempMap.get(`${day}|${equipmentId}`) ?? 0, st.checks_per_day);
+        const n = tempMap.get(`${day}|${equipmentId}`) ?? 0;
+        const late = tempLateMap.get(`${day}|${equipmentId}`) ?? 0;
+        const d = Math.min(n, st.checks_per_day);
+        done += d;
+        correctedLater += d - Math.min(n - late, st.checks_per_day);
       }
       for (const [planId, hist] of plHist) {
         const st = requiredState(hist, start, end, isToday);
         if (!st || !isDue(st, day)) continue;
         expected += 1;
         const pStart = periodStart(st, day);
-        if ((cleanByPlan.get(planId) ?? []).some((d) => d >= pStart && d <= day)) done += 1;
+        const inPeriod = (cleanByPlan.get(planId) ?? []).filter((d) => d.day >= pStart && d.day <= day);
+        if (inPeriod.length > 0) {
+          done += 1;
+          if (inPeriod.every((d) => d.allLate)) correctedLater += 1;
+        }
       }
       totalExpected += expected;
       totalDone += done;
-      days.push({ date: day, expected, done, percent: expected === 0 ? null : Math.round((done / expected) * 100) });
+      totalCorrectedLater += correctedLater;
+      days.push({ date: day, expected, done, percent: expected === 0 ? null : Math.round((done / expected) * 100), correctedLater });
     }
   }
   return {
@@ -363,6 +403,7 @@ export async function computeCompliance(db: DB, org: Organization, from: string,
       expected: totalExpected,
       done: totalDone,
       percent: totalExpected === 0 ? null : Math.round((totalDone / totalExpected) * 100),
+      correctedLater: totalCorrectedLater,
     },
   };
 }
