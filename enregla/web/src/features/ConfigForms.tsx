@@ -7,6 +7,9 @@ import {
   createStaffBody,
   supplierBody,
   LIMITS,
+  TEMP_MAX,
+  TEMP_MIN,
+  TEMP_RANGE_MESSAGE,
 } from '@shared/schemas';
 import { api, isApiError, errorMessage } from '@/api/client';
 import type { CleaningPlan, Equipment, EquipmentType, Frequency, Staff, Supplier } from '@/api/types';
@@ -15,7 +18,7 @@ import { Callout } from '@/components/ui/Feedback';
 import { Dialog } from '@/components/ui/Overlay';
 import { Field, Input, PinInput, Select, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
-import { WEEKDAYS, parseDecimal } from '@/lib/format';
+import { WEEKDAYS, numberFieldError, parseDecimal } from '@/lib/format';
 
 type DialogFormProps<T> = { orgId: string; open: boolean; onClose: () => void; initial?: T | null; onSaved: (item: T) => void };
 
@@ -52,14 +55,16 @@ export function EquipmentDialog({ orgId, open, onClose, initial, onSaved }: Dial
   const [checks, setChecks] = useState(String(initial?.checksPerDay ?? 1));
   const [active, setActive] = useState(initial?.active ?? true);
   const s = useSave();
+  const tempOpts = { notNumber: 'Escribe la temperatura con números (por ejemplo 4 o −18)', min: TEMP_MIN, max: TEMP_MAX, outOfRange: TEMP_RANGE_MESSAGE };
+  const minError = numberFieldError(minTemp, tempOpts);
+  const maxError = numberFieldError(maxTemp, tempOpts);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (minError || maxError) return;
     const extra: Record<string, string> = {};
     const min = minTemp.trim() ? parseDecimal(minTemp) : null;
     const max = maxTemp.trim() ? parseDecimal(maxTemp) : null;
-    if (minTemp.trim() && min == null) extra.minTemp = 'Número no válido';
-    if (maxTemp.trim() && max == null) extra.maxTemp = 'Número no válido';
     const body = { name: name.trim(), type, minTemp: min, maxTemp: max, checksPerDay: Number(checks), active };
     const parsed = createEquipmentBody.safeParse(body);
     const errs = { ...(parsed.success ? {} : zodToFieldErrors(parsed.error.issues)), ...extra };
@@ -103,10 +108,10 @@ export function EquipmentDialog({ orgId, open, onClose, initial, onSaved }: Dial
           <legend className="font-semibold">Límites de temperatura (°C)</legend>
           <p className="mb-2 text-sm text-ink-muted">Opcionales, entre −60 y 300 °C. Valores orientativos: frío máx. 4 °C, congelación máx. −18 °C, caliente mín. 63 °C. Ajústalos a tu plan.</p>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Mínima" optional error={s.errors.minTemp}>
+            <Field label="Mínima" optional live={!!minError} error={minError || s.errors.minTemp}>
               <Input inputMode="decimal" value={minTemp} onChange={(e) => setMin(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="—" maxLength={7} />
             </Field>
-            <Field label="Máxima" optional error={s.errors.maxTemp}>
+            <Field label="Máxima" optional live={!!maxError} error={maxError || s.errors.maxTemp}>
               <Input inputMode="decimal" value={maxTemp} onChange={(e) => setMax(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="—" maxLength={7} />
             </Field>
           </div>
@@ -126,7 +131,7 @@ export function EquipmentDialog({ orgId, open, onClose, initial, onSaved }: Dial
           <Button variant="secondary" onClick={onClose}>
             Cancelar
           </Button>
-          <Button type="submit" loading={s.loading}>
+          <Button type="submit" loading={s.loading} disabled={!!(minError || maxError)}>
             Guardar equipo
           </Button>
         </div>

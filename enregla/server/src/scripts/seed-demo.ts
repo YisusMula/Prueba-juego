@@ -12,6 +12,7 @@ import { createOrganization } from '../modules/orgs/routes.js';
 import { isDue } from '../modules/tasks/service.js';
 import { ALLERGENS } from '../schemas/index.js';
 import type { Database, Staff } from '../db/types.js';
+import { correctiveActionsFor } from './seed-actions.js';
 
 type NewRecord = InsertObject<Database, 'records'>;
 
@@ -176,11 +177,7 @@ try {
         if (rand() < 0.04) {
           value = e.max_temp != null ? round1(e.max_temp + 1.5 + rand() * 3) : round1((e.min_temp ?? 63) - 4);
           outOfRange = true;
-          correctiveAction = pick([
-            'Puerta mal cerrada: se cierra y se vuelve a medir a los 30 min',
-            'Producto trasladado a otra cámara y aviso al técnico de frío',
-            'Se recalienta el producto por encima de 75 °C antes del servicio',
-          ]);
+          correctiveAction = pick(correctiveActionsFor(e.type));
         }
         push(date, h, 'temperatura', { equipmentId: e.id, equipmentName: e.name, value, minTemp: e.min_temp, maxTemp: e.max_temp, outOfRange, correctiveAction }, {
           equipment_id: e.id,

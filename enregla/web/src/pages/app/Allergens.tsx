@@ -427,6 +427,27 @@ function PublicMenuCard() {
 // ---------------------------------------------------------------------------
 // Versión imprimible
 // ---------------------------------------------------------------------------
+/**
+ * Marcador de la tabla imprimible: círculo lleno (contiene) o medio lleno (puede contener trazas), dibujado con CSS
+ * (no con un glifo de la fuente, que sale diminuto) y forzado a imprimirse con su relleno.
+ */
+function PrintMark({ kind, decorative }: { kind: 'contains' | 'traces'; decorative?: boolean }) {
+  return (
+    <span
+      role={decorative ? undefined : 'img'}
+      aria-label={decorative ? undefined : kind === 'contains' ? 'Contiene' : 'Puede contener trazas'}
+      aria-hidden={decorative || undefined}
+      data-testid={kind === 'traces' ? 'trace-mark' : undefined}
+      className="inline-block size-5 shrink-0 rounded-full border-2 border-current align-middle"
+      style={{
+        background: kind === 'contains' ? 'currentColor' : 'linear-gradient(90deg, currentColor 50%, transparent 50%)',
+        printColorAdjust: 'exact',
+        WebkitPrintColorAdjust: 'exact',
+      }}
+    />
+  );
+}
+
 export function AllergensPrintPage() {
   const { orgId, org, path, tz } = useOrgContext();
   useDocumentTitle('Tabla de alérgenos');
@@ -445,12 +466,15 @@ export function AllergensPrintPage() {
         </Button>
       </div>
       <header className="flex items-start justify-between gap-6">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-3xl font-extrabold">Información de alérgenos</h1>
           <p className="text-lg">{org.name}</p>
-          <p className="text-sm text-ink-muted">
-            ● Contiene · ◐ Puede contener trazas · vacío: no declarado. Actualizado el {formatDateTime(new Date().toISOString(), tz)}.
+          <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-base" data-testid="print-legend">
+            <span className="inline-flex items-center gap-2"><PrintMark kind="contains" decorative /> Contiene</span>
+            <span className="inline-flex items-center gap-2"><PrintMark kind="traces" decorative /> Puede contener trazas</span>
+            <span>Vacío: no declarado</span>
           </p>
+          <p className="text-sm text-ink-muted">Actualizado el {formatDateTime(new Date().toISOString(), tz)}.</p>
         </div>
         {menu.data?.enabled ? (
           <div className="shrink-0 text-center">
@@ -466,7 +490,7 @@ export function AllergensPrintPage() {
       ) : list.length === 0 ? (
         <p className="mt-8">No hay platos visibles.</p>
       ) : (
-        <div className="mt-6 overflow-x-auto">
+        <div className="relative mt-6 overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr>
@@ -491,11 +515,11 @@ export function AllergensPrintPage() {
                     {d.category ? <span className="block text-xs font-normal text-ink-muted">{d.category}</span> : null}
                   </th>
                   {ALLERGENS.map((a) => (
-                    <td key={a} className="border border-line-strong p-1 text-center text-lg">
+                    <td key={a} className="border border-line-strong p-1 text-center">
                       {d.allergens[a] === 'contains' ? (
-                        <span aria-label="Contiene">●</span>
+                        <PrintMark kind="contains" />
                       ) : d.allergens[a] === 'traces' ? (
-                        <span aria-label="Puede contener trazas">◐</span>
+                        <PrintMark kind="traces" />
                       ) : (
                         <span className="sr-only">No declarado</span>
                       )}

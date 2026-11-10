@@ -5,15 +5,16 @@ import { useCompliance, useToday } from '@/api/queries';
 import type { Compliance, RecordType, TodayTasks } from '@/api/types';
 import { useOrgContext } from '@/hooks/useOrgContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
-import { LinkButton, buttonClasses } from '@/components/ui/Button';
+import { Button, LinkButton, buttonClasses } from '@/components/ui/Button';
 import { Badge, Callout, EmptyState, ErrorState, ProgressRing, Skeleton } from '@/components/ui/Feedback';
 import { Card, PageHeader, SectionTitle } from '@/components/ui/Layout';
 import { Checkbox, Field, Input } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
 import { ALERT_LABELS, RECORD_ICON, RECORD_TINT } from '@/features/recordMeta';
 import { DownloadButton } from '@/features/DownloadButton';
-import { addDaysIso, formatLocalDate, formatLongDate, formatPercent, formatRange, formatTemp, formatTime, localDateIn, relativeDays } from '@/lib/format';
+import { plural, addDaysIso, formatLocalDate, formatLongDate, formatCompliance, formatRange, formatTemp, formatTime, localDateIn, relativeDays } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { storage } from '@/lib/storage';
 
 // ===========================================================================
 // HOY
@@ -22,6 +23,10 @@ export function TodayPage() {
   const { orgId, org, tz, path } = useOrgContext();
   useDocumentTitle('Hoy');
   const q = useToday(orgId);
+  const [setupStep, setSetupStep] = useState(() => storage.getOnboarding(orgId));
+  // Pendiente de eliminación: no se puede registrar, así que los accesos directos se muestran deshabilitados y explicados.
+  const blocked = !!org.deletionScheduledAt;
+  const blockedWhy = 'Este local está pendiente de eliminación: ahora no se pueden añadir registros. Puedes consultar el historial y descargar informes.';
 
   return (
     <>
@@ -29,16 +34,58 @@ export function TodayPage() {
         eyebrow={org.name}
         title={q.data ? <span className="inline-block first-letter:uppercase">{formatLongDate(q.data.date)}</span> : 'Hoy'}
         actions={
-          <>
-            <LinkButton to={path('registrar/temperatura')} icon="thermometer" size="lg" className="max-sm:flex-1">
-              Temperatura
-            </LinkButton>
-            <LinkButton to={path('registrar')} icon="plus" variant="secondary" size="lg" className="max-sm:flex-1">
-              Otro registro
-            </LinkButton>
-          </>
+          blocked ? (
+            <>
+              <Button icon="thermometer" size="lg" className="max-sm:flex-1" disabled aria-describedby="hoy-bloqueado">
+                Temperatura
+              </Button>
+              <Button icon="plus" variant="secondary" size="lg" className="max-sm:flex-1" disabled aria-describedby="hoy-bloqueado">
+                Otro registro
+              </Button>
+            </>
+          ) : (
+            <>
+              <LinkButton to={path('registrar/temperatura')} icon="thermometer" size="lg" className="max-sm:flex-1">
+                Temperatura
+              </LinkButton>
+              <LinkButton to={path('registrar')} icon="plus" variant="secondary" size="lg" className="max-sm:flex-1">
+                Otro registro
+              </LinkButton>
+            </>
+          )
         }
       />
+      {blocked ? (
+        <p id="hoy-bloqueado" className="-mt-3 mb-5 text-ink-muted sm:-mt-4" data-testid="hoy-bloqueado">
+          {blockedWhy}
+        </p>
+      ) : null}
+      {setupStep ? (
+        <Callout
+          tone="info"
+          icon="settings"
+          title="Termina de configurar tu local"
+          className="mb-5"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <LinkButton to={`/nuevo-local?local=${orgId}&paso=${setupStep}`} size="md" iconRight="arrowRight">
+                Continuar la configuración
+              </LinkButton>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  storage.setOnboarding(orgId, null);
+                  setSetupStep(null);
+                }}
+              >
+                Ya está configurado
+              </Button>
+            </div>
+          }
+        >
+          Dejaste el alta guiada a medias (equipos, limpieza y personal). Puedes retomarla donde la dejaste.
+        </Callout>
+      ) : null}
       {q.isPending ? (
         <div role="status" className="space-y-4">
           <span className="sr-only">Cargando las tareas de hoy…</span>
@@ -81,7 +128,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
       <section aria-labelledby="resumen" className={cn('grid gap-4', subCard && 'lg:grid-cols-[1.4fr_1fr]')}>
         <Card className="flex items-center gap-5">
           {summary.total > 0 ? (
-            <ProgressRing percent={summary.percent} label={`${formatPercent(summary.percent)} de las tareas de hoy hechas`} />
+            <ProgressRing percent={summary.percent} label={`${formatCompliance(summary.percent)} de las tareas de hoy hechas`} />
           ) : (
             <span className="grid size-28 shrink-0 place-items-center rounded-full bg-surface-2 text-ink-muted" aria-hidden="true">
               <Icon name="today" size={40} />
@@ -418,7 +465,7 @@ export function ReportsPage() {
             </div>
           ) : (
             <p className="mt-3 text-ink-muted">
-              Del {formatLocalDate(range.from)} al {formatLocalDate(range.to)} ({days} días)
+              Del {formatLocalDate(range.from)} al {formatLocalDate(range.to)} ({plural(days, 'día', 'días')})
             </p>
           )}
           {rangeError ? (
@@ -519,9 +566,9 @@ export function ComplianceChart({ data }: { data: Compliance }) {
     <div>
       <div className="mb-4 flex flex-wrap items-end gap-x-6 gap-y-2">
         <p>
-          <span className="block font-display text-5xl font-extrabold tabular">{formatPercent(overall)}</span>
+          <span className="block font-display text-5xl font-extrabold tabular">{formatCompliance(overall)}</span>
           <span className="text-ink-muted">
-            {data.overall.done} de {data.overall.expected} tareas hechas
+            {data.overall.done} de {plural(data.overall.expected, 'tarea hecha', 'tareas hechas')}
           </span>
           {(data.overall.correctedLater ?? 0) > 0 ? (
             <span className="block text-sm text-ink-muted" data-testid="overall-corrected-later">
@@ -530,18 +577,18 @@ export function ComplianceChart({ data }: { data: Compliance }) {
           ) : null}
         </p>
         <p className="text-ink-muted">
-          {summary.full} de {summary.withData} días completos
+          {summary.full} de {plural(summary.withData, 'día completo', 'días completos')}
         </p>
       </div>
       <figure>
-        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={`Porcentaje de tareas hechas por día, del ${formatLocalDate(data.from)} al ${formatLocalDate(data.to)}. Media: ${overall == null ? 'sin datos' : formatPercent(overall)}.`}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={`Porcentaje de tareas hechas por día, del ${formatLocalDate(data.from)} al ${formatLocalDate(data.to)}. Media: ${overall == null ? 'sin datos' : formatCompliance(overall)}.`}>
           {[0, 50, 100].map((g) => {
             const y = pad.t + innerH - (g / 100) * innerH;
             return (
               <g key={g}>
                 <line x1={pad.l} x2={W - pad.r} y1={y} y2={y} stroke="var(--line)" strokeDasharray={g === 0 ? undefined : '3 4'} />
                 <text x={pad.l - 6} y={y + 4} textAnchor="end" fontSize="13" fill="var(--ink-muted)">
-                  {formatPercent(g)}
+                  {formatCompliance(g)}
                 </text>
               </g>
             );
@@ -557,7 +604,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                   <rect x={x} y={pad.t + innerH - 3} width={bw * 0.7} height={3} rx={1} fill={color} />
                 ) : (
                   <rect x={x} y={pad.t + innerH - h} width={bw * 0.7} height={h} rx={Math.min(3, bw * 0.2)} fill={color}>
-                    <title>{`${formatLocalDate(d.date)}: ${formatPercent(p)} (${d.done} de ${d.expected})${(d.correctedLater ?? 0) > 0 ? `; ${correctedLaterText(d.correctedLater ?? 0)}` : ''}`}</title>
+                    <title>{`${formatLocalDate(d.date)}: ${formatCompliance(p)} (${d.done} de ${d.expected})${(d.correctedLater ?? 0) > 0 ? `; ${correctedLaterText(d.correctedLater ?? 0)}` : ''}`}</title>
                   </rect>
                 )}
                 {i % labelEvery === 0 ? (
@@ -570,10 +617,10 @@ export function ComplianceChart({ data }: { data: Compliance }) {
           })}
         </svg>
         <figcaption className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-ink-muted">
-          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-ok-solid" /> {formatPercent(100)}</span>
+          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-ok-solid" /> {formatCompliance(100)}</span>
           <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-brand" /> 75–99{'\u202F'}%</span>
           <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-warn-solid" /> 50–74{'\u202F'}%</span>
-          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-bad-solid" /> menos del {formatPercent(50)}</span>
+          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm bg-bad-solid" /> menos del {formatCompliance(50)}</span>
         </figcaption>
       </figure>
       <button type="button" onClick={() => setShowTable((s) => !s)} aria-expanded={showTable} className="mt-3 min-h-11 font-semibold text-brand-strong underline underline-offset-4 dark:text-brand">
@@ -597,7 +644,7 @@ export function ComplianceChart({ data }: { data: Compliance }) {
                   <td className="px-3 py-1.5">{formatLocalDate(d.date)}</td>
                   <td className="px-3 py-1.5 tabular">{d.done}</td>
                   <td className="px-3 py-1.5 tabular">{d.expected}</td>
-                  <td className="px-3 py-1.5 tabular">{formatPercent(d.percent)}</td>
+                  <td className="px-3 py-1.5 tabular">{formatCompliance(d.percent)}</td>
                   {anyCorrected ? <td className="px-3 py-1.5 tabular">{d.correctedLater ? d.correctedLater : '–'}</td> : null}
                 </tr>
               ))}

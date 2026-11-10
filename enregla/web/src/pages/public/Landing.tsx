@@ -8,7 +8,7 @@ import { TilePattern } from '@/layouts/AuthLayout';
 import { APP_NAME, PRICING } from '@/config/brand';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { storage } from '@/lib/storage';
-import { formatNumber, formatPercent } from '@/lib/format';
+import { formatNumber, formatCompliance } from '@/lib/format';
 import { useCanonical } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/cn';
 
@@ -94,7 +94,7 @@ function HeroMock() {
               <circle cx="40" cy="40" r="33" fill="none" stroke="var(--surface-3)" strokeWidth="9" />
               <circle cx="40" cy="40" r="33" fill="none" stroke="var(--brand)" strokeWidth="9" strokeLinecap="round" strokeDasharray="207" strokeDashoffset="62" />
             </svg>
-            <span className="font-display text-lg font-bold">{formatPercent(70)}</span>
+            <span className="font-display text-lg font-bold">{formatCompliance(70)}</span>
           </div>
         </div>
         <ul className="mt-5 space-y-2.5">

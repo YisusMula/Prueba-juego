@@ -26,9 +26,11 @@ export function useField() {
  * si, al enviar otra vez el formulario, el error sigue ahí. Sirve para cualquier formulario sin
  * que cada uno tenga que limpiar sus errores a mano.
  */
-export function useDismissibleError<T extends HTMLElement>(error: string | null | undefined) {
+export function useDismissibleError<T extends HTMLElement>(error: string | null | undefined, live = false) {
   const ref = useRef<T>(null);
   const [dismissed, setDismissed] = useState<string | null>(null);
+  // Si el error desaparece, la próxima vez que vuelva (aunque con el mismo texto) debe mostrarse.
+  if (!error && dismissed !== null) setDismissed(null);
   useEffect(() => {
     const form = ref.current?.closest('form');
     if (!form) return;
@@ -37,7 +39,8 @@ export function useDismissibleError<T extends HTMLElement>(error: string | null 
     form.addEventListener('submit', onSubmit, true);
     return () => form.removeEventListener('submit', onSubmit, true);
   }, []);
-  const visible = error && error !== dismissed ? error : null;
+  // Un error «en vivo» se deriva del valor actual: nunca se oculta al editar.
+  const visible = error && (live || error !== dismissed) ? error : null;
   const onEdit = () => {
     if (error) setDismissed(error);
   };
@@ -53,6 +56,7 @@ export function Field({
   className,
   optional,
   id: idProp,
+  live,
 }: {
   label: ReactNode;
   hint?: ReactNode;
@@ -61,10 +65,12 @@ export function Field({
   className?: string;
   optional?: boolean;
   id?: string;
+  /** El error se calcula a partir del valor actual en cada render (no se oculta al editar). */
+  live?: boolean;
 }) {
   const autoId = useId();
   const id = idProp ?? autoId;
-  const { ref, visible, onEdit } = useDismissibleError<HTMLDivElement>(error);
+  const { ref, visible, onEdit } = useDismissibleError<HTMLDivElement>(error, live);
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = visible ? `${id}-error` : undefined;
   const counterId = `${id}-count`;

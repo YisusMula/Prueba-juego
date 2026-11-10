@@ -27,7 +27,7 @@ import { Checkbox, ChoiceGroup, Field, Input, Select, Textarea, detailsToFieldEr
 import { ConfirmDialog } from '@/components/ui/Overlay';
 import { Icon } from '@/components/icons/Icon';
 import { cn } from '@/lib/cn';
-import { formatLocalDate, formatRange, formatTemp, frequencyLabel, isOutOfRange, localDateIn, parseDecimal } from '@/lib/format';
+import { formatLocalDate, formatRange, formatTemp, frequencyLabel, isOutOfRange, localDateIn, numberFieldError, parseDecimal } from '@/lib/format';
 
 /** Datos de configuración que necesitan los formularios (compatibles con web y kiosko). */
 export type FormContext = {
@@ -68,6 +68,10 @@ export const TEMP_ACTIONS = [
   'Avisado el servicio técnico',
   'Repetiré la medición en 30 min',
 ];
+/** Motivos coherentes con ACEPTAR mercancía caducada o caliente (devolver o desechar solo tiene sentido al rechazarla). */
+export const ACCEPT_EXPIRED_ACTIONS = ['Error en la etiqueta: confirmado con el proveedor', 'Fecha revisada: producto en buen estado', 'Se consume hoy bajo control del responsable'];
+export const ACCEPT_HOT_ACTIONS = ['Se usa de inmediato', 'Pasada a cámara al momento', 'Avisado el proveedor'];
+export const REJECT_REASONS = ['Se devuelve al proveedor', 'Se desecha'];
 export const OIL_ACTIONS = ['Aceite cambiado', 'Aceite filtrado', 'Freidora parada hasta el cambio'];
 
 const numText = (n: number | null | undefined) => (n == null ? '' : String(n).replace('.', ',').replace('-', '−'));
@@ -244,7 +248,7 @@ export function TemperaturaForm(p: Props<'temperatura'>) {
         {(errors.equipmentId || server.equipmentId) && !equipmentId ? <p className="mt-1.5 text-sm font-semibold text-bad" role="alert">Elige un equipo</p> : null}
       </fieldset>
 
-      <Field label="Temperatura (°C)" error={liveError || errors.value || server.value} hint={eq ? `Rango correcto: ${formatRange(eq.minTemp, eq.maxTemp)}` : undefined}>
+      <Field label="Temperatura (°C)" live={!!liveError} error={liveError || errors.value || server.value} hint={eq ? `Rango correcto: ${formatRange(eq.minTemp, eq.maxTemp)}` : undefined}>
         <div className="relative max-w-60">
           <Input
             inputMode="decimal"
@@ -481,7 +485,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
         <Field label="Lote" optional error={errors.lot}>
           <Input value={lot} onChange={(e) => setLot(e.target.value)} maxLength={100} />
         </Field>
-        <Field label="Temperatura al recibir (°C)" optional error={tError || errors.temperature || server.temperature}>
+        <Field label="Temperatura al recibir (°C)" optional live={!!tError} error={tError || errors.temperature || server.temperature}>
           <Input inputMode="decimal" value={temperature} onChange={(e) => setTemperature(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="Ej.: 2,5" maxLength={7} />
         </Field>
         <Field label="Fecha de caducidad" optional error={errors.expiryDate || server.expiryDate}>
@@ -491,6 +495,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
       <Field
         label="Temperatura máxima admisible (°C)"
         optional
+        live={!!mtError}
         hint="Para avisar si el producto llega demasiado caliente. Valores orientativos."
         error={mtError || errors.maxTemperature || server.maxTemperature}
       >
@@ -532,6 +537,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
       />
       {accepted === 'no' ? (
         <Field label="Motivo del rechazo" error={errors.rejectionReason || server.rejectionReason}>
+          <Suggestions value={reason} onChange={setReason} suggestions={REJECT_REASONS} large={p.large} />
           <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} rows={2} placeholder="Ej.: llegó a 9 °C, envase roto, caducada…" />
         </Field>
       ) : null}
@@ -540,7 +546,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
           label={expired ? '¿Por qué la aceptas?' : '¿Qué has hecho?'}
           value={corrective}
           onChange={setCorrective}
-          suggestions={expired ? ['Se devuelve al proveedor', 'Se desecha', 'Error en la etiqueta: confirmado con el proveedor'] : ['Se usa de inmediato', 'Pasada a cámara al momento', 'Avisado el proveedor']}
+          suggestions={expired ? ACCEPT_EXPIRED_ACTIONS : ACCEPT_HOT_ACTIONS}
           error={errors.correctiveAction || server.correctiveAction}
           large={p.large}
         />
@@ -562,6 +568,12 @@ export function AceiteForm(p: Props<'aceite'>) {
   const server = fieldErrorsFrom(p.serverError);
   const polarNum = polar.trim() ? parseDecimal(polar) : null;
   const over = polarNum != null && polarNum > POLAR_COMPOUNDS_LIMIT;
+  const polarError = numberFieldError(polar, {
+    notNumber: 'Escribe el porcentaje con números (por ejemplo 18 o 27,5)',
+    min: 0,
+    max: 100,
+    outOfRange: 'Los compuestos polares deben estar entre 0 y 100 %',
+  });
 
   if (fryers.length === 0) return <Callout tone="warn" title="No hay freidoras">Añade una freidora en Ajustes → Equipos para registrar el aceite.</Callout>;
 
@@ -569,10 +581,11 @@ export function AceiteForm(p: Props<'aceite'>) {
     <FormShell
       {...p}
       danger={over}
+      disabled={!!polarError}
       onSubmit={(e) => {
         e.preventDefault();
+        if (polarError) return;
         const extra: Record<string, string> = {};
-        if (polar.trim() && polarNum == null) extra.polarCompounds = 'Valor no válido';
         if (!action) extra.action = 'Indica si lo has revisado o cambiado';
         if (over && !corrective.trim()) extra.correctiveAction = `Por encima del ${POLAR_COMPOUNDS_LIMIT} %: indica qué has hecho`;
         submit({ equipmentId, action: action ?? undefined, polarCompounds: polarNum, correctiveAction: corrective.trim() || null }, extra);
@@ -603,7 +616,8 @@ export function AceiteForm(p: Props<'aceite'>) {
         label="Compuestos polares (%)"
         optional
         hint={`Si lo mides con tester. Referencia orientativa: por encima del ${POLAR_COMPOUNDS_LIMIT} % hay que cambiarlo.`}
-        error={errors.polarCompounds || server.polarCompounds}
+        live={!!polarError}
+        error={polarError || errors.polarCompounds || server.polarCompounds}
       >
         <Input inputMode="decimal" value={polar} onChange={(e) => setPolar(e.target.value.replace('.', ','))} className="max-w-40" />
       </Field>
@@ -703,14 +717,22 @@ export function FormacionForm(p: Props<'formacion'>) {
   const [hours, setHours] = useState(numText(p.initial?.hours));
   const { errors, submit } = useValidated(formacionData, p.onSubmit);
   const server = fieldErrorsFrom(p.serverError);
+  const hoursError = numberFieldError(hours, {
+    notNumber: 'Escribe las horas con números (por ejemplo 2 o 1,5)',
+    min: 0,
+    max: 1000,
+    outOfRange: 'Las horas deben estar entre 0 y 1000',
+  });
 
   if (staff.length === 0) return <Callout tone="warn" title="No hay personal dado de alta">Añade a tu equipo en Ajustes → Personal.</Callout>;
 
   return (
     <FormShell
       {...p}
+      disabled={!!hoursError}
       onSubmit={(e) => {
         e.preventDefault();
+        if (hoursError) return;
         const h = hours.trim() ? parseDecimal(hours) : null;
         submit(
           { traineeStaffId: trainee, course: course.trim(), trainingDate: date, trainer: trainer.trim() || null, hours: h },
@@ -738,7 +760,7 @@ export function FormacionForm(p: Props<'formacion'>) {
         <Field label="Formador o entidad" optional error={errors.trainer}>
           <Input value={trainer} onChange={(e) => setTrainer(e.target.value)} maxLength={200} />
         </Field>
-        <Field label="Horas" optional error={errors.hours || server.hours}>
+        <Field label="Horas" optional live={!!hoursError} error={hoursError || errors.hours || server.hours}>
           <Input inputMode="decimal" value={hours} onChange={(e) => setHours(e.target.value.replace('.', ','))} maxLength={6} />
         </Field>
       </div>

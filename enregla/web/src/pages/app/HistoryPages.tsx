@@ -16,7 +16,7 @@ import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, cleaningResult, isRecordType, r
 import { RecordForm } from '@/features/RecordForms';
 import { WriteGuard } from '@/features/SubscriptionBanner';
 import { useFormContext } from './RecordPages';
-import { formatDateTime, formatLocalDate, formatLongDate, formatNumber, formatPercent, formatRange, formatTemp, formatTime, localDateIn } from '@/lib/format';
+import { formatDateTime, formatLocalDate, formatLongDate, formatDecimal, formatPercent, formatRange, formatTemp, formatTime, localDateIn } from '@/lib/format';
 import { useIdempotencyKeys } from '@/lib/idempotency';
 import { cn } from '@/lib/cn';
 
@@ -40,7 +40,7 @@ export function HistoryPage() {
     setParams(n, { replace: true });
   };
   const dateError = filters.from && filters.to && filters.from > filters.to ? 'La fecha «desde» debe ser anterior a «hasta»' : null;
-  const q = useRecords(orgId, dateError ? { ...filters, from: '', to: '' } : filters);
+  const q = useRecords(orgId, filters, 25, !dateError);
   const items = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);
   const groups = useMemo(() => {
     const m = new Map<string, AppRecord[]>();
@@ -69,7 +69,7 @@ export function HistoryPage() {
               ))}
             </Select>
           </Field>
-          <Field label="Desde" error={dateError}>
+          <Field label="Desde" error={dateError} live>
             <Input type="date" value={filters.from} onChange={(e) => setFilter('desde', e.target.value)} />
           </Field>
           <Field label="Hasta">
@@ -86,7 +86,11 @@ export function HistoryPage() {
         ) : null}
       </Card>
 
-      {q.isPending ? (
+      {dateError ? (
+        <EmptyState icon="history" title="Corrige las fechas para ver los registros">
+          {dateError}. Mientras tanto no se muestra ninguna lista.
+        </EmptyState>
+      ) : q.isPending ? (
         <LoadingBlock rows={6} label="Cargando registros…" />
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
@@ -262,7 +266,7 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
         { label: 'Curso', value: r.data.course },
         { label: 'Fecha', value: formatLocalDate(r.data.trainingDate) },
         { label: 'Formador', value: r.data.trainer ?? '—' },
-        { label: 'Horas', value: r.data.hours != null ? formatNumber(r.data.hours) : '—' },
+        { label: 'Horas', value: r.data.hours != null ? formatDecimal(r.data.hours) : '—' },
       );
       break;
   }

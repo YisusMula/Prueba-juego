@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 import { Icon, type IconName } from '@/components/icons/Icon';
 import { errorMessage, isApiError } from '@/api/client';
-import { formatPercent } from '@/lib/format';
+import { formatCompliance } from '@/lib/format';
 import { SUPPORT_EMAIL } from '@/config/legal';
 
 export function Spinner({ size = 20, label }: { size?: number; label?: string }) {
@@ -174,7 +174,7 @@ export function ProgressRing({ percent, size = 112, stroke = 12, label }: { perc
         />
       </svg>
       <div className="absolute inset-0 grid place-items-center text-center">
-        <span className="font-display text-2xl font-bold tabular">{formatPercent(p)}</span>
+        <span className="font-display text-2xl font-bold tabular">{formatCompliance(p)}</span>
       </div>
       {label ? <span className="sr-only">{label}</span> : null}
     </div>

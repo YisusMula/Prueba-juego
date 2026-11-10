@@ -6,13 +6,15 @@
  *    /api/kiosk/* (tareas de hoy y alta de registros). Se revoca desde Ajustes → Dispositivos
  *    de cocina (y la tablet lo borra al recibir 401) o con el botón "Desvincular" del kiosko.
  *  - Preferencias sin datos sensibles: último local abierto (id) e indicador "hay sesión"
- *    (un booleano para redirigir de la portada al panel; la sesión real es la cookie httpOnly).
+ *    (un booleano para redirigir de la portada al panel; la sesión real es la cookie httpOnly),
+ *    y el último paso de un alta guiada sin terminar (para ofrecer retomarla desde «Hoy»).
  */
 const KEYS = {
   kioskToken: 'enregla.kiosk.deviceToken',
   lastOrg: 'enregla.lastOrgId',
   sessionHint: 'enregla.hasSession',
 } as const;
+const onboardingKey = (orgId: string) => `enregla.onboarding.${orgId}`;
 
 function safeGet(key: string): string | null {
   try {
@@ -42,4 +44,10 @@ export const storage = {
   setLastOrg: (id: string | null) => safeSet(KEYS.lastOrg, id),
   hasSessionHint: () => safeGet(KEYS.sessionHint) === '1',
   setSessionHint: (on: boolean) => safeSet(KEYS.sessionHint, on ? '1' : null),
+  /** Alta guiada sin terminar de un local: último paso (1-4) alcanzado. Solo un número, sin datos personales. */
+  getOnboarding: (orgId: string): number | null => {
+    const n = Number(safeGet(onboardingKey(orgId)));
+    return Number.isInteger(n) && n >= 1 && n <= 4 ? n : null;
+  },
+  setOnboarding: (orgId: string, step: number | null) => safeSet(onboardingKey(orgId), step === null ? null : String(step)),
 };

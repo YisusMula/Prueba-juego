@@ -20,7 +20,7 @@ import { PasswordMeter } from '@/features/PasswordMeter';
 import { DownloadButton } from '@/features/DownloadButton';
 import { STATUS_LABELS, WriteGuard, deletionDate } from '@/features/SubscriptionBanner';
 import { SUPPORT_EMAIL } from '@/config/legal';
-import { formatDateTime, formatEuros, formatLocalDate, relativeDays } from '@/lib/format';
+import { formatDateTime, formatEuros, formatLocalDate, plural, relativeDays } from '@/lib/format';
 import { checkPasswordPolicy } from '@shared/schemas';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
@@ -842,6 +842,7 @@ export function AccountSettingsPage() {
   const [pwErr, setPwErr] = useState<string | null>(null);
   const [em, setEm] = useState({ password: '', email: '' });
   const [emErr, setEmErr] = useState<string | null>(null);
+  const [emailErr, setEmailErr] = useState<string | null>(null);
   const [emDone, setEmDone] = useState<string | null>(null);
   const [delOpen, setDelOpen] = useState(false);
   const [delPw, setDelPw] = useState('');
@@ -914,7 +915,14 @@ export function AccountSettingsPage() {
               onSubmit={(e) => {
                 e.preventDefault();
                 const p = changeEmailBody.safeParse({ password: em.password, newEmail: em.email });
-                if (!p.success) return setEmErr(Object.values(zodToFieldErrors(p.error.issues))[0] ?? 'Revisa los datos');
+                if (!p.success) {
+                  // Cada error junto a su campo: un email inválido se señala en el email, no en la contraseña.
+                  const errs = zodToFieldErrors(p.error.issues);
+                  setEmailErr(errs.newEmail ?? null);
+                  setEmErr(errs.password ? 'Escribe tu contraseña actual' : null);
+                  return;
+                }
+                setEmailErr(null);
                 setEmErr(null);
                 void run(
                   'email',
@@ -926,7 +934,7 @@ export function AccountSettingsPage() {
                 );
               }}
             >
-              <Field label="Nuevo email">
+              <Field label="Nuevo email" error={emailErr}>
                 <Input type="email" value={em.email} onChange={(e) => setEm((s) => ({ ...s, email: e.target.value }))} autoComplete="email" />
               </Field>
               <Field label="Contraseña actual" error={emErr}>
@@ -1154,7 +1162,7 @@ function BillingContent({
             <div>
               <dt className="text-sm text-ink-muted">Fin de la prueba</dt>
               <dd className="font-semibold">
-                {formatLocalDate(sub.trialEndsAt.slice(0, 10))} ({days > 0 ? `${days} días` : 'hoy'})
+                {formatLocalDate(sub.trialEndsAt.slice(0, 10))} ({days > 0 ? plural(days, 'día', 'días') : 'hoy'})
               </dd>
             </div>
           ) : null}

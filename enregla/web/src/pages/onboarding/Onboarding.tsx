@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { BUSINESS_TYPES, BUSINESS_TYPE_LABELS, LIMITS, createOrgBody } from '@shared/schemas';
@@ -14,6 +14,8 @@ import { CleaningManager, EquipmentManager, StaffManager } from '@/features/Conf
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { PRICING } from '@/config/brand';
 import { cn } from '@/lib/cn';
+import { formatLocalDate, relativeDays } from '@/lib/format';
+import { storage } from '@/lib/storage';
 
 /** Cuatro pasos (la pantalla final «¡Listo!» no es un paso). En la URL, `paso` va de 1 a 4 (5 = terminado). */
 const STEPS = ['Tu local', 'Equipos', 'Limpieza', 'Personal'] as const;
@@ -62,6 +64,12 @@ export function OnboardingPage() {
   const effectiveStep = orgId ? Math.max(step, 1) : 0;
   const orgQ = useOrg(orgId ?? '', !!orgId);
   const ro = orgQ.data?.subscription.readOnly ?? false;
+  // Alta a medias: se recuerda el paso para poder retomarla (aviso en «Hoy»); al terminar se olvida.
+  useEffect(() => {
+    if (!orgId) return;
+    if (effectiveStep >= DONE) storage.setOnboarding(orgId, null);
+    else if (effectiveStep >= 1) storage.setOnboarding(orgId, effectiveStep + 1);
+  }, [orgId, effectiveStep]);
 
   return (
     <div className="min-h-dvh">
@@ -140,7 +148,10 @@ function StepShell({ title, intro, children, onBack, onNext, nextLabel = 'Siguie
 function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
   const qc = useQueryClient();
   const account = useAccount();
-  const isAdditional = (account.data?.organizations.some((o) => o.role === 'owner') ?? false);
+  const owned = account.data?.organizations.filter((o) => o.role === 'owner') ?? [];
+  const isAdditional = owned.length > 0;
+  const trialEndsAt = owned[0]?.subscription.trialEndsAt ?? null;
+  const trialOver = trialEndsAt ? relativeDays(trialEndsAt) <= 0 : false;
   const [created, setCreated] = useState<Organization | null>(null);
   const [name, setName] = useState('');
   const [type, setType] = useState<BusinessType | null>(null);
@@ -237,12 +248,22 @@ function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
       </fieldset>
       {isAdditional ? (
         <Callout tone="warn" title="Ya tienes un local">
-          La prueba gratuita es una por cuenta. Si ya la usaste, este nuevo local quedará en solo lectura hasta que contrates su suscripción
+          {trialOver || !trialEndsAt ? (
+            <>
+              La prueba gratuita es una por cuenta y {trialEndsAt ? `terminó el ${formatLocalDate(trialEndsAt.slice(0, 10))}` : 'ya la usaste'}: el nuevo local nacerá en <strong>solo lectura</strong> hasta
+              que contrates su suscripción
+            </>
+          ) : (
+            <>
+              El nuevo local <strong>comparte la fecha de fin de prueba de tu cuenta</strong> ({formatLocalDate(trialEndsAt.slice(0, 10))}): no empieza otra prueba de {PRICING.trialDays} días. Después
+              quedará en solo lectura hasta que contrates su suscripción
+            </>
+          )}{' '}
           ({PRICING.monthly} €/mes o {PRICING.annual} €/año por local, IVA no incluido).
         </Callout>
       ) : null}
       <Callout tone="info">
-        Si es tu primer local, empiezas con <strong>{PRICING.trialDays} días de prueba gratis</strong>, sin tarjeta. Cargaremos una plantilla orientativa de equipos y limpieza para tu tipo de
+        {isAdditional ? null : <>Si es tu primer local, empiezas con <strong>{PRICING.trialDays} días de prueba gratis</strong>, sin tarjeta. </>}Cargaremos una plantilla orientativa de equipos y limpieza para tu tipo de
         negocio que podrás revisar en el siguiente paso.
       </Callout>
       {error ? <Callout tone="bad" live="assertive">{error}</Callout> : null}
@@ -262,14 +283,14 @@ function StepDone({ orgId }: { orgId: string }) {
       </span>
       <h1 className="mt-6 text-3xl font-extrabold">¡Tu local está listo!</h1>
       <p className="mx-auto mt-2 max-w-lg text-lg text-ink-muted">
-        Ya puedes registrar desde aquí. Para la cocina, vincula una tablet o móvil y tu equipo apuntará las temperaturas en segundos.
+        Ya puedes registrar desde aquí. Vincular una tablet o un móvil de cocina es <strong>opcional</strong>: puedes hacerlo ahora o más adelante en Ajustes → Dispositivos de cocina.
       </p>
       <div className="mx-auto mt-8 grid max-w-md gap-3">
         <Button size="lg" icon="today" onClick={() => navigate(`/locales/${orgId}/hoy`)}>
           Ir al panel de hoy
         </Button>
         <LinkButton to={`/locales/${orgId}/ajustes/cocina`} variant="secondary" size="lg" icon="tablet">
-          Vincular la tablet de cocina
+          Vincular una tablet de cocina (opcional)
         </LinkButton>
       </div>
     </section>

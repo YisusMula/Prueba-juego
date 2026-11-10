@@ -11,12 +11,15 @@ export function Keypad({
   onChange,
   mode = 'decimal',
   maxLength = 6,
+  onLimit,
   className,
 }: {
   value: string;
   onChange: (v: string) => void;
   mode?: 'decimal' | 'pin';
   maxLength?: number;
+  /** Se llama cuando se pulsa una cifra y no cabe (longitud máxima): quien lo usa debe avisar, no ignorarlo en silencio. */
+  onLimit?: () => void;
   className?: string;
 }) {
   const press = (key: string) => {
@@ -31,7 +34,7 @@ export function Keypad({
     const [, decimals] = value.split(',');
     if (decimals !== undefined && decimals.length >= 1) return;
     const digitsOnly = value.replace(/[-,]/g, '');
-    if (digitsOnly.length >= maxLength) return;
+    if (digitsOnly.length >= maxLength) return onLimit?.();
     if (mode === 'decimal' && (value === '0' || value === '-0')) return onChange(value.replace('0', key));
     onChange(value + key);
   };

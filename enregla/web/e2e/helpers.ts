@@ -104,3 +104,35 @@ export async function expectNoSeriousA11yViolations(page: Page, label: string) {
   const summary = serious.map((v) => `${label}: [${v.impact}] ${v.id} — ${v.help}\n   ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join('\n   ')}`).join('\n');
   expect(serious, summary).toEqual([]);
 }
+
+/** Nombre de local de 100 caracteres sin espacios (peor caso de desbordamiento). */
+export const LONG_ORG_NAME = `Local${'X'.repeat(95)}`;
+
+/**
+ * Crea (con la sesión del demo) un local con nombre larguísimo, un plato revisado con trazas, una persona sin PIN
+ * y una tablet de cocina vinculable. Devuelve lo necesario para recorrer sus pantallas.
+ */
+export async function createLongNameOrg(page: Page, name = LONG_ORG_NAME) {
+  const h = apiHeaders(page);
+  const created = await page.request.post('/api/orgs', { data: { name, businessType: 'bar' }, headers: h });
+  expect(created.status()).toBe(201);
+  const { organization } = (await created.json()) as { organization: { id: string } };
+  const id = organization.id;
+  const IDS = ['gluten', 'crustaceans', 'eggs', 'fish', 'peanuts', 'soybeans', 'milk', 'nuts', 'celery', 'mustard', 'sesame', 'sulphites', 'lupin', 'molluscs'];
+  const full = Object.fromEntries(IDS.map((a, i) => [a, i === 0 ? 'contains' : i === 1 ? 'traces' : 'no']));
+  const dish = await page.request.post(`/api/orgs/${id}/dishes`, {
+    data: { name: `Plato${'Y'.repeat(60)}`, category: 'Entrantes', description: 'Con trazas', allergens: full, allergensReviewed: true, visible: true },
+    headers: h,
+  });
+  expect(dish.status()).toBe(201);
+  const menu = await page.request.patch(`/api/orgs/${id}/public-menu`, { data: { enabled: true }, headers: h });
+  const { publicMenu } = (await menu.json()) as { publicMenu: { slug: string } };
+  const staff = await page.request.post(`/api/orgs/${id}/staff`, { data: { name: 'Ana Prueba' }, headers: h });
+  expect(staff.status()).toBe(201);
+  const staff2 = await page.request.post(`/api/orgs/${id}/staff`, { data: { name: 'Beatriz con un nombre de persona bastante largo', pin: '1234' }, headers: h });
+  expect(staff2.status()).toBe(201);
+  const dev = await page.request.post(`/api/orgs/${id}/devices`, { data: { name: 'Tablet de prueba' }, headers: h });
+  expect(dev.status()).toBe(201);
+  const { token } = (await dev.json()) as { token: string };
+  return { id, name, kioskToken: token, publicMenu };
+}

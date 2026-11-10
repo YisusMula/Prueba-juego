@@ -205,8 +205,16 @@
     /* Palabras larguísimas (p. ej. un nombre de local sin espacios) se parten en vez de desbordar. */
     overflow-wrap: break-word;
   }
-  h1, h2, h3, h4 {
+  /*
+   * Todo texto escrito por una persona (nombre del local, plato, proveedor…) rompe palabra en vez de desbordar:
+   * «anywhere» también reduce el tamaño mínimo de contenido, así que los hijos de cajas flex/grid pueden encoger.
+   */
+  body, body * {
     overflow-wrap: anywhere;
+  }
+  /* En tablas se mantiene el criterio normal (solo parte la palabra si no cabe) para no deformar las columnas. */
+  td, th {
+    overflow-wrap: break-word;
   }
   h1, h2, h3, h4 {
     font-family: var(--font-display);

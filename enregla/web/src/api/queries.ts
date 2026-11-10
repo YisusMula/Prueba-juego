@@ -49,11 +49,18 @@ export function useOrg(orgId: string, enabled = true) {
   });
 }
 
+/**
+ * «Hoy» siempre se refresca al volver a la pestaña o a la app (foco/visibilidad) y al recuperar la
+ * conexión, aunque los datos sean recientes: otra persona puede haber hecho tareas mientras tanto.
+ */
+export const TODAY_REFRESH = { staleTime: 0, refetchOnWindowFocus: 'always', refetchOnReconnect: 'always' } as const;
+
 export function useToday(orgId: string) {
   return useQuery({
     queryKey: keys.orgScoped(orgId, 'today'),
     queryFn: () => api.get<TodayTasks>(`${base(orgId)}/tasks/today`),
     refetchInterval: 60_000,
+    ...TODAY_REFRESH,
   });
 }
 
@@ -126,8 +133,9 @@ export function useMembership(orgId: string) {
 
 export type RecordFilters = { type?: RecordType | ''; from?: string; to?: string; alert?: 'true' | 'false' | ''; equipmentId?: string; staffId?: string };
 
-export function useRecords(orgId: string, filters: RecordFilters, pageSize = 25) {
+export function useRecords(orgId: string, filters: RecordFilters, pageSize = 25, enabled = true) {
   return useInfiniteQuery({
+    enabled,
     queryKey: keys.orgScoped(orgId, 'records', filters),
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) => api.get<Page<AppRecord>>(`${base(orgId)}/records${qs({ ...filters, limit: pageSize, cursor: pageParam })}`),

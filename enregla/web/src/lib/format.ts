@@ -47,17 +47,28 @@ export function addDaysIso(date: string, days: number): string {
 }
 
 const numberFmt = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 1 });
-/** 3,5 · −18 · 1234 (coma decimal y signo menos tipográfico «−»). */
+/** Número calculado con un decimal como mucho: 3,5 · −18 (coma decimal y signo menos tipográfico «−»). */
 export const formatNumber = (n: number) => numberFmt.format(n).replace(/^-/, '−');
+
+const exactFmt = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 6 });
+/**
+ * Dato REGISTRADO por una persona (temperatura, horas, porcentaje de polares…): se muestra tal como se
+ * introdujo, sin redondear (27,5 no puede verse como «28»). Igual que el PDF y el CSV.
+ */
+export const formatDecimal = (n: number) => exactFmt.format(n).replace(/^-/, '−');
 
 /**
  * Porcentaje con el criterio de la RAE: número, espacio fino de no separación y «%» («75 %»).
- * Se usa el mismo formato en toda la aplicación.
+ * Conserva los decimales introducidos (es el formateador de los datos registrados). Para un porcentaje
+ * calculado (cumplimiento) se usa `formatCompliance`, que lo redondea a entero.
  */
-export const formatPercent = (n: number | null | undefined) => (n == null ? '—' : `${formatNumber(Math.round(n))}\u202F%`);
+export const formatPercent = (n: number | null | undefined) => (n == null ? '—' : `${formatDecimal(n)}\u202F%`);
+
+/** Porcentaje calculado (p. ej. cumplimiento de tareas): entero. */
+export const formatCompliance = (n: number | null | undefined) => (n == null ? '—' : formatPercent(Math.round(n)));
 
 /** 3,5 °C · −18 °C */
-export const formatTemp = (n: number | null | undefined) => (n == null ? '—' : `${formatNumber(n)} °C`);
+export const formatTemp = (n: number | null | undefined) => (n == null ? '—' : `${formatDecimal(n)} °C`);
 
 export function formatRange(min: number | null, max: number | null): string {
   if (min != null && max != null) return `${formatTemp(min)} a ${formatTemp(max)}`;
@@ -98,3 +109,13 @@ export function relativeDays(iso: string, now = new Date()): number {
 }
 
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** «Queda 1 tarea» / «Quedan 3 tareas». */
+export const quedan = (n: number, one: string, many: string) => (n === 1 ? `Queda 1 ${one}` : `Quedan ${n} ${many}`);
+
+/** Error de un campo numérico escrito a mano: qué se espera (cifras, rango). `null` si está vacío o es válido. */
+export function numberFieldError(text: string, opts: { notNumber: string; min: number; max: number; outOfRange: string }): string | null {
+  if (!text.trim()) return null;
+  const n = parseDecimal(text);
+  if (n == null) return opts.notNumber;
+  return n < opts.min || n > opts.max ? opts.outOfRange : null;
+}

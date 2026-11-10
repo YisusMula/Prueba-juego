@@ -86,8 +86,10 @@ for (const scheme of ['claro', 'oscuro']) for (const base of SIZES) {
   await page.goto(`${BASE}/cocina/vincular#token=${KIOSK}`);
   await page.waitForURL(/\/cocina$/);
   await shot('11-cocina-inicio');
-  await page.getByRole('button', { name: /Cámara de carnes/ }).first().click();
+  // Por «Registrar → Temperatura» (no por «Pendiente ahora», que depende de la hora del día).
+  await page.getByRole('button', { name: 'Temperatura', exact: true }).click();
   await page.getByRole('button', { name: /Luis Pérez/ }).click();
+  await page.getByRole('button', { name: /Cámara de carnes/ }).first().click();
   await page.getByRole('button', { name: '2', exact: true }).click();
   await page.getByRole('button', { name: 'Coma decimal' }).click();
   await page.getByRole('button', { name: '8', exact: true }).click();
@@ -124,6 +126,16 @@ for (const scheme of ['claro', 'oscuro']) for (const base of SIZES) {
   await page.getByRole('button', { name: /Refrigerado/ }).click();
   await page.getByLabel(/Fecha de caducidad/).fill('2026-01-01');
   await shot('17-recepcion-caducada-y-caliente');
+  // El aviso de rango no desaparece al editar (999 → Backspace → 9).
+  await page.goto(`${org}/registrar/temperatura`);
+  await page.locator('label').filter({ hasText: 'máx. 4 °C' }).first().click();
+  await page.getByLabel('Temperatura (°C)').pressSequentially('999');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.type('9');
+  await page.getByText('La temperatura debe estar entre').waitFor();
+  await shot('18-temperatura-999-aviso-persistente');
+  await page.goto(`${org}/alergenos/imprimir`);
+  await shot('19-alergenos-imprimir');
   await ctx.close();
 }
 await browser.close();

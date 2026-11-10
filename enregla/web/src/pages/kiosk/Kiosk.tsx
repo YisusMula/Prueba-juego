@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { EQUIPMENT_TYPE_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
+import { TODAY_REFRESH } from '@/api/queries';
 import { errorMessage, formatWait, isApiError } from '@/api/client';
 import type { AppRecord, KioskContext, RecordType, TodayTasks } from '@/api/types';
 import { Button } from '@/components/ui/Button';
@@ -16,7 +17,7 @@ import { IdempotencyKeys } from '@/lib/idempotency';
 import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, recordSummary } from '@/features/recordMeta';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useOnline } from '@/hooks/useOnline';
-import { formatPercent, formatRange, formatTemp, formatTime, isOutOfRange } from '@/lib/format';
+import { formatCompliance, formatRange, formatTemp, formatTime, isOutOfRange, plural, quedan } from '@/lib/format';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import { kioskApi } from './kioskApi';
@@ -96,8 +97,8 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
   const qc = useQueryClient();
   const online = useOnline();
   const now = useClock();
-  const ctxQ = useQuery({ queryKey: ['kiosk', 'context'], queryFn: () => kioskApi.context(token), refetchInterval: 5 * 60_000 });
-  const todayQ = useQuery({ queryKey: ['kiosk', 'today'], queryFn: () => kioskApi.today(token), refetchInterval: 60_000 });
+  const ctxQ = useQuery({ queryKey: ['kiosk', 'context'], queryFn: () => kioskApi.context(token), refetchInterval: 5 * 60_000, ...TODAY_REFRESH });
+  const todayQ = useQuery({ queryKey: ['kiosk', 'today'], queryFn: () => kioskApi.today(token), refetchInterval: 60_000, ...TODAY_REFRESH });
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const [person, setPerson] = useState<Person | null>(null);
   const [saving, setSaving] = useState(false);
@@ -250,11 +251,11 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
       <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur sm:px-6">
-        <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 min-w-0 items-center gap-3 rounded-2xl pr-3">
+        <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl pr-3">
           <span className="sr-only">Inicio del modo cocina: </span>
-          <LogoMark size={40} />
-          <span className="text-left">
-            <span className="block max-w-[50vw] truncate text-xl leading-tight font-extrabold" title={ctx?.organization.name}>
+          <LogoMark size={40} className="shrink-0" />
+          <span className="min-w-0 text-left">
+            <span className="block truncate text-xl leading-tight font-extrabold" title={ctx?.organization.name}>
               {ctx?.organization.name ?? 'Modo cocina'}
             </span>
             <span className="block text-sm text-ink-muted tabular">
@@ -262,7 +263,7 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
             </span>
           </span>
         </button>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {person ? (
             <button
               type="button"
@@ -421,21 +422,21 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
       <section aria-labelledby="khoy" className="flex flex-wrap items-center gap-4 rounded-3xl bg-brand-strong p-5 text-white dark:bg-[#0a2f33]">
         <div className="min-w-0 flex-1">
           <h1 id="khoy" className="text-3xl font-extrabold">
-            {summary.total === 0 ? 'Nada programado hoy' : summary.pending === 0 ? '¡Todo hecho por hoy!' : `Quedan ${summary.pending} tareas`}
+            {summary.total === 0 ? 'Nada programado hoy' : summary.pending === 0 ? '¡Todo hecho por hoy!' : quedan(summary.pending, 'tarea', 'tareas')}
           </h1>
           <p className="text-lg text-white/85">
             {summary.done} de {summary.total} hechas
           </p>
         </div>
         <div className="font-display text-5xl font-extrabold tabular" aria-hidden="true">
-          {formatPercent(summary.percent)}
+          {formatCompliance(summary.percent)}
         </div>
       </section>
 
       {today.alerts.length > 0 ? (
         <section aria-labelledby="kalert" className="rounded-3xl border-2 border-bad/50 bg-bad-soft p-4">
           <h2 id="kalert" className="flex items-center gap-2 text-xl font-bold text-bad">
-            <Icon name="alert" /> {today.alerts.length === 1 ? 'Hay 1 alerta' : `Hay ${today.alerts.length} alertas`}
+            <Icon name="alert" /> {today.alerts.length === 1 ? 'Hay 1 alerta' : `Hay ${plural(today.alerts.length, 'alerta', 'alertas')}`}
           </h2>
           <ul className="mt-2 space-y-1 text-lg">
             {shownAlerts.map((a) => (
@@ -560,7 +561,7 @@ function WhoScreen({ ctx, onPick, onBack }: { ctx: KioskContext; onPick: (s: Kio
               <button
                 type="button"
                 onClick={() => onPick(s)}
-                className="flex min-h-28 w-full flex-col items-center justify-center gap-2 rounded-3xl border-2 border-line bg-surface p-4 shadow-card transition-transform active:scale-[0.97]"
+                className="flex h-full min-h-28 w-full flex-col items-center justify-center gap-2 rounded-3xl border-2 border-line bg-surface p-4 shadow-card transition-transform active:scale-[0.97]"
               >
                 <span className="grid size-14 place-items-center rounded-full bg-brand-soft font-display text-2xl font-extrabold text-brand-strong dark:text-brand" aria-hidden="true">
                   {s.name.trim().charAt(0).toUpperCase()}
@@ -582,6 +583,7 @@ function WhoScreen({ ctx, onPick, onBack }: { ctx: KioskContext; onPick: (s: Kio
 
 function PinScreen({ person, error, busy, onDone, onBack }: { person: Person; error?: string; busy: boolean; onDone: (pin: string) => void; onBack: () => void }) {
   const [pin, setPin] = useState('');
+  const [limit, setLimit] = useState(false);
   return (
     <section aria-labelledby="kpin" className="mx-auto max-w-md">
       <BackButton onClick={onBack} label="Cancelar" />
@@ -599,7 +601,21 @@ function PinScreen({ person, error, busy, onDone, onBack }: { person: Person; er
           {error}
         </p>
       ) : null}
-      <Keypad value={pin} onChange={setPin} mode="pin" maxLength={6} />
+      {limit ? (
+        <p role="status" className="mb-3 text-center text-lg font-bold text-warn">
+          El PIN tiene como máximo 6 cifras.
+        </p>
+      ) : null}
+      <Keypad
+        value={pin}
+        onChange={(v) => {
+          setLimit(false);
+          setPin(v);
+        }}
+        onLimit={() => setLimit(true)}
+        mode="pin"
+        maxLength={6}
+      />
       <Button size="xl" block className="mt-4" disabled={pin.length < 4} loading={busy} onClick={() => onDone(pin)} icon="check">
         Entrar
       </Button>
