@@ -327,7 +327,7 @@ export function ReportsPage() {
   return (
     <>
       <PageHeader title="Informes" subtitle="Descarga tus registros para la inspección o para tu asesor. También funciona en modo solo lectura." />
-      <div className="grid gap-6 lg:grid-cols-[1fr_1.1fr]">
+      <div className="grid gap-6 xl:grid-cols-[1fr_1.1fr]">
         <Card>
           <h2 className="text-xl font-bold">1. Periodo</h2>
           <div className="mt-3 flex flex-wrap gap-2" role="radiogroup" aria-label="Periodo">
@@ -379,7 +379,7 @@ export function ReportsPage() {
               Ninguno
             </button>
           </div>
-          <div className="grid sm:grid-cols-2">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2">
             {RECORD_TYPES.map((t) => (
               <Checkbox
                 key={t}
@@ -403,7 +403,7 @@ export function ReportsPage() {
           ) : null}
 
           <h2 className="mt-6 text-xl font-bold">3. Descargar</h2>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
             <DownloadButton disabled={!canDownload} url={`/api/orgs/${orgId}/reports/pdf?${query}`} fallbackName="registros.pdf" icon="report" variant="primary">
               Informe PDF
             </DownloadButton>

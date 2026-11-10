@@ -1,3 +1,4 @@
+/* global document */
 /**
  * Capturas de las pantallas principales en móvil, tablet y escritorio, contra un servidor
  * de EnRegla que sirva el build de producción (por defecto el de e2e: http://localhost:3100).

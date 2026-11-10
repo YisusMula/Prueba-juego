@@ -209,7 +209,7 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
               <span className="hidden text-sm font-semibold text-ink-muted sm:inline">· cambiar</span>
             </button>
           ) : (
-            <button type="button" onClick={() => setScreen({ name: 'who', then: null })} className="flex min-h-16 items-center gap-2 rounded-2xl border-2 border-line-strong px-4 font-bold">
+            <button type="button" onClick={() => setScreen({ name: 'who', then: null })} className="flex min-h-16 items-center gap-2 rounded-2xl border-2 border-line-strong px-4 font-bold whitespace-nowrap">
               <Icon name="user" size={24} /> ¿Quién eres?
             </button>
           )}

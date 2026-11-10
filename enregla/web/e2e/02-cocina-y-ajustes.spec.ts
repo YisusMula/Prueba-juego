@@ -43,6 +43,7 @@ test('modo cocina: crear dispositivo, PIN incorrecto y correcto, revocar', async
   expect(token).toMatch(/^kd_/);
   await page.getByRole('button', { name: 'Hecho' }).click();
   await expect(page.locator('li').filter({ hasText: 'Tablet E2E' })).toContainText('Activo');
+  await expect(page.locator('li').filter({ hasText: 'Tablet E2E' })).toContainText('por Usuario Demo');
 
   // La tablet: otro contexto, sin sesión de usuario
   const tablet = await browser.newContext({ viewport: { width: 1024, height: 768 }, locale: 'es-ES' });

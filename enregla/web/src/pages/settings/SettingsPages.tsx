@@ -762,7 +762,8 @@ export function DataSettingsPage() {
       qc.removeQueries({ queryKey: keys.org(orgId) });
       navigate('/app', { replace: true });
     } catch (err) {
-      setError(errorMessage(err));
+      const billing = isApiError(err) && (err.code === 'BILLING_ERROR' || err.code === 'BILLING_NOT_CONFIGURED');
+      setError(billing ? `${errorMessage(err)} El local NO se ha eliminado: hay que cancelar antes su suscripción. Inténtalo más tarde o contacta con soporte.` : errorMessage(err));
       setBusy(false);
     }
   };

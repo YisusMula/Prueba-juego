@@ -5,7 +5,7 @@ Registros APPCC (autocontrol de higiene alimentaria) digitales para bares, resta
 > Las plantillas y rangos que trae la aplicación son **orientativos**. Cada local debe revisarlos y adaptarlos a su propio plan de autocontrol; la herramienta no garantiza por sí misma el cumplimiento de la normativa.
 
 - `server/` — API (Node 22, TypeScript estricto, Fastify 5, PostgreSQL + Kysely, zod, argon2id, pdfkit, nodemailer, Stripe).
-- `web/` — frontend (React, pendiente). Si existe `web/dist`, el servidor lo sirve con fallback SPA.
+- `web/` — frontend (React 19 + Vite + TanStack Query + Tailwind 4, PWA). Si existe `web/dist`, el servidor lo sirve con fallback SPA. Ver «Frontend» más abajo.
 - `docs/API.md` — referencia completa de la API para el frontend.
 
 ## Arranque local
@@ -55,6 +55,45 @@ Para el frontend con Vite, configura un proxy de `/api` a `http://localhost:3000
 | `npm run lint` | eslint (typescript-eslint con reglas de tipos) |
 
 Los tests usan `TEST_DATABASE_URL` (por defecto `postgres://enregla:enregla@localhost:5432/enregla_test`). **Borran y recrean el esquema `public` de esa base**: no la apuntes a datos reales.
+
+## Frontend (`web/`)
+
+```bash
+cd enregla/web
+npm ci
+npm run dev          # http://localhost:5173 (proxy de /api → http://localhost:3000; arranca antes el servidor)
+```
+
+El proxy de Vite mantiene la SPA y la API en el mismo origen: el navegador envía `Origin: http://localhost:5173`, que coincide con `APP_URL` del `.env` de desarrollo (CSRF). Para producción, `npm run build` genera `web/dist`, que el servidor sirve en su mismo puerto con la CSP estricta (sin scripts ni estilos inline; fuentes autoalojadas; nada de terceros).
+
+| Script (`web/`) | Qué hace |
+|---|---|
+| `npm run dev` | servidor de desarrollo de Vite |
+| `npm run build` | `typecheck` + build de producción (`dist/`, con service worker que nunca cachea `/api`) |
+| `npm run typecheck` / `npm run lint` | TypeScript estricto / eslint (incluye `jsx-a11y` y prohíbe `dangerouslySetInnerHTML`) |
+| `npm test` | pruebas unitarias (vitest + Testing Library) |
+| `npm run e2e` | build + suite Playwright contra el servidor real (ver abajo) |
+| `npm run screenshots` | capturas en móvil/tablet/escritorio en `docs/capturas/` (necesita el servidor e2e arrancado) |
+| `npm run icons` | regenera los iconos PNG de la PWA desde el logotipo |
+
+- Marca: `VITE_APP_NAME` (por defecto "EnRegla"), leída solo en `src/config/brand.ts` y en `vite.config.ts` (título y manifiesto).
+- Datos legales del titular: **un único fichero**, `web/src/config/legal.ts`. Mientras tengan corchetes (`[NIF]`…) se muestran resaltados como pendientes.
+- Los esquemas zod y constantes se importan directamente de `server/src/schemas` (alias `@shared/schemas`).
+- `localStorage` solo guarda: el token del dispositivo de cocina (la tablet no tiene sesión; solo sirve para `/api/kiosk/*`, viaja en `Authorization` y se borra al recibir 401 o con «Desvincular esta tablet»; se revoca desde Ajustes → Dispositivos de cocina), el último local abierto y un indicador booleano de "hay sesión". La sesión real es la cookie httpOnly.
+- Modo cocina: `/cocina`. Vinculación: `/cocina/vincular#token=…` (el QR que genera Ajustes lleva el token en el fragmento, que no llega al servidor).
+
+### Pruebas e2e
+
+Requisitos: PostgreSQL local con el usuario `enregla` (ver arriba; necesita `CREATEDB`), dependencias del servidor instaladas (`server/node_modules`) y Chromium de Playwright (ya presente en este entorno; versión de `@playwright/test` fijada a 1.63.0).
+
+```bash
+cd enregla/web
+npm run e2e          # = vite build && playwright test --trace off
+```
+
+`e2e/start-server.mjs` arranca un servidor **aislado**: base `enregla_e2e` (se crea si no existe y se recarga con el seed demo), puerto 3100 con `APP_URL=http://localhost:3100`, el build de `web/dist` y `MAIL_TRANSPORT=console`. Los emails (con sus enlaces `#token=`) se escriben en `web/e2e/.runtime/server.log` y las pruebas los leen de ahí: no hace falta ningún cambio en el servidor. Variables opcionales: `E2E_PORT`, `E2E_DATABASE_URL`, `E2E_ADMIN_DATABASE_URL`. Todas las pruebas fallan si aparece un error de JavaScript o una violación de CSP en la consola.
+
+Cobertura: registro → verificación por email → login → alta guiada; temperatura normal y fuera de rango con acción correctora → Hoy → Historial → enmienda; solo lectura (aviso, formularios deshabilitados, informes disponibles); ajustes (equipo, personal con PIN, invitación); modo cocina con PIN incorrecto y correcto, revocación del dispositivo; alérgenos + carta pública con filtro (sin peticiones a terceros) + versión imprimible; descarga de PDF y CSV; 404, sesión caducada con destino conservado y bloqueo de redirección abierta; cierre de sesión.
 
 ## Variables de entorno
 

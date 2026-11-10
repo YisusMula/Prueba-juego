@@ -71,8 +71,11 @@ export const inputClasses =
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input({ className, id, ...rest }, ref) {
   const field = useField();
+  // La API solo admite fechas entre los años 2000 y 2100.
+  const dateLimits = rest.type === 'date' ? { min: '2000-01-01', max: '2100-12-31' } : {};
   return (
     <input
+      {...dateLimits}
       ref={ref}
       id={id ?? field?.id}
       aria-describedby={field?.describedBy}
