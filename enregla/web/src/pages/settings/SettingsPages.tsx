@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { AUDIT_EVENT_LABELS, LIMITS, TIMEZONE_LABELS, changeEmailBody, createDeviceBody, inviteBody, timezoneLabel, updateAccountBody } from '@shared/schemas';
@@ -24,6 +24,8 @@ import { formatDateTime, formatEuros, formatLocalDate, plural, relativeDays } fr
 import { checkPasswordPolicy } from '@shared/schemas';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
+import { copyText } from '@/lib/clipboard';
+import { hasPlatformNote, platform, PlatformNote } from '@/lib/platform';
 
 function BackLink() {
   const { path } = useOrgContext();
@@ -298,7 +300,7 @@ export function StaffSettingsPage() {
 // ===========================================================================
 // DISPOSITIVOS DE COCINA
 // ===========================================================================
-export const kioskPairUrl = (token: string) => `${window.location.origin}/cocina/vincular#token=${token}`;
+export const kioskPairUrl = (token: string) => `${platform.appOrigin()}/cocina/vincular#token=${token}`;
 
 export function DevicesSettingsPage() {
   const { orgId, readOnly, tz } = useOrgContext();
@@ -355,13 +357,10 @@ export function DevicesSettingsPage() {
     navigate('/cocina');
   };
 
+  const tokenRef = useRef<HTMLParagraphElement>(null);
   const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.show('Copiado');
-    } catch {
-      toast.show('No se pudo copiar automáticamente', 'info');
-    }
+    if (await copyText(text, tokenRef.current)) toast.show('Copiado');
+    else toast.show('No se pudo copiar automáticamente: te hemos seleccionado el código.', 'info');
   };
 
   const active = q.data?.filter((d) => d.active) ?? [];
@@ -440,6 +439,7 @@ export function DevicesSettingsPage() {
       <Dialog open={!!created} onClose={() => setCreated(null)} title="Escanea este código con la tablet" dismissible>
         {created ? (
           <div className="space-y-4">
+            <PlatformNote id="device-token" />
             <Callout tone="warn" title="Solo se muestra esta vez">
               Quien tenga este código puede registrar en tu local desde la cocina. No lo compartas; si se pierde la tablet, desvincúlala aquí.
             </Callout>
@@ -452,13 +452,13 @@ export function DevicesSettingsPage() {
             </ol>
             <details open={showToken} onToggle={(e) => setShowToken((e.target as HTMLDetailsElement).open)}>
               <summary className="min-h-10 cursor-pointer font-semibold">¿No puedes escanear? Copia el código</summary>
-              <p className="mt-2 rounded-xl bg-surface-2 px-3 py-2 font-mono text-sm break-all" data-testid="device-token">
+              <p ref={tokenRef} className="mt-2 rounded-xl bg-surface-2 px-3 py-2 font-mono text-sm break-all" data-testid="device-token">
                 {created.token}
               </p>
               <Button variant="secondary" size="sm" icon="copy" className="mt-2" onClick={() => void copy(created.token)}>
                 Copiar código
               </Button>
-              <p className="mt-2 text-sm text-ink-muted">En la tablet, abre {window.location.host}/cocina y pégalo.</p>
+              <p className="mt-2 text-sm text-ink-muted">En la tablet, abre {platform.appOrigin().replace(/^https?:\/\//, '')}/cocina y pégalo.</p>
             </details>
             <div className="grid gap-2 sm:grid-cols-2">
               <Button variant="secondary" icon="tablet" onClick={useHere}>
@@ -565,6 +565,7 @@ export function TeamSettingsPage() {
 
   return (
     <SettingsShell title="Encargados e invitaciones" subtitle="Los encargados llevan el día a día; solo los propietarios gestionan facturación, miembros y datos del local.">
+      <PlatformNote id="invitations" />
       <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
         <Card>
           <SectionTitle>Personas con acceso</SectionTitle>
@@ -695,6 +696,7 @@ export function AuditPage() {
       title="Registro de actividad"
       subtitle="Acciones importantes en el local: datos del local, encargados e invitaciones, dispositivos de cocina, PIN del personal, carta pública, informes, exportaciones, facturación y eliminación. Los inicios de sesión son de cada cuenta y no aparecen aquí; los registros APPCC y sus correcciones están en el historial."
     >
+      <PlatformNote id="audit" />
       <OwnerOnly>
         {q.isPending ? (
           <LoadingBlock rows={6} />
@@ -778,6 +780,9 @@ export function DataSettingsPage() {
               Descarga una copia completa del local en formato JSON: configuración, personal, platos y todos los registros. No incluye contraseñas ni PIN.
               Disponible también en solo lectura y mientras el local esté pendiente de eliminación.
             </p>
+            <div className="mt-4">
+              <PlatformNote id="export" />
+            </div>
             <DownloadButton url={`/api/orgs/${orgId}/export`} fallbackName="exportacion.json" className="mt-4">
               Descargar exportación
             </DownloadButton>
@@ -934,6 +939,7 @@ export function AccountSettingsPage() {
                 );
               }}
             >
+              <PlatformNote id="account-email" />
               <Field label="Nuevo email" error={emailErr}>
                 <Input type="email" value={em.email} onChange={(e) => setEm((s) => ({ ...s, email: e.target.value }))} autoComplete="email" />
               </Field>
@@ -1197,6 +1203,8 @@ function BillingContent({
             Mientras el local esté pendiente de eliminación no se puede contratar. Si quieres seguir usándolo, restáuralo primero desde el aviso de
             la parte superior.
           </Callout>
+        ) : !billing.billingEnabled && hasPlatformNote('billing') ? (
+          <PlatformNote id="billing" />
         ) : !billing.billingEnabled ? (
           <Callout tone="info" icon="card" title="Los pagos online aún no están disponibles">
             Este servidor todavía no tiene configurada la pasarela de pago. Tus datos y la prueba siguen funcionando con normalidad;

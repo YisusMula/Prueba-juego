@@ -5,7 +5,7 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import jsxA11y from 'eslint-plugin-jsx-a11y';
 
 export default tseslint.config(
-  { ignores: ['dist', 'dev-dist', 'node_modules', 'test-results', 'playwright-report'] },
+  { ignores: ['dist', 'dist-demo', 'dist-demo.tmp', 'dist-demo.old', 'dev-dist', 'node_modules', 'test-results', 'playwright-report'] },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended, jsxA11y.flatConfigs.recommended],

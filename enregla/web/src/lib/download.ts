@@ -1,4 +1,5 @@
 import { ApiError, apiEvents, fetchFailure, SESSION_EXPIRED, timeoutSignal } from '@/api/client';
+import { platform } from '@/lib/platform';
 
 /** Las descargas (PDF, CSV, exportación) pueden tardar más que una petición normal. */
 export const DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -26,7 +27,7 @@ export function filenameFromDisposition(header: string | null, fallback: string)
 export async function downloadFile(url: string, fallbackName: string): Promise<string> {
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await platform.fetch(url, {
       credentials: 'same-origin',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       signal: timeoutSignal(DOWNLOAD_TIMEOUT_MS),

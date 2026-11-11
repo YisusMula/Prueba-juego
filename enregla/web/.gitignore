@@ -1,5 +1,8 @@
 node_modules/
 dist/
+dist-demo/
+dist-demo.tmp/
+dist-demo.old/
 dev-dist/
 test-results/
 playwright-report/

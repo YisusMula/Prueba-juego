@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { ALLERGENS, ALLERGEN_LABELS, ALLERGEN_NAMES, ALLERGEN_STATUS_LABELS, LIMITS, compareMenuCategories, dishBody } from '@shared/schemas';
@@ -18,6 +18,8 @@ import { Icon } from '@/components/icons/Icon';
 import { WriteGuard } from '@/features/SubscriptionBanner';
 import { formatDateTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { copyText } from '@/lib/clipboard';
+import { platform, PlatformNote } from '@/lib/platform';
 
 type Draft = Record<AllergenId, AllergenStatus | null>;
 /** Plato nuevo o sin revisar: los «no contiene» no cuentan como decididos (eran el valor por defecto). */
@@ -26,7 +28,7 @@ const draftFrom = (dish: Dish | null): Draft =>
 /** Orden de carta: entrantes → principales → postres → bebidas; sin categoría al final. */
 export const sortDishes = <T extends { category: string | null; name: string }>(list: T[]) =>
   [...list].sort((a, b) => compareMenuCategories(a.category, b.category) || a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
-export const publicMenuUrl = (slug: string) => `${window.location.origin}/carta/${slug}`;
+export const publicMenuUrl = (slug: string) => `${platform.appOrigin()}/carta/${slug}`;
 
 export function AllergensPage() {
   const { orgId, readOnly, path, tz } = useOrgContext();
@@ -351,13 +353,10 @@ function PublicMenuCard() {
     }
   };
 
+  const urlRef = useRef<HTMLParagraphElement>(null);
   const copy = async (url: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.show('Enlace copiado');
-    } catch {
-      toast.show('No se pudo copiar. Selecciona el enlace y cópialo a mano.', 'info');
-    }
+    if (await copyText(url, urlRef.current)) toast.show('Enlace copiado');
+    else toast.show('No se pudo copiar. Te hemos seleccionado el enlace: cópialo a mano.', 'info');
   };
 
   return (
@@ -387,10 +386,11 @@ function PublicMenuCard() {
               </div>
               <div>
                 <p className="text-sm font-semibold">Enlace</p>
-                <p className="rounded-xl bg-surface-2 px-3 py-2 font-mono text-sm break-all" data-testid="public-menu-url">
+                <p ref={urlRef} className="rounded-xl bg-surface-2 px-3 py-2 font-mono text-sm break-all" data-testid="public-menu-url">
                   {publicMenuUrl(q.data.slug)}
                 </p>
               </div>
+              <PlatformNote id="public-menu-link" />
               <div className="grid gap-2">
                 <Button variant="secondary" icon="copy" onClick={() => void copy(publicMenuUrl(q.data.slug))}>
                   Copiar enlace
@@ -461,9 +461,14 @@ export function AllergensPrintPage() {
         <Link to={path('alergenos')} className={buttonClasses('secondary')}>
           <Icon name="chevronLeft" size={20} /> Volver
         </Link>
-        <Button icon="printer" onClick={() => window.print()}>
-          Imprimir
-        </Button>
+        {platform.canPrint ? (
+          <Button icon="printer" onClick={() => window.print()}>
+            Imprimir
+          </Button>
+        ) : null}
+      </div>
+      <div className="no-print">
+        <PlatformNote id="print" />
       </div>
       <header className="flex items-start justify-between gap-6">
         <div className="min-w-0">

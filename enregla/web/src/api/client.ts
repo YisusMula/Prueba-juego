@@ -3,6 +3,8 @@
  * Todas las mutaciones llevan `X-Requested-With: XMLHttpRequest` (protección CSRF, API.md §1.4).
  */
 
+import { platform } from '@/lib/platform';
+
 export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'BAD_REQUEST'
@@ -125,7 +127,7 @@ async function parseError(res: Response): Promise<ApiError> {
 export async function request<T>(method: string, url: string, body?: unknown, opts: RequestOptions = {}): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await platform.fetch(url, {
       method,
       credentials: 'same-origin',
       headers: {

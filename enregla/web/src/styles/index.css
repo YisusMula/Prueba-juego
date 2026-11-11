@@ -83,8 +83,14 @@
   --shadow-lg: 0 2px 4px rgb(21 35 45 / 0.06), 0 16px 40px rgb(21 35 45 / 0.12);
 }
 
+/*
+ * Tema oscuro: por preferencia del sistema, salvo que el elemento raíz fije data-theme="light";
+ * data-theme="dark" lo fuerza aunque el sistema esté en claro (lo usan visores que imponen su tema).
+ * La app normal no pone data-theme: solo cuenta la preferencia del sistema.
+ */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --paper: #0d1418;
     --surface: #141f25;
     --surface-2: #1b2930;
@@ -111,6 +117,50 @@
     --focus: #6fd0f0;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
     --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.3), 0 16px 40px rgb(0 0 0 / 0.4);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0d1418;
+  --surface: #141f25;
+  --surface-2: #1b2930;
+  --surface-3: #24353d;
+  --ink: #e7eef0;
+  --ink-muted: #a5b4ba;
+  --line: #2a3b44;
+  --line-strong: #3e535d;
+  --brand: #62c6c4;
+  --brand-strong: #8ad9d6;
+  --brand-soft: #123a3e;
+  --on-brand: #04262a;
+  --mint: #2c6b62;
+  --ok: #6fd897;
+  --ok-solid: #2f9e5c;
+  --ok-soft: #12321f;
+  --warn: #f5c060;
+  --warn-solid: #d4930f;
+  --warn-soft: #3a2b0c;
+  --bad: #ff978b;
+  /* Más oscuro que en claro para que el texto blanco de los botones rojos cumpla 4,5:1. */
+  --bad-solid: #b3311f;
+  --bad-soft: #3e1814;
+  --focus: #6fd0f0;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
+  --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.3), 0 16px 40px rgb(0 0 0 / 0.4);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Variante `dark:` de Tailwind con la misma regla que los tokens. */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+  &:where(:root[data-theme="dark"], :root[data-theme="dark"] *) {
+    @slot;
   }
 }
 

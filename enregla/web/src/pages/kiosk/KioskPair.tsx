@@ -10,6 +10,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { takeHashToken } from '@/lib/hashToken';
 import { KIOSK_TOKEN_RE, storage } from '@/lib/storage';
 import { kioskApi } from './kioskApi';
+import { PlatformNote } from '@/lib/platform';
 
 /** Comprueba el token contra la API y, si vale, lo guarda en este dispositivo. */
 async function pair(token: string): Promise<string> {
@@ -63,6 +64,9 @@ export function KioskPairPage() {
     <main id="main" tabIndex={-1} className="mx-auto flex min-h-dvh max-w-xl flex-col justify-center px-4 py-10 outline-none">
       <Logo />
       <h1 className="mt-8 text-4xl font-extrabold">Vincular esta tablet</h1>
+      <div className="mt-4">
+        <PlatformNote id="kiosk-pair" />
+      </div>
       {busy && hashToken ? (
         <p className="mt-6 flex items-center gap-3 text-xl" role="status">
           <Spinner size={28} /> Vinculando…

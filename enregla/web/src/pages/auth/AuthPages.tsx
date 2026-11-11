@@ -17,6 +17,7 @@ import { storage } from '@/lib/storage';
 import { passwordProblem } from '@/lib/password';
 import { LIMITS } from '@shared/schemas';
 import { APP_NAME } from '@/config/brand';
+import { platform, PlatformNote } from '@/lib/platform';
 
 /** Token de invitación pendiente, solo en memoria (no se persiste en ningún almacenamiento). */
 let pendingInvitationToken: string | null = null;
@@ -38,8 +39,8 @@ export function LoginPage() {
   const qc = useQueryClient();
   const location = useLocation();
   const prefill = (location.state as { email?: string } | null)?.email ?? '';
-  const [email, setEmail] = useState(prefill);
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState(prefill || platform.loginPrefill?.email || '');
+  const [password, setPassword] = useState(prefill ? '' : (platform.loginPrefill?.password ?? ''));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
@@ -75,6 +76,7 @@ export function LoginPage() {
       ) : null}
       {params.get('emailActualizado') ? <Callout tone="ok" className="mb-5" title={EMAIL_UPDATED_MESSAGE} live="polite" /> : null}
       {params.get('salida') ? <Callout tone="ok" className="mb-5" title="Has cerrado sesión" live="polite" /> : null}
+      <PlatformNote id="login" />
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <Field label="Email" error={errors.email}>
           <Input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
@@ -148,6 +150,7 @@ export function RegisterPage() {
 
   return (
     <AuthLayout title="Crea tu cuenta" subtitle="14 días gratis, sin tarjeta. Configuras tu local en 5 minutos." docTitle="Crear cuenta">
+      <PlatformNote id="register" />
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         <Field label="Tu nombre" error={errors.name}>
           <Input autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} maxLength={LIMITS.userName} />
@@ -163,6 +166,7 @@ export function RegisterPage() {
           <label className="flex cursor-pointer items-start gap-3 py-2">
             <input
               type="checkbox"
+              id="accept-terms"
               checked={accept}
               onChange={(e) => setAccept(e.target.checked)}
               className="mt-0.5 size-6 shrink-0 accent-[var(--brand)]"
@@ -221,6 +225,7 @@ export function CheckEmailPage() {
   };
   return (
     <AuthLayout title="Revisa tu correo" docTitle="Revisa tu correo">
+      <PlatformNote id="register" />
       <div className="rounded-3xl border border-line bg-surface p-6 text-center shadow-card">
         <span className="mx-auto mb-4 grid size-16 place-items-center rounded-2xl bg-brand-soft text-brand-strong dark:text-brand">
           <Icon name="mail" size={32} />
@@ -395,6 +400,7 @@ export function ForgotPasswordPage() {
   };
   return (
     <AuthLayout title="Recuperar contraseña" subtitle="Te enviaremos un enlace para elegir una nueva." docTitle="Recuperar contraseña">
+      <PlatformNote id="password-reset" />
       {done ? (
         <div className="space-y-5">
           <Callout tone="ok" title="Revisa tu correo" live="polite">

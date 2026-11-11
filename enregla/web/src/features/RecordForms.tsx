@@ -234,7 +234,7 @@ export function TemperaturaForm(p: Props<'temperatura'>) {
                 equipmentId === e.id ? 'border-brand bg-brand-soft' : 'border-line bg-surface hover:border-line-strong',
               )}
             >
-              <input type="radio" name="equipment" className="sr-only" checked={equipmentId === e.id} onChange={() => setEquipmentId(e.id)} />
+              <input type="radio" id={`equipment-${e.id}`} name="equipment" className="sr-only" checked={equipmentId === e.id} onChange={() => setEquipmentId(e.id)} />
               <Icon name="thermometer" size={24} className="shrink-0 text-brand" />
               <span className="min-w-0">
                 <span className="block font-semibold">{e.name}</span>

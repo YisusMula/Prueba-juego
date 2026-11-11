@@ -9,6 +9,8 @@
  *    (un booleano para redirigir de la portada al panel; la sesión real es la cookie httpOnly),
  *    y el último paso de un alta guiada sin terminar (para ofrecer retomarla desde «Hoy»).
  */
+import { platform } from '@/lib/platform';
+
 const KEYS = {
   kioskToken: 'enregla.kiosk.deviceToken',
   lastOrg: 'enregla.lastOrgId',
@@ -17,6 +19,7 @@ const KEYS = {
 const onboardingKey = (orgId: string) => `enregla.onboarding.${orgId}`;
 
 function safeGet(key: string): string | null {
+  if (platform.storage) return platform.storage.get(key);
   try {
     return window.localStorage.getItem(key);
   } catch {
@@ -24,6 +27,7 @@ function safeGet(key: string): string | null {
   }
 }
 function safeSet(key: string, value: string | null): void {
+  if (platform.storage) return platform.storage.set(key, value);
   try {
     if (value === null) window.localStorage.removeItem(key);
     else window.localStorage.setItem(key, value);

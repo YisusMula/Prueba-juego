@@ -20,7 +20,7 @@ export function PublicHeader({ landing }: { landing?: boolean }) {
       ]
     : [];
   return (
-    <header className="sticky top-0 z-40 border-b border-line/70 bg-paper/90 backdrop-blur">
+    <header className="sticky top-[var(--app-top,0px)] z-40 border-b border-line/70 bg-paper/90 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 sm:px-6">
         <Link to="/" aria-label={`${APP_NAME}, inicio`} className="shrink-0">
           <Logo size={34} />

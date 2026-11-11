@@ -92,7 +92,7 @@ export function PublicMenuPage() {
               </p>
             </header>
 
-            <section aria-labelledby="filtro" className="sticky top-0 z-10 -mx-4 mt-5 border-b border-line bg-paper/95 px-4 py-4 backdrop-blur">
+            <section aria-labelledby="filtro" className="sticky top-[var(--app-top,0px)] z-10 -mx-4 mt-5 border-b border-line bg-paper/95 px-4 py-4 backdrop-blur">
               <h2 id="filtro" className="text-lg font-bold">
                 Soy alérgico/a a…
               </h2>
@@ -120,7 +120,7 @@ export function PublicMenuPage() {
               {selected.size > 0 ? (
                 <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
                   <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 font-semibold">
-                    <input type="checkbox" checked={hideUnsafe} onChange={(e) => setHideUnsafe(e.target.checked)} className="size-5 accent-[var(--brand)]" />
+                    <input type="checkbox" id="hide-unsafe" checked={hideUnsafe} onChange={(e) => setHideUnsafe(e.target.checked)} className="size-5 accent-[var(--brand)]" />
                     Ocultar platos que lo contienen
                   </label>
                   <button type="button" onClick={() => setSelected(new Set())} className="min-h-11 font-semibold text-brand-strong underline underline-offset-4 dark:text-brand">

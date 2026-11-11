@@ -18,11 +18,13 @@ function SessionWatcher() {
   const navigate = useNavigate();
   const location = useLocation();
   const qc = useQueryClient();
+  // Ruta actual según el router (no window.location: el router puede no usar la barra de direcciones).
+  const { pathname, search } = location;
   useEffect(() => {
     const onExpired = () => {
       storage.setSessionHint(false);
-      if (!PRIVATE.test(window.location.pathname)) return;
-      const next = window.location.pathname + window.location.search;
+      if (!PRIVATE.test(pathname)) return;
+      const next = pathname + search;
       qc.clear();
       navigate(`${loginPath(next)}&caducada=1`, { replace: true });
     };
@@ -36,7 +38,7 @@ function SessionWatcher() {
       apiEvents.removeEventListener(SESSION_EXPIRED, onExpired);
       apiEvents.removeEventListener(READ_ONLY_HIT, onReadOnly);
     };
-  }, [navigate, qc, location.key]);
+  }, [navigate, qc, location.key, pathname, search]);
   return null;
 }
 
@@ -44,7 +46,7 @@ function OfflineBanner() {
   const online = useOnline();
   if (online) return null;
   return (
-    <div role="status" className="sticky top-0 z-50 flex items-center justify-center gap-2 bg-ink px-4 py-2 text-center text-sm font-semibold text-paper">
+    <div role="status" className="sticky top-[var(--app-top,0px)] z-50 flex items-center justify-center gap-2 bg-ink px-4 py-2 text-center text-sm font-semibold text-paper">
       <Icon name="wifiOff" size={18} />
       Sin conexión. Lo que veas puede no estar actualizado y no se podrá guardar nada hasta que vuelva internet.
     </div>

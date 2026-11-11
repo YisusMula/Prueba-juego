@@ -223,7 +223,7 @@ function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
                 type === b ? 'border-brand bg-brand-soft' : 'border-line bg-surface hover:border-line-strong',
               )}
             >
-              <input type="radio" name="businessType" value={b} checked={type === b} onChange={() => setType(b)} className="sr-only" />
+              <input type="radio" id={`business-${b}`} name="businessType" value={b} checked={type === b} onChange={() => setType(b)} className="sr-only" />
               <Icon name={BUSINESS_ICONS[b]} size={26} className="text-brand" />
               <span className="font-bold">{BUSINESS_TYPE_LABELS[b]}</span>
             </label>
@@ -240,7 +240,7 @@ function StepOrg({ onCreated }: { onCreated: (org: Organization) => void }) {
         <div className="flex flex-wrap gap-2">
           {TIMEZONES.map((t) => (
             <label key={t.value} className={cn('inline-flex min-h-12 cursor-pointer items-center gap-2 rounded-xl border-2 px-4 font-semibold has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-focus', timezone === t.value ? 'border-brand bg-brand-soft' : 'border-line bg-surface')}>
-              <input type="radio" name="tz" className="sr-only" checked={timezone === t.value} onChange={() => setTimezone(t.value)} />
+              <input type="radio" id={`tz-${t.value.replace(/[^A-Za-z0-9_-]/g, '_')}`} name="tz" className="sr-only" checked={timezone === t.value} onChange={() => setTimezone(t.value)} />
               {t.label}
             </label>
           ))}

@@ -10,6 +10,9 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run typecheck && vite build",
+    "build:demo": "npm run typecheck && vite build --config vite.demo.config.ts && node scripts/demo-postbuild.mjs",
+    "demo:pdf": "node scripts/demo-sample-pdf.mjs",
+    "demo:check": "node scripts/demo-check.mjs",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",

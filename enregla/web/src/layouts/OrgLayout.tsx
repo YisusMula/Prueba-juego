@@ -121,7 +121,7 @@ function Sidebar() {
   const account = useAccount();
   const logout = useLogout();
   return (
-    <aside className="sticky top-0 hidden h-dvh w-72 shrink-0 flex-col border-r border-line bg-surface/70 px-4 py-5 lg:flex">
+    <aside className="sticky top-[var(--app-top,0px)] hidden h-[calc(100dvh_-_var(--app-top,0px))] w-72 shrink-0 flex-col border-r border-line bg-surface/70 px-4 py-5 lg:flex">
       <Link to={path('hoy')} className="mb-5 px-2" aria-label={`${APP_NAME}: ir a Hoy`}>
         <Logo />
       </Link>
@@ -164,7 +164,7 @@ function Sidebar() {
 
 function MobileTopBar() {
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-2 border-b border-line bg-paper/95 px-3 py-2 backdrop-blur lg:hidden">
+    <header className="sticky top-[var(--app-top,0px)] z-30 flex items-center gap-2 border-b border-line bg-paper/95 px-3 py-2 backdrop-blur lg:hidden">
       <LogoMark size={32} className="shrink-0" />
       <div className="min-w-0 flex-1">
         <OrgSwitcher compact />

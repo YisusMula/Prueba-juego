@@ -328,6 +328,7 @@ export function ChoiceGroup<T extends string>({
             >
               <input
                 type="radio"
+                id={`${groupName}-${o.value}`.replace(/[^A-Za-z0-9_-]/g, '_')}
                 name={groupName}
                 value={o.value}
                 checked={selected}

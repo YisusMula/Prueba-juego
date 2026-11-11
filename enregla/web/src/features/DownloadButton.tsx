@@ -1,9 +1,9 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useRef, useState } from 'react';
 import { errorMessage, formatWait, isApiError } from '@/api/client';
-import { Button, type ButtonVariant } from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Callout } from '@/components/ui/Feedback';
-import type { IconName } from '@/components/icons/Icon';
 import { downloadFile } from '@/lib/download';
+import { platform, type DownloadButtonProps } from '@/lib/platform';
 
 /**
  * Mensaje de un fallo de descarga. Los 429 (informe en curso, cola llena, presupuesto horario agotado) y
@@ -15,7 +15,12 @@ export function downloadErrorMessage(err: unknown): string {
 }
 
 /** Botón de descarga con estado de carga y errores legibles (p. ej. "inténtalo en 2 minutos"). */
-export function DownloadButton({
+export function DownloadButton(props: DownloadButtonProps) {
+  const Override = platform.DownloadButton;
+  return Override ? <Override {...props} /> : <FetchDownloadButton {...props} />;
+}
+
+function FetchDownloadButton({
   url,
   fallbackName,
   children,
@@ -24,17 +29,7 @@ export function DownloadButton({
   disabled,
   className,
   busyLabel,
-}: {
-  url: string;
-  fallbackName: string;
-  children: ReactNode;
-  icon?: IconName;
-  variant?: ButtonVariant;
-  disabled?: boolean;
-  className?: string;
-  /** Texto mientras se prepara (p. ej. «Generando el informe…»): activa además el aviso con barra de progreso indeterminada. */
-  busyLabel?: string;
-}) {
+}: DownloadButtonProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ message: string; wait: number | null } | null>(null);
   const running = useRef(false);

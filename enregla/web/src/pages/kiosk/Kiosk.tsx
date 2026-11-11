@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { EQUIPMENT_TYPE_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
 import { TODAY_REFRESH } from '@/api/queries';
@@ -42,6 +42,9 @@ export function KioskPage() {
   useDocumentTitle('Modo cocina');
   const [token, setToken] = useState<string | null>(() => storage.getKioskToken());
   const [revoked, setRevoked] = useState(false);
+  // Al entrar con `{ kioskStart: 'who' }` se empieza de cero (aunque ya se estuviera en el modo cocina).
+  const location = useLocation();
+  const startKey = (location.state as { kioskStart?: string } | null)?.kioskStart ? location.key : 'kiosk';
 
   if (revoked) {
     return (
@@ -62,6 +65,7 @@ export function KioskPage() {
   if (!token) return <KioskPairPage />;
   return (
     <KioskApp
+      key={startKey}
       token={token}
       onRevoked={() => {
         storage.setKioskToken(null);
@@ -99,7 +103,11 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
   const now = useClock();
   const ctxQ = useQuery({ queryKey: ['kiosk', 'context'], queryFn: () => kioskApi.context(token), refetchInterval: 5 * 60_000, ...TODAY_REFRESH });
   const todayQ = useQuery({ queryKey: ['kiosk', 'today'], queryFn: () => kioskApi.today(token), refetchInterval: 60_000, ...TODAY_REFRESH });
-  const [screen, setScreen] = useState<Screen>({ name: 'home' });
+  // Se puede abrir directamente en «¿Quién eres?» (estado de navegación `{ kioskStart: 'who' }`).
+  const location = useLocation();
+  const [screen, setScreen] = useState<Screen>(() =>
+    (location.state as { kioskStart?: string } | null)?.kioskStart === 'who' ? { name: 'who', then: null } : { name: 'home' },
+  );
   const [person, setPerson] = useState<Person | null>(null);
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<unknown>(null);
@@ -250,7 +258,7 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
 
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
-      <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur sm:px-6">
+      <header className="sticky top-[var(--app-top,0px)] z-20 flex items-center gap-3 border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur sm:px-6">
         <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl pr-3">
           <span className="sr-only">Inicio del modo cocina: </span>
           <LogoMark size={40} className="shrink-0" />
@@ -282,17 +290,20 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
               <Icon name="user" size={24} /> ¿Quién eres?
             </button>
           )}
-          <button
-            type="button"
-            className="hidden size-16 place-items-center rounded-2xl hover:bg-surface-2 sm:grid"
-            aria-label="Pantalla completa"
-            onClick={() => {
-              if (document.fullscreenElement) void document.exitFullscreen();
-              else void document.documentElement.requestFullscreen?.().catch(() => undefined);
-            }}
-          >
-            <Icon name="maximize" size={28} />
-          </button>
+          {/* Solo si el navegador permite pantalla completa aquí (p. ej. no dentro de un marco que no la autoriza). */}
+          {document.fullscreenEnabled ? (
+            <button
+              type="button"
+              className="hidden size-16 place-items-center rounded-2xl hover:bg-surface-2 sm:grid"
+              aria-label="Pantalla completa"
+              onClick={() => {
+                if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+                else void document.documentElement.requestFullscreen?.().catch(() => undefined);
+              }}
+            >
+              <Icon name="maximize" size={28} />
+            </button>
+          ) : null}
         </div>
       </header>
 
