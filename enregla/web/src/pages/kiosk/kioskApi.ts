@@ -1,0 +1,19 @@
+import { api } from '@/api/client';
+import type { AppRecord, KioskContext, RecordType, TodayTasks } from '@/api/types';
+
+/**
+ * Cliente del modo cocina. El token del dispositivo viaja SOLO en la cabecera
+ * Authorization (nunca en la URL) y no se registra en consola.
+ */
+const auth = (token: string) => ({ headers: { Authorization: `Bearer ${token}` }, silentAuth: true });
+
+export const kioskApi = {
+  context: (token: string) => api.get<KioskContext>('/api/kiosk/context', auth(token)),
+  today: (token: string) => api.get<TodayTasks>('/api/kiosk/tasks/today', auth(token)),
+  /** `idempotencyKey`: la misma en todos los reintentos del mismo registro (cola con mala cobertura). */
+  createRecord: (token: string, body: { staffId: string; pin?: string; type: RecordType; data: unknown }, idempotencyKey?: string) =>
+    api.post<{ record: AppRecord }>('/api/kiosk/records', body, { ...auth(token), idempotencyKey }).then((r) => r.record),
+  /** Comprueba el PIN al identificarse (mismos bloqueos que el alta). */
+  verifyPin: (token: string, body: { staffId: string; pin: string }) =>
+    api.post<{ staff: { id: string; name: string; hasPin: boolean } }>('/api/kiosk/verify-pin', body, auth(token)),
+};

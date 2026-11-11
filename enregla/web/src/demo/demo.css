@@ -1,0 +1,27 @@
+/*
+ * Ajustes de la página de la demo (solo compilación demo). La barra de la demo es fija arriba:
+ * su altura se publica en --app-top y el contenido empieza debajo.
+ */
+html {
+  height: 100%;
+  scroll-padding-top: var(--app-top, 0px);
+}
+body {
+  min-height: 100%;
+  padding-top: var(--app-top, 0px);
+  background: var(--paper);
+}
+#root {
+  min-height: 100%;
+}
+
+/* Las pantallas de altura completa descuentan la barra (con alternativa si no hay unidades dvh). */
+.min-h-dvh {
+  min-height: calc(100vh - var(--app-top, 0px));
+  min-height: calc(100dvh - var(--app-top, 0px));
+}
+
+/* Anclas de la portada: que el título no quede bajo la barra ni la cabecera. */
+.scroll-mt-20 {
+  scroll-margin-top: calc(5rem + var(--app-top, 0px));
+}

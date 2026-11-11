@@ -1,0 +1,72 @@
+# Uso (desde enregla/):
+#   cp server/.env.example server/.env   # y edítalo (NODE_ENV=production, APP_URL https, SMTP, etc.)
+#   docker compose --env-file server/.env up -d --build
+# La app aplica las migraciones al arrancar. Datos de PostgreSQL en el volumen `pgdata`.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: enregla
+      POSTGRES_USER: enregla
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en server/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U enregla -d enregla"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Sin puertos publicados: solo accesible desde la red interna de compose.
+
+  app:
+    build:
+      context: .
+      # Datos de la web (VITE_*): el build falla si faltan los legales obligatorios (web/.env.example).
+      args:
+        VITE_APP_NAME: ${VITE_APP_NAME:-}
+        VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-}
+        VITE_SUPPORT_EMAIL: ${VITE_SUPPORT_EMAIL:-}
+        VITE_LEGAL_OWNER_NAME: ${VITE_LEGAL_OWNER_NAME:-}
+        VITE_LEGAL_TAX_ID: ${VITE_LEGAL_TAX_ID:-}
+        VITE_LEGAL_ADDRESS: ${VITE_LEGAL_ADDRESS:-}
+        VITE_LEGAL_CONTACT_EMAIL: ${VITE_LEGAL_CONTACT_EMAIL:-}
+        VITE_LEGAL_HOSTING_PROVIDER: ${VITE_LEGAL_HOSTING_PROVIDER:-}
+        VITE_LEGAL_LAST_UPDATED: ${VITE_LEGAL_LAST_UPDATED:-}
+        VITE_LEGAL_REGISTRY_DATA: ${VITE_LEGAL_REGISTRY_DATA:-}
+        VITE_LEGAL_HOSTING_LOCATION: ${VITE_LEGAL_HOSTING_LOCATION:-}
+        VITE_LEGAL_EMAIL_PROVIDER: ${VITE_LEGAL_EMAIL_PROVIDER:-}
+        VITE_LEGAL_JURISDICTION: ${VITE_LEGAL_JURISDICTION:-}
+        VITE_ALLOW_PLACEHOLDER_LEGAL: ${VITE_ALLOW_PLACEHOLDER_LEGAL:-}
+    restart: unless-stopped
+    env_file: server/.env
+    environment:
+      # Siempre production (aunque server/.env diga development): la imagen no trae pino-pretty.
+      NODE_ENV: production
+      # Conexión por variables separadas: la contraseña NO va dentro de una URL (no hace falta
+      # codificar caracteres como @ : / #). DATABASE_URL vacío anula el que haya en server/.env.
+      DATABASE_URL: ""
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: enregla
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: enregla
+      HOST: 0.0.0.0
+      PORT: 3000
+    depends_on:
+      db:
+        condition: service_healthy
+    # Solo en la interfaz local: el acceso público debe pasar por un proxy inverso con TLS
+    # (ver docker-compose.prod.yml con Caddy). Publicarlo en todas las interfaces permitiría
+    # saltarse el proxy y falsificar la IP con X-Forwarded-For.
+    ports:
+      - "127.0.0.1:3000:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+
+volumes:
+  pgdata:

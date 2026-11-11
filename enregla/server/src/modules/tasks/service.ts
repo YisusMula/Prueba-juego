@@ -1,0 +1,409 @@
+import { sql } from 'kysely';
+import type { DB } from '../../db/index.js';
+import type { CleaningPlan, Organization } from '../../db/types.js';
+import { esNumber } from '../../schemas/index.js';
+import { addDays, dayOfMonth, eachDay, isoWeekday, localDate, startOfIsoWeek, startOfMonth } from '../../lib/dates.js';
+
+/** Registros vigentes: los que no han sido sustituidos por una enmienda. */
+const NOT_SUPERSEDED = sql<boolean>`NOT EXISTS (SELECT 1 FROM records a WHERE a.amends_record_id = r.id)`;
+
+export function isDue(plan: Pick<CleaningPlan, 'frequency' | 'weekday' | 'month_day'>, date: string): boolean {
+  if (plan.frequency === 'daily') return true;
+  if (plan.frequency === 'weekly') return plan.weekday === isoWeekday(date);
+  return plan.month_day === dayOfMonth(date);
+}
+
+export function periodStart(plan: Pick<CleaningPlan, 'frequency'>, date: string): string {
+  if (plan.frequency === 'weekly') return startOfIsoWeek(date);
+  if (plan.frequency === 'monthly') return startOfMonth(date);
+  return date;
+}
+
+/**
+ * El registro es una corrección (enmienda) hecha en un día local POSTERIOR al del hecho: cuenta en
+ * el día del original (effective_at), pero se registró más tarde (I-1).
+ */
+const lateAmendment = (tz: string) =>
+  sql<boolean>`(r.amends_record_id IS NOT NULL AND (r.created_at AT TIME ZONE ${tz})::date > (r.effective_at AT TIME ZONE ${tz})::date)`;
+
+const startOf = (date: string, tz: string) => sql<Date>`(${date}::date)::timestamp AT TIME ZONE ${tz}`;
+const endOf = (date: string, tz: string) => sql<Date>`(${date}::date + 1)::timestamp AT TIME ZONE ${tz}`;
+
+export interface AlertItem {
+  kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'recepcion_con_incidencia' | 'plagas_con_indicios' | 'incidencia_abierta';
+  recordId: string;
+  message: string;
+  createdAt: string;
+}
+
+interface EquipmentState {
+  valid_from: Date;
+  checks_per_day: number;
+  active: boolean;
+}
+interface PlanState {
+  valid_from: Date;
+  frequency: 'daily' | 'weekly' | 'monthly';
+  weekday: number | null;
+  month_day: number | null;
+  active: boolean;
+}
+
+/** Configuración vigente en `instant` (último tramo con valid_from ≤ instant, o < si `strict`). */
+export function stateAt<T extends { valid_from: Date }>(list: T[], instant: Date, strict = false): T | null {
+  let found: T | null = null;
+  for (const row of list) {
+    const t = row.valid_from.getTime();
+    if (strict ? t < instant.getTime() : t <= instant.getTime()) found = row;
+    else break;
+  }
+  return found;
+}
+
+function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const r of rows) {
+    const k = key(r);
+    const list = m.get(k);
+    if (list) list.push(r);
+    else m.set(k, [r]);
+  }
+  return m;
+}
+
+async function equipmentHistory(db: DB, orgId: string): Promise<Map<string, EquipmentState[]>> {
+  const rows = await db
+    .selectFrom('equipment_config_history')
+    .select(['equipment_id', 'valid_from', 'checks_per_day', 'active'])
+    .where('organization_id', '=', orgId)
+    .orderBy('equipment_id')
+    .orderBy('valid_from')
+    .orderBy('id')
+    .execute();
+  return groupBy(rows, (r) => r.equipment_id);
+}
+
+async function planHistory(db: DB, orgId: string): Promise<Map<string, PlanState[]>> {
+  const rows = await db
+    .selectFrom('cleaning_plan_config_history')
+    .select(['cleaning_plan_id', 'valid_from', 'frequency', 'weekday', 'month_day', 'active'])
+    .where('organization_id', '=', orgId)
+    .orderBy('cleaning_plan_id')
+    .orderBy('valid_from')
+    .orderBy('id')
+    .execute();
+  return groupBy(rows, (r) => r.cleaning_plan_id);
+}
+
+/** Instante de inicio (00:00 local) de cada día de [from, to] en la zona del local. */
+async function dayStarts(db: DB, from: string, to: string, tz: string): Promise<Map<string, Date>> {
+  const r = await sql<{ day: string; start: Date }>`
+    SELECT d::date::text AS day, (d::date::timestamp AT TIME ZONE ${tz}) AS start
+    FROM generate_series(${from}::date, ${to}::date, interval '1 day') AS d`.execute(db);
+  return new Map(r.rows.map((x) => [x.day, x.start]));
+}
+
+/**
+ * ¿Se exige el elemento el día que empieza en `start` y termina en `end`? Solo si estaba activo
+ * al empezar el día y sigue activo al terminar (o ahora, si es hoy): el día de alta o de
+ * reactivación no es exigible, ni el de desactivación. Devuelve la configuración del final del día.
+ */
+function requiredState<T extends { valid_from: Date; active: boolean }>(list: T[] | undefined, start: Date, end: Date, endInclusive: boolean): T | null {
+  if (!list) return null;
+  const s = stateAt(list, start);
+  const e = stateAt(list, end, !endInclusive);
+  return s?.active && e?.active ? e : null;
+}
+
+export async function computeToday(db: DB, org: Organization, now = new Date()) {
+  const tz = org.timezone;
+  const today = localDate(now, tz);
+  const starts = await dayStarts(db, today, today, tz);
+  const startToday = starts.get(today)!;
+
+  const equipment = await db
+    .selectFrom('equipment')
+    .selectAll()
+    .where('organization_id', '=', org.id)
+    .where('active', '=', true)
+    .where('checks_per_day', '>', 0)
+    .orderBy('created_at')
+    .execute();
+  const eqHist = await equipmentHistory(db, org.id);
+
+  // Lecturas vigentes cuya fecha del HECHO es hoy (una enmienda cuenta en el día del original).
+  const readings = await db
+    .selectFrom('records as r')
+    .select(['r.equipment_id', 'r.data', 'r.effective_at', 'r.alert'])
+    .select(lateAmendment(tz).as('late'))
+    .where('r.organization_id', '=', org.id)
+    .where('r.type', '=', 'temperatura')
+    .where('r.effective_at', '>=', startOf(today, tz))
+    .where('r.effective_at', '<', endOf(today, tz))
+    .where(NOT_SUPERSEDED)
+    .orderBy('r.effective_at')
+    .execute();
+
+  const temperatures = equipment.map((e) => {
+    const mine = readings.filter((r) => r.equipment_id === e.id);
+    const last = mine[mine.length - 1];
+    const done = Math.min(mine.length, e.checks_per_day);
+    // Lecturas que solo cuentan gracias a correcciones hechas otro día posterior.
+    const correctedLater = done - Math.min(mine.filter((r) => !r.late).length, e.checks_per_day);
+    const hist = eqHist.get(e.id);
+    // Sin historial (no debería ocurrir tras la migración 0003): se usa la fecha de alta.
+    const countsToday = hist ? stateAt(hist, startToday)?.active === true : e.created_at.getTime() <= startToday.getTime();
+    return {
+      equipmentId: e.id,
+      name: e.name,
+      type: e.type,
+      minTemp: e.min_temp,
+      maxTemp: e.max_temp,
+      required: e.checks_per_day,
+      done,
+      status: done >= e.checks_per_day ? ('done' as const) : ('pending' as const),
+      correctedLater,
+      /** false si el equipo se dio de alta (o se reactivó) hoy: hoy no es exigible ni cuenta en el resumen. */
+      countsToday,
+      lastReading: last
+        ? { value: last.data.value as number, outOfRange: last.alert, at: last.effective_at.toISOString() }
+        : null,
+    };
+  });
+
+  const plans = (
+    await db.selectFrom('cleaning_plans').selectAll().where('organization_id', '=', org.id).where('active', '=', true).orderBy('created_at').execute()
+  ).filter((p) => isDue(p, today));
+  const plHist = await planHistory(db, org.id);
+
+  const cleaning = [] as {
+    cleaningPlanId: string;
+    name: string;
+    frequency: string;
+    status: 'done' | 'pending';
+    countsToday: boolean;
+    correctedLater: boolean;
+    completedAt: string | null;
+    partial: { done: number; total: number; at: string; recordId: string } | null;
+  }[];
+  for (const p of plans) {
+    // Solo una limpieza COMPLETA (todas las zonas hechas) da la tarea por hecha.
+    const recs = await db
+      .selectFrom('records as r')
+      .select(['r.id', 'r.effective_at', 'r.data'])
+      .select(lateAmendment(tz).as('late'))
+      .where('r.organization_id', '=', org.id)
+      .where('r.type', '=', 'limpieza')
+      .where('r.cleaning_plan_id', '=', p.id)
+      .where('r.effective_at', '>=', startOf(periodStart(p, today), tz))
+      .where('r.effective_at', '<', endOf(today, tz))
+      .where(NOT_SUPERSEDED)
+      .orderBy('r.effective_at', 'desc')
+      .limit(50)
+      .execute();
+    const complete = recs.find((r) => r.data.completed === true);
+    const lastPartial = complete ? undefined : recs[0];
+    const partialItems = (lastPartial?.data.items as { done: boolean }[] | undefined) ?? [];
+    const hist = plHist.get(p.id);
+    cleaning.push({
+      cleaningPlanId: p.id,
+      name: p.name,
+      frequency: p.frequency,
+      status: complete ? 'done' : 'pending',
+      // Hecha, pero solo gracias a una corrección hecha en un día posterior al del hecho.
+      correctedLater: complete != null && !recs.some((r) => r.data.completed === true && !r.late),
+      countsToday: hist ? stateAt(hist, startToday)?.active === true : p.created_at.getTime() <= startToday.getTime(),
+      completedAt: complete?.effective_at.toISOString() ?? null,
+      partial: lastPartial
+        ? { done: partialItems.filter((i) => i.done).length, total: partialItems.length, at: lastPartial.effective_at.toISOString(), recordId: lastPartial.id }
+        : null,
+    });
+  }
+
+  const alerts = await computeAlerts(db, org, today);
+
+  const counted = temperatures.filter((t) => t.countsToday);
+  const countedCleaning = cleaning.filter((c) => c.countsToday);
+  const total = counted.reduce((a, t) => a + t.required, 0) + countedCleaning.length;
+  const done = counted.reduce((a, t) => a + t.done, 0) + countedCleaning.filter((c) => c.status === 'done').length;
+  const correctedLater = counted.reduce((a, t) => a + t.correctedLater, 0) + countedCleaning.filter((c) => c.correctedLater).length;
+  return {
+    date: today,
+    timezone: tz,
+    temperatures,
+    cleaning,
+    summary: { total, done, pending: total - done, percent: total === 0 ? 100 : Math.round((done / total) * 100), correctedLater },
+    alerts,
+  };
+}
+
+async function computeAlerts(db: DB, org: Organization, today: string): Promise<AlertItem[]> {
+  const tz = org.timezone;
+  const todays = await db
+    .selectFrom('records as r')
+    .select(['r.id', 'r.type', 'r.data', 'r.effective_at'])
+    .where('r.organization_id', '=', org.id)
+    .where('r.alert', '=', true)
+    .where('r.type', '!=', 'incidencia')
+    .where('r.effective_at', '>=', startOf(today, tz))
+    .where('r.effective_at', '<', endOf(today, tz))
+    .where(NOT_SUPERSEDED)
+    .orderBy('r.effective_at', 'desc')
+    .limit(50)
+    .execute();
+  const openIncidents = await db
+    .selectFrom('records as r')
+    .select(['r.id', 'r.type', 'r.data', 'r.effective_at'])
+    .where('r.organization_id', '=', org.id)
+    .where('r.type', '=', 'incidencia')
+    .where('r.alert', '=', true)
+    .where(NOT_SUPERSEDED)
+    .orderBy('r.effective_at', 'desc')
+    .limit(50)
+    .execute();
+  const out: AlertItem[] = [];
+  for (const r of todays) {
+    const d = r.data;
+    const at = r.effective_at.toISOString();
+    if (r.type === 'temperatura') {
+      out.push({ kind: 'temperatura_fuera_de_rango', recordId: r.id, createdAt: at, message: `${String(d.equipmentName)}: ${esNumber(Number(d.value))} °C, fuera de rango` });
+    } else if (r.type === 'aceite') {
+      out.push({ kind: 'aceite_fuera_de_limite', recordId: r.id, createdAt: at, message: `${String(d.fryerName)}: compuestos polares al ${esNumber(Number(d.polarCompounds))} %` });
+    } else if (r.type === 'recepcion' && d.accepted === false) {
+      out.push({ kind: 'recepcion_rechazada', recordId: r.id, createdAt: at, message: `Mercancía rechazada: ${String(d.product)} (${String(d.supplierName)})` });
+    } else if (r.type === 'recepcion') {
+      const why = [d.expired ? 'caducada' : null, d.temperatureOutOfRange && typeof d.temperature === 'number' ? `a ${esNumber(d.temperature)} °C` : null].filter(Boolean).join(' y ');
+      out.push({ kind: 'recepcion_con_incidencia', recordId: r.id, createdAt: at, message: `Mercancía aceptada ${why || 'con incidencia'}: ${String(d.product)} (${String(d.supplierName)})` });
+    } else if (r.type === 'plagas') {
+      out.push({ kind: 'plagas_con_indicios', recordId: r.id, createdAt: at, message: 'Revisión de plagas con indicios' });
+    }
+  }
+  for (const r of openIncidents) {
+    const desc = String(r.data.description);
+    out.push({
+      kind: 'incidencia_abierta',
+      recordId: r.id,
+      createdAt: r.effective_at.toISOString(),
+      message: `Incidencia abierta: ${desc.length > 80 ? `${desc.slice(0, 80)}…` : desc}`,
+    });
+  }
+  return out;
+}
+
+/** Textos de tareas pendientes (para el recordatorio por email). */
+export function pendingLabels(t: Awaited<ReturnType<typeof computeToday>>): string[] {
+  return [
+    ...t.temperatures.filter((x) => x.countsToday && x.status === 'pending').map((x) => `Temperatura de ${x.name} (${x.done}/${x.required})`),
+    ...t.cleaning.filter((x) => x.countsToday && x.status === 'pending').map((x) => `Limpieza: ${x.name}`),
+  ];
+}
+
+/**
+ * % de cumplimiento por día entre from y to (fechas locales, inclusive). Los días futuros se omiten.
+ * Lo esperado de cada día sale de la configuración vigente ESE día (historial de equipos y planes):
+ * desactivar, reactivar o cambiar la frecuencia no reescribe el pasado. Los registros cuentan por la
+ * fecha del hecho (effective_at), así que una enmienda no mueve el cumplimiento de día.
+ */
+export async function computeCompliance(db: DB, org: Organization, from: string, to: string, now = new Date()) {
+  const tz = org.timezone;
+  const today = localDate(now, tz);
+  const last = to > today ? today : to;
+  const days: { date: string; expected: number; done: number; percent: number | null; correctedLater: number }[] = [];
+  let totalExpected = 0;
+  let totalDone = 0;
+  let totalCorrectedLater = 0;
+  if (from <= last) {
+    const [eqHist, plHist, starts] = await Promise.all([equipmentHistory(db, org.id), planHistory(db, org.id), dayStarts(db, from, addDays(last, 1), tz)]);
+
+    const tempCounts = await db
+      .selectFrom('records as r')
+      .select([
+        sql<string>`((r.effective_at AT TIME ZONE ${tz})::date)::text`.as('day'),
+        'r.equipment_id',
+        sql<number>`count(*)::int`.as('n'),
+        sql<number>`(count(*) FILTER (WHERE ${lateAmendment(tz)}))::int`.as('late'),
+      ])
+      .where('r.organization_id', '=', org.id)
+      .where('r.type', '=', 'temperatura')
+      .where('r.effective_at', '>=', startOf(from, tz))
+      .where('r.effective_at', '<', endOf(last, tz))
+      .where(NOT_SUPERSEDED)
+      .groupBy(['day', 'r.equipment_id'])
+      .execute();
+    const tempMap = new Map(tempCounts.map((r) => [`${r.day}|${r.equipment_id}`, r.n]));
+    const tempLateMap = new Map(tempCounts.map((r) => [`${r.day}|${r.equipment_id}`, r.late]));
+
+    const cleanFrom = startOfMonth(from) < startOfIsoWeek(from) ? startOfMonth(from) : startOfIsoWeek(from);
+    const cleanDays = await db
+      .selectFrom('records as r')
+      .select([
+        sql<string>`((r.effective_at AT TIME ZONE ${tz})::date)::text`.as('day'),
+        'r.cleaning_plan_id',
+        // true si TODAS las limpiezas completas de ese día son correcciones hechas otro día posterior.
+        sql<boolean>`bool_and(${lateAmendment(tz)})`.as('all_late'),
+      ])
+      .where('r.organization_id', '=', org.id)
+      .where('r.type', '=', 'limpieza')
+      // Una limpieza parcial no cuenta como tarea hecha.
+      .where(sql<boolean>`(r.data->>'completed')::boolean IS TRUE`)
+      .where('r.effective_at', '>=', startOf(cleanFrom, tz))
+      .where('r.effective_at', '<', endOf(last, tz))
+      .where(NOT_SUPERSEDED)
+      .groupBy(['day', 'r.cleaning_plan_id'])
+      .execute();
+    const cleanByPlan = new Map<string, { day: string; allLate: boolean }[]>();
+    for (const r of cleanDays) {
+      if (!r.cleaning_plan_id) continue;
+      const list = cleanByPlan.get(r.cleaning_plan_id) ?? [];
+      list.push({ day: r.day, allLate: r.all_late });
+      cleanByPlan.set(r.cleaning_plan_id, list);
+    }
+
+    for (const day of eachDay(from, last)) {
+      const start = starts.get(day)!;
+      const isToday = day === today;
+      const end = isToday ? now : starts.get(addDays(day, 1))!;
+      let expected = 0;
+      let done = 0;
+      // Tareas que solo cuentan como hechas gracias a correcciones hechas en un día posterior
+      // (informativo: no cambia el cálculo de `done`).
+      let correctedLater = 0;
+      for (const [equipmentId, hist] of eqHist) {
+        const st = requiredState(hist, start, end, isToday);
+        if (!st || st.checks_per_day <= 0) continue;
+        expected += st.checks_per_day;
+        const n = tempMap.get(`${day}|${equipmentId}`) ?? 0;
+        const late = tempLateMap.get(`${day}|${equipmentId}`) ?? 0;
+        const d = Math.min(n, st.checks_per_day);
+        done += d;
+        correctedLater += d - Math.min(n - late, st.checks_per_day);
+      }
+      for (const [planId, hist] of plHist) {
+        const st = requiredState(hist, start, end, isToday);
+        if (!st || !isDue(st, day)) continue;
+        expected += 1;
+        const pStart = periodStart(st, day);
+        const inPeriod = (cleanByPlan.get(planId) ?? []).filter((d) => d.day >= pStart && d.day <= day);
+        if (inPeriod.length > 0) {
+          done += 1;
+          if (inPeriod.every((d) => d.allLate)) correctedLater += 1;
+        }
+      }
+      totalExpected += expected;
+      totalDone += done;
+      totalCorrectedLater += correctedLater;
+      days.push({ date: day, expected, done, percent: expected === 0 ? null : Math.round((done / expected) * 100), correctedLater });
+    }
+  }
+  return {
+    from,
+    to,
+    days,
+    overall: {
+      expected: totalExpected,
+      done: totalDone,
+      percent: totalExpected === 0 ? null : Math.round((totalDone / totalExpected) * 100),
+      correctedLater: totalCorrectedLater,
+    },
+  };
+}
