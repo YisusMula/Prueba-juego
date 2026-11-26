@@ -158,27 +158,28 @@ export function PublicMenuPage() {
                               key={d.name}
                               className={cn(
                                 'rounded-2xl border bg-surface p-4 shadow-card',
-                                unsafe ? 'border-bad/40 opacity-75' : selected.size > 0 && traces.length === 0 ? 'border-ok/50' : 'border-line',
+                                unsafe ? 'border-bad/40 opacity-75' : 'border-line',
                               )}
                             >
                               <div className="flex items-start justify-between gap-3">
-                                <h3 className="text-lg font-bold">{d.name}</h3>
-                                {selected.size > 0 ? (
-                                  unsafe ? (
-                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-bad-soft px-2.5 py-0.5 text-sm font-bold text-bad">
-                                      <Icon name="x" size={14} strokeWidth={3} /> No apto
-                                    </span>
-                                  ) : traces.length ? (
-                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warn-soft px-2.5 py-0.5 text-sm font-bold text-warn">
-                                      <Icon name="alert" size={14} strokeWidth={2.5} /> Trazas
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok-soft px-2.5 py-0.5 text-sm font-bold text-ok">
-                                      <Icon name="check" size={14} strokeWidth={3} /> No declara tus alérgenos
-                                    </span>
-                                  )
+                                <h3 className="min-w-0 text-lg font-bold break-words hyphens-auto">{d.name}</h3>
+                                {selected.size > 0 && unsafe ? (
+                                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-bad-soft px-2.5 py-0.5 text-sm font-bold text-bad">
+                                    <Icon name="x" size={14} strokeWidth={3} /> No apto
+                                  </span>
+                                ) : selected.size > 0 && traces.length ? (
+                                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warn-soft px-2.5 py-0.5 text-sm font-bold text-warn">
+                                    <Icon name="alert" size={14} strokeWidth={2.5} /> Trazas
+                                  </span>
                                 ) : null}
                               </div>
+                              {/* 1.7: tono neutro, sin ✓ ni verde: que no se declaren no es lo mismo que «apto». */}
+                              {selected.size > 0 && !unsafe && traces.length === 0 ? (
+                                <p className="mt-2 flex items-start gap-2 rounded-xl bg-surface-2 px-3 py-2 text-sm font-semibold text-ink" data-testid="not-declared-note">
+                                  <Icon name="info" size={18} className="mt-0.5 shrink-0 text-ink-muted" />
+                                  <span>No se han declarado tus alérgenos en este plato. Confírmalo con el personal antes de pedir.</span>
+                                </p>
+                              ) : null}
                               {d.description ? <p className="mt-1 text-ink-muted">{d.description}</p> : null}
                               {contains.length === 0 && mayContain.length === 0 ? (
                                 <p className="mt-3 text-sm font-semibold text-ink-muted">No se han declarado alérgenos en este plato. Consulta al personal.</p>

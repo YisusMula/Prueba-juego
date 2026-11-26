@@ -52,7 +52,8 @@ writeFileSync(path.join(runtime, 'seed.txt'), seed.stdout);
 // Contadores de límite de peticiones a cero en cada ejecución.
 const db = new pg.Client({ connectionString: DB_URL });
 await db.connect();
-await db.query('TRUNCATE rate_limits');
+// DELETE (no TRUNCATE): también funciona con el rol de ejecución de la app (sin TRUNCATE, ver 1.8).
+await db.query('DELETE FROM rate_limits');
 await db.end();
 
 const log = createWriteStream(path.join(runtime, 'server.log'), { flags: 'w' });

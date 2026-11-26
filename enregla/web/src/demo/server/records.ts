@@ -10,7 +10,8 @@ import { conflict, notFound, parse, validationError } from './errors';
 import { uuid } from './ids';
 import { localDate } from './time';
 
-export type Actor = { userId: string | null; userName: string | null; staffId: string | null; deviceId: string | null };
+/** `staffId: undefined` en una corrección conserva el firmante del original (como el servidor). */
+export type Actor = { userId: string | null; userName: string | null; staffId: string | null | undefined; deviceId: string | null };
 
 const isOutOfRange = (value: number, min: number | null, max: number | null) => (min != null && value < min) || (max != null && value > max);
 
@@ -57,15 +58,12 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
         if (!s) throw notFound('Proveedor');
         supplierName = s.name;
       }
-      const temperatureOutOfRange = S.receptionOverTemperature(d);
+      const limits = S.receptionLimits(d);
+      const temperatureOutOfRange = S.receptionOutOfLimits(d, limits);
       const expired = d.expiryDate != null && d.expiryDate < today;
-      if (d.accepted && (expired || temperatureOutOfRange) && !d.correctiveAction) {
-        throw validationError(
-          'data.correctiveAction',
-          expired
-            ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas'
-            : 'La temperatura supera la máxima admisible: indica qué has hecho o por qué la aceptas',
-        );
+      const needsReason = expired || (temperatureOutOfRange && !limits.assumed);
+      if (d.accepted && needsReason && !d.correctiveAction) {
+        throw validationError('data.correctiveAction', expired ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas' : S.receptionLimitMessage(limits));
       }
       return {
         data: {
@@ -74,7 +72,10 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
           product: d.product,
           lot: d.lot,
           temperature: d.temperature ?? null,
-          maxTemperature: d.maxTemperature ?? null,
+          category: limits.category,
+          categoryAssumed: limits.assumed,
+          maxTemperature: limits.max,
+          minTemperature: limits.min,
           temperatureOutOfRange,
           expiryDate: d.expiryDate ?? null,
           expired,
@@ -155,15 +156,17 @@ export function createRecord(
     if (db.records.some((r) => r.amendsRecordId === original!.id)) throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
   }
   const prepared = prepare(db, org.id, type, rawData, localDate(new Date(now), org.timezone));
+  const staffId = actor.staffId === undefined ? (original?.staffId ?? null) : actor.staffId;
   let staffName: string | null = null;
-  if (actor.staffId) staffName = resolveStaff(db, org.id, actor.staffId).name;
-  if (!actor.staffId && !actor.userId) throw validationError('staffId', 'Indica quién realiza el registro');
+  if (staffId && original && staffId === original.staffId) staffName = original.staffName;
+  else if (staffId) staffName = resolveStaff(db, org.id, staffId).name;
+  if (!staffId && !actor.userId) throw validationError('staffId', 'Indica quién realiza el registro');
   const record: DRecord = {
     id: uuid(),
     orgId: org.id,
     type,
     data: prepared.data,
-    staffId: actor.staffId,
+    staffId,
     staffName,
     userId: actor.userId,
     userName: actor.userName,

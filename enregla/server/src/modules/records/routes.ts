@@ -5,7 +5,7 @@ import { idParam, parse } from '../../http/validation.js';
 import { orgCtx, requireUser, requireWritable } from '../../http/guards.js';
 import { notFound } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
-import { keysetAfter, toPage } from '../../lib/pagination.js';
+import { toPage } from '../../lib/pagination.js';
 import type { DB } from '../../db/index.js';
 import { recordView } from '../views.js';
 import { createRecord } from './service.js';
@@ -13,6 +13,17 @@ import { idempotencyKey, withIdempotency } from './idempotency.js';
 
 export function amendedBySelect() {
   return sql<string | null>`(SELECT a.id FROM records a WHERE a.amends_record_id = r.id)`.as('amended_by');
+}
+
+/**
+ * Historial: del hecho más reciente al más antiguo y, a igual fecha del hecho (un original y sus
+ * correcciones la comparten), en orden de inserción: original → corrección → corrección…
+ * Paginación keyset por (effective_at DESC, seq ASC); un cursor ajeno da una página vacía.
+ */
+function historyAfter(cursor: string, orgId: string) {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM records c WHERE c.id = ${cursor} AND c.organization_id = ${orgId}
+      AND (r.effective_at < c.effective_at OR (r.effective_at = c.effective_at AND r.seq > c.seq)))`;
 }
 
 async function getRecord(db: DB, orgId: string, id: string) {
@@ -37,8 +48,8 @@ export async function recordRoutes(app: FastifyInstance): Promise<void> {
     // Fechas y orden por la fecha del hecho (effective_at): una enmienda aparece junto al original.
     if (q.from) query = query.where('r.effective_at', '>=', sql<Date>`(${q.from}::date)::timestamp AT TIME ZONE ${tz}`);
     if (q.to) query = query.where('r.effective_at', '<', sql<Date>`(${q.to}::date + 1)::timestamp AT TIME ZONE ${tz}`);
-    if (q.cursor) query = query.where(keysetAfter({ table: 'records', alias: 'r', cursor: q.cursor, orgId: ctx.org.id, direction: 'desc', orderColumn: 'effective_at' }));
-    const rows = await query.orderBy('r.effective_at', 'desc').orderBy('r.id', 'desc').limit(q.limit + 1).execute();
+    if (q.cursor) query = query.where(historyAfter(q.cursor, ctx.org.id));
+    const rows = await query.orderBy('r.effective_at', 'desc').orderBy('r.seq', 'asc').limit(q.limit + 1).execute();
     return toPage(rows, q.limit, (r) => r.id, recordView);
   });
 
@@ -88,7 +99,8 @@ export async function recordRoutes(app: FastifyInstance): Promise<void> {
       createRecord(
         tx,
         ctx.org,
-        { userId: auth.user.id, userName: auth.user.name, staffId: body.staffId ?? null, deviceId: null },
+        // Sin `staffId` se conserva el firmante del original; con otro, se cambia (el motivo es obligatorio).
+        { userId: auth.user.id, userName: auth.user.name, staffId: body.staffId, deviceId: null },
         null, // el tipo es el del registro original
         body.data,
         { originalId: id, reason: body.reason },

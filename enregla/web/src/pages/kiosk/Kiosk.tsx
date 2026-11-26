@@ -1,20 +1,27 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { EQUIPMENT_TYPE_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
+import {
+  EQUIPMENT_TYPE_LABELS,
+  KIOSK_CORRECTION_MINUTES,
+  KIOSK_CORRECTION_REASON_LABELS,
+  RECORD_TYPES,
+  RECORD_TYPE_LABELS,
+  TEMP_RANGE_MESSAGE,
+  type KioskCorrectionReason,
+} from '@shared/schemas';
 import { TODAY_REFRESH } from '@/api/queries';
 import { errorMessage, formatWait, isApiError } from '@/api/client';
 import type { AppRecord, KioskContext, RecordType, TodayTasks } from '@/api/types';
 import { Button } from '@/components/ui/Button';
 import { Callout, Skeleton } from '@/components/ui/Feedback';
+import { Field, Input } from '@/components/ui/Form';
 import { Keypad, keypadDisplay, keypadToNumber } from '@/components/ui/Keypad';
-import { ConfirmDialog } from '@/components/ui/Overlay';
 import { LogoMark } from '@/components/ui/Logo';
 import { Icon } from '@/components/icons/Icon';
 import { RecordForm, TEMP_ACTIONS, physicallyValidTemp, type FormContext } from '@/features/RecordForms';
-import { TEMP_RANGE_MESSAGE } from '@shared/schemas';
 import { IdempotencyKeys } from '@/lib/idempotency';
-import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, recordSummary } from '@/features/recordMeta';
+import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, recordSummary, signer } from '@/features/recordMeta';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useOnline } from '@/hooks/useOnline';
 import { formatCompliance, formatRange, formatTemp, formatTime, isOutOfRange, plural, quedan } from '@/lib/format';
@@ -26,6 +33,8 @@ import { KioskPairPage } from './KioskPair';
 /** Persona que está registrando. El PIN vive SOLO en memoria y caduca por inactividad. */
 type Person = { id: string; name: string; hasPin: boolean; pin?: string };
 type Target = { kind: 'temp'; equipmentId: string } | { kind: 'form'; type: RecordType; preset?: Record<string, string> };
+/** Último registro guardado en esta tablet: se puede corregir durante 2 minutos (1.5). */
+type Recent = { record: AppRecord; person: Person; savedAt: number };
 type Screen =
   | { name: 'home' }
   | { name: 'who'; then: Target | null }
@@ -33,15 +42,22 @@ type Screen =
   | { name: 'temp'; equipmentId: string }
   | { name: 'pick-equipment' }
   | { name: 'form'; type: RecordType; preset?: Record<string, string> }
-  | { name: 'result'; record: AppRecord };
+  | { name: 'result'; record: AppRecord; person: Person; corrected?: boolean }
+  | { name: 'correct'; recent: Recent }
+  | { name: 'manager'; action: 'exit' | 'unpair' };
 type Pending = { type: RecordType; data: unknown };
 
+/** Inactividad: se olvida a la persona (y su PIN) y se vuelve al inicio. */
 const IDLE_MS = 3 * 60_000;
+/** Tras guardar, «Seguir como Ana» se ofrece durante estos segundos; si no, se vuelve a «¿Quién eres?» (1.4). */
+export const CONTINUE_SECONDS = 15;
+const CORRECTION_MS = KIOSK_CORRECTION_MINUTES * 60_000;
 
 export function KioskPage() {
   useDocumentTitle('Modo cocina');
   const [token, setToken] = useState<string | null>(() => storage.getKioskToken());
   const [revoked, setRevoked] = useState(false);
+  const [exited, setExited] = useState<string | null>(null);
   // Al entrar con `{ kioskStart: 'who' }` se empieza de cero (aunque ya se estuviera en el modo cocina).
   const location = useLocation();
   const startKey = (location.state as { kioskStart?: string } | null)?.kioskStart ? location.key : 'kiosk';
@@ -62,6 +78,7 @@ export function KioskPage() {
       </KioskFrame>
     );
   }
+  if (exited && token) return <KioskExited by={exited} onBack={() => setExited(null)} />;
   if (!token) return <KioskPairPage />;
   return (
     <KioskApp
@@ -76,6 +93,7 @@ export function KioskPage() {
         storage.setKioskToken(null);
         setToken(null);
       }}
+      onExit={(by) => setExited(by)}
     />
   );
 }
@@ -88,6 +106,34 @@ function KioskFrame({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Pantalla neutra tras «Salir del modo cocina» (1.10): no lleva a la web comercial. La tablet sigue
+ * vinculada: «Volver al modo cocina» no pide nada; «Entrar como encargado» abre el acceso normal.
+ */
+function KioskExited({ by, onBack }: { by: string; onBack: () => void }) {
+  useDocumentTitle('Modo cocina cerrado');
+  return (
+    <KioskFrame>
+      <div className="mx-auto flex min-h-[80dvh] max-w-xl flex-col justify-center py-10 text-center" data-testid="kiosk-exited">
+        <LogoMark size={56} className="mx-auto" />
+        <h1 className="mt-6 text-4xl font-extrabold">Modo cocina cerrado</h1>
+        <p className="mt-3 text-xl text-ink-muted">Lo ha cerrado {by}. La tablet sigue vinculada a este local.</p>
+        <div className="mt-8 grid gap-3">
+          <Button size="xl" icon="chef" onClick={onBack}>
+            Volver al modo cocina
+          </Button>
+          <Link
+            to="/entrar"
+            className="inline-flex min-h-16 items-center justify-center gap-2 rounded-2xl border-2 border-line-strong bg-surface px-5 text-xl font-bold hover:border-ink"
+          >
+            <Icon name="user" size={24} /> Entrar como encargado
+          </Link>
+        </div>
+      </div>
+    </KioskFrame>
+  );
+}
+
 function useClock() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -97,7 +143,29 @@ function useClock() {
   return now;
 }
 
-function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: () => void; onUnpair: () => void }) {
+/** Segundos que quedan hasta `until` (se actualiza cada segundo mientras queda tiempo). */
+function useSecondsLeft(until: number | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (until == null) return;
+    const tick = () => {
+      const n = Date.now();
+      setNow(n);
+      if (n >= until) window.clearInterval(id);
+    };
+    const first = window.setTimeout(tick, 0);
+    const id = window.setInterval(tick, 1000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(id);
+    };
+  }, [until]);
+  return until == null ? 0 : Math.max(0, Math.ceil((until - now) / 1000));
+}
+
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRevoked: () => void; onUnpair: () => void; onExit: (by: string) => void }) {
   const qc = useQueryClient();
   const online = useOnline();
   const now = useClock();
@@ -109,10 +177,10 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
     (location.state as { kioskStart?: string } | null)?.kioskStart === 'who' ? { name: 'who', then: null } : { name: 'home' },
   );
   const [person, setPerson] = useState<Person | null>(null);
+  const [recent, setRecent] = useState<Recent | null>(null);
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<unknown>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [unpairOpen, setUnpairOpen] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const idleTimer = useRef<number | undefined>(undefined);
   // Clave de idempotencia por registro: se reutiliza en los reintentos (también los automáticos al volver la conexión).
@@ -149,6 +217,10 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
     };
   }, [touch]);
 
+  // El registro reciente deja de poder corregirse a los 2 minutos.
+  const correctionLeft = useSecondsLeft(recent ? recent.savedAt + CORRECTION_MS : null);
+  const canCorrect = recent != null && correctionLeft > 0;
+
   const ctx = ctxQ.data;
   const readOnly = ctx?.organization.readOnly ?? false;
 
@@ -165,6 +237,11 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
     else goTarget(t);
   };
 
+  const forgetPerson = () => {
+    setPerson(null);
+    setScreen({ name: 'who', then: null });
+  };
+
   const submit = async (pending: Pending, who: Person | null = person) => {
     if (!who) return setScreen({ name: 'who', then: null });
     setSaving(true);
@@ -174,7 +251,8 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
       const record = await kioskApi.createRecord(token, { staffId: who.id, pin: who.pin, type: pending.type, data: pending.data }, keys.keyFor({ staffId: who.id, ...pending }));
       keys.reset();
       setPerson(who);
-      setScreen({ name: 'result', record });
+      setRecent({ record, person: { id: who.id, name: who.name, hasPin: who.hasPin }, savedAt: Date.now() });
+      setScreen({ name: 'result', record, person: who });
       void qc.invalidateQueries({ queryKey: ['kiosk', 'today'] });
     } catch (err) {
       if (isApiError(err)) {
@@ -255,56 +333,63 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
   const formCtx: FormContext | null = ctx
     ? { equipment: ctx.equipment, cleaningPlans: ctx.cleaningPlans, suppliers: ctx.suppliers, staff: ctx.staff, timezone: ctx.organization.timezone }
     : null;
+  const showRecent = canCorrect && (screen.name === 'home' || screen.name === 'who');
 
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
-      <header className="sticky top-[var(--app-top,0px)] z-20 flex items-center gap-3 border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur sm:px-6">
-        <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl pr-3">
-          <span className="sr-only">Inicio del modo cocina: </span>
-          <LogoMark size={40} className="shrink-0" />
-          <span className="min-w-0 text-left">
-            <span className="block truncate text-xl leading-tight font-extrabold" title={ctx?.organization.name}>
-              {ctx?.organization.name ?? 'Modo cocina'}
+      <header className="sticky top-[var(--app-top,0px)] z-20 border-b border-line bg-surface/95 backdrop-blur">
+        <div className="flex items-center gap-3 px-4 py-2.5 sm:px-6">
+          <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl pr-3">
+            <span className="sr-only">Inicio del modo cocina: </span>
+            <LogoMark size={40} className="shrink-0" />
+            <span className="min-w-0 text-left">
+              <span className="block truncate text-xl leading-tight font-extrabold" title={ctx?.organization.name}>
+                {ctx?.organization.name ?? 'Modo cocina'}
+              </span>
+              <span className="block text-sm text-ink-muted tabular">
+                {now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: ctx?.organization.timezone })} · {ctx?.device.name ?? ''}
+              </span>
             </span>
-            <span className="block text-sm text-ink-muted tabular">
-              {now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: ctx?.organization.timezone })} · {ctx?.device.name ?? ''}
-            </span>
-          </span>
-        </button>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {person ? (
-            <button
-              type="button"
-              onClick={() => {
-                setPerson(null);
-                setScreen({ name: 'who', then: null });
-              }}
-              className="flex min-h-16 items-center gap-2 rounded-2xl border-2 border-brand bg-brand-soft px-4 font-bold"
-            >
-              <Icon name="user" size={24} />
-              <span className="max-w-[10rem] truncate">{person.name}</span>
-              <span className="hidden text-sm font-semibold text-ink-muted sm:inline">· cambiar</span>
-            </button>
-          ) : (
-            <button type="button" onClick={() => setScreen({ name: 'who', then: null })} className="flex min-h-16 items-center gap-2 rounded-2xl border-2 border-line-strong px-4 font-bold whitespace-nowrap">
-              <Icon name="user" size={24} /> ¿Quién eres?
-            </button>
-          )}
-          {/* Solo si el navegador permite pantalla completa aquí (p. ej. no dentro de un marco que no la autoriza). */}
-          {document.fullscreenEnabled ? (
-            <button
-              type="button"
-              className="hidden size-16 place-items-center rounded-2xl hover:bg-surface-2 sm:grid"
-              aria-label="Pantalla completa"
-              onClick={() => {
-                if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
-                else void document.documentElement.requestFullscreen?.().catch(() => undefined);
-              }}
-            >
-              <Icon name="maximize" size={28} />
-            </button>
-          ) : null}
+          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {person ? (
+              <button type="button" onClick={forgetPerson} className="flex min-h-16 items-center gap-2 rounded-2xl border-2 border-brand bg-brand-soft px-4 font-bold">
+                <Icon name="user" size={24} />
+                <span className="max-w-[10rem] truncate">{person.name}</span>
+                <span className="hidden text-sm font-semibold text-ink-muted sm:inline">· cambiar</span>
+              </button>
+            ) : (
+              <button type="button" onClick={() => setScreen({ name: 'who', then: null })} className="flex min-h-16 items-center gap-2 rounded-2xl border-2 border-line-strong px-4 font-bold whitespace-nowrap">
+                <Icon name="user" size={24} /> ¿Quién eres?
+              </button>
+            )}
+            {/* Solo si el navegador permite pantalla completa aquí (p. ej. no dentro de un marco que no la autoriza). */}
+            {document.fullscreenEnabled ? (
+              <button
+                type="button"
+                className="hidden size-16 place-items-center rounded-2xl hover:bg-surface-2 sm:grid"
+                aria-label="Pantalla completa"
+                onClick={() => {
+                  if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+                  else void document.documentElement.requestFullscreen?.().catch(() => undefined);
+                }}
+              >
+                <Icon name="maximize" size={28} />
+              </button>
+            ) : null}
+          </div>
         </div>
+        {/* 1.4: mientras hay una persona elegida, se ve en grande quién firma y cómo cambiarlo. */}
+        {person && screen.name !== 'result' ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-brand/30 bg-brand-soft px-4 py-2 sm:px-6" data-testid="kiosk-signing-as">
+            <p className="min-w-0 text-xl [overflow-wrap:anywhere]">
+              Registrando como <strong className="font-extrabold">{person.name}</strong>
+            </p>
+            <button type="button" onClick={forgetPerson} className="min-h-12 rounded-xl px-2 text-lg font-bold underline underline-offset-4">
+              ¿No eres {person.name}?
+            </button>
+          </div>
+        ) : null}
       </header>
 
       {!online ? (
@@ -324,6 +409,9 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
           <Callout tone="bad" className="mb-4 text-lg" live="assertive" action={<Button variant="ghost" onClick={() => setNotice(null)}>Cerrar</Button>}>
             {notice}
           </Callout>
+        ) : null}
+        {showRecent && recent ? (
+          <RecentBanner recent={recent} secondsLeft={correctionLeft} tz={ctx?.organization.timezone ?? 'Europe/Madrid'} onCorrect={() => setScreen({ name: 'correct', recent })} />
         ) : null}
         {ctxQ.isPending || todayQ.isPending ? (
           <div role="status" className="grid gap-4 sm:grid-cols-2">
@@ -350,10 +438,19 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
             </Button>
           </div>
         ) : screen.name === 'home' ? (
-          <KioskHome ctx={ctx} today={todayQ.data} readOnly={readOnly} onStart={start} onUnpair={() => setUnpairOpen(true)} />
+          <KioskHome
+            ctx={ctx}
+            today={todayQ.data}
+            readOnly={readOnly}
+            onStart={start}
+            onExit={() => setScreen({ name: 'manager', action: 'exit' })}
+            onUnpair={() => setScreen({ name: 'manager', action: 'unpair' })}
+          />
         ) : screen.name === 'who' ? (
           <WhoScreen
             ctx={ctx}
+            refreshing={ctxQ.isFetching}
+            onRefresh={() => void ctxQ.refetch()}
             onBack={() => setScreen({ name: 'home' })}
             onPick={(s) => {
               setNotice(null);
@@ -402,13 +499,53 @@ function KioskApp({ token, onRevoked, onUnpair }: { token: string; onRevoked: ()
               </fieldset>
             </div>
           </section>
+        ) : screen.name === 'correct' ? (
+          <CorrectionFlow
+            key={screen.recent.record.id}
+            token={token}
+            ctx={ctx}
+            formCtx={formCtx}
+            recent={screen.recent}
+            secondsLeft={correctionLeft}
+            onCancel={() => setScreen({ name: 'home' })}
+            onRevoked={onRevoked}
+            onDone={(amended, who) => {
+              setRecent(null);
+              setPerson(null);
+              void qc.invalidateQueries({ queryKey: ['kiosk', 'today'] });
+              setScreen({ name: 'result', record: amended, person: who, corrected: true });
+            }}
+          />
+        ) : screen.name === 'manager' ? (
+          <ManagerAuthScreen
+            token={token}
+            action={screen.action}
+            onCancel={() => setScreen({ name: 'home' })}
+            onRevoked={onRevoked}
+            onDone={(by) => {
+              setPerson(null);
+              setRecent(null);
+              if (screen.action === 'unpair') onUnpair();
+              else onExit(by);
+            }}
+          />
         ) : (
-          <ResultScreen record={screen.record} tz={ctx.organization.timezone} onDone={() => setScreen({ name: 'home' })} />
+          <ResultScreen
+            key={screen.record.id}
+            record={screen.record}
+            person={screen.person}
+            corrected={screen.corrected}
+            tz={ctx.organization.timezone}
+            canCorrect={!screen.corrected && canCorrect && recent?.record.id === screen.record.id}
+            onContinue={() => {
+              setPerson(screen.corrected ? null : screen.person);
+              setScreen({ name: 'home' });
+            }}
+            onSomeoneElse={forgetPerson}
+            onCorrect={() => recent && setScreen({ name: 'correct', recent })}
+          />
         )}
       </main>
-      <ConfirmDialog open={unpairOpen} onClose={() => setUnpairOpen(false)} onConfirm={onUnpair} title="¿Desvincular esta tablet?" confirmLabel="Desvincular">
-        Se borrará el código de este dispositivo. Para volver a usarlo habrá que vincularlo de nuevo desde Ajustes. Para revocarlo del todo, hazlo también desde Ajustes → Dispositivos de cocina.
-      </ConfirmDialog>
     </div>
   );
 }
@@ -421,11 +558,48 @@ function BackButton({ onClick, label = 'Volver' }: { onClick: () => void; label?
   );
 }
 
-function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskContext; today: TodayTasks; readOnly: boolean; onStart: (t: Target) => void; onUnpair: () => void }) {
+/** Aviso del último registro, con «Corregir» mientras quedan los 2 minutos (1.5). */
+function RecentBanner({ recent, secondsLeft, tz, onCorrect }: { recent: Recent; secondsLeft: number; tz: string; onCorrect: () => void }) {
+  const s = recordSummary(recent.record);
+  return (
+    <div className="mb-5 flex flex-wrap items-center gap-3 rounded-3xl border-2 border-line-strong bg-surface p-4" role="status" data-testid="kiosk-recent">
+      <span className={cn('grid size-12 shrink-0 place-items-center rounded-2xl', RECORD_TINT[recent.record.type])}>
+        <Icon name={RECORD_ICON[recent.record.type]} size={26} />
+      </span>
+      <p className="min-w-0 flex-1 text-lg [overflow-wrap:anywhere]">
+        Último registro: <strong>{s.title}</strong> · {recent.person.name} · {formatTime(recent.record.effectiveAt, tz)}
+        <span className="block text-base text-ink-muted">¿Te has equivocado? Puedes corregirlo durante {mmss(secondsLeft)}.</span>
+      </p>
+      <Button size="lg" variant="secondary" icon="pencil" onClick={onCorrect}>
+        Corregir
+      </Button>
+    </div>
+  );
+}
+
+function KioskHome({
+  ctx,
+  today,
+  readOnly,
+  onStart,
+  onExit,
+  onUnpair,
+}: {
+  ctx: KioskContext;
+  today: TodayTasks;
+  readOnly: boolean;
+  onStart: (t: Target) => void;
+  onExit: () => void;
+  onUnpair: () => void;
+}) {
   const tz = ctx.organization.timezone;
-  const pendingTemps = today.temperatures.filter((t) => t.status === 'pending' && t.countsToday !== false);
+  // 1.12: un equipo cuya última lectura está fuera de rango sigue pendiente como «Volver a medir».
+  const pendingTemps = today.temperatures.filter((t) => (t.status === 'pending' && t.countsToday !== false) || t.remeasure);
   const pendingClean = today.cleaning.filter((c) => c.status === 'pending' && c.countsToday !== false);
+  const doneTemps = today.temperatures.filter((t) => t.status === 'done' && t.countsToday !== false);
+  const doneClean = today.cleaning.filter((c) => c.status === 'done' && c.countsToday !== false);
   const { summary } = today;
+  const remeasure = today.temperatures.filter((t) => t.remeasure).length;
   const [allAlerts, setAllAlerts] = useState(false);
   const shownAlerts = allAlerts ? today.alerts : today.alerts.slice(0, 4);
   return (
@@ -433,10 +607,17 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
       <section aria-labelledby="khoy" className="flex flex-wrap items-center gap-4 rounded-3xl bg-brand-strong p-5 text-white dark:bg-[#0a2f33]">
         <div className="min-w-0 flex-1">
           <h1 id="khoy" className="text-3xl font-extrabold">
-            {summary.total === 0 ? 'Nada programado hoy' : summary.pending === 0 ? '¡Todo hecho por hoy!' : quedan(summary.pending, 'tarea', 'tareas')}
+            {summary.total === 0
+              ? 'Nada programado hoy'
+              : summary.pending === 0
+                ? remeasure > 0
+                  ? `Falta volver a medir ${remeasure === 1 ? '1 equipo' : `${remeasure} equipos`}`
+                  : '¡Todo hecho por hoy!'
+                : quedan(summary.pending, 'tarea', 'tareas')}
           </h1>
           <p className="text-lg text-white/85">
             {summary.done} de {summary.total} hechas
+            {(summary.doneWithAlert ?? 0) > 0 ? ` · ${summary.doneWithAlert} con alerta` : ''}
           </p>
         </div>
         <div className="font-display text-5xl font-extrabold tabular" aria-hidden="true">
@@ -474,9 +655,14 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
                   disabled={readOnly}
                   onClick={() => onStart({ kind: 'temp', equipmentId: t.equipmentId })}
                   type="temperatura"
-                  title={t.name}
+                  title={t.remeasure ? `Volver a medir: ${t.name}` : t.name}
                   subtitle={`${t.done} de ${t.required} · ${formatRange(t.minTemp, t.maxTemp)}`}
-                  extra={t.lastReading ? `Última: ${formatTemp(t.lastReading.value)} (${formatTime(t.lastReading.at, tz)})` : undefined}
+                  extra={
+                    t.lastReading
+                      ? `Última: ${formatTemp(t.lastReading.value)} (${formatTime(t.lastReading.at, tz)})${t.remeasure ? ', fuera de rango' : ''}`
+                      : undefined
+                  }
+                  alert={t.remeasure}
                 />
               </li>
             ))}
@@ -497,6 +683,30 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
         <p className="flex items-center gap-2 rounded-3xl bg-ok-soft p-5 text-xl font-bold text-ok">
           <Icon name="check" size={28} strokeWidth={3} /> No queda nada pendiente. ¡Buen trabajo!
         </p>
+      ) : null}
+
+      {doneTemps.length + doneClean.length > 0 ? (
+        <section aria-labelledby="kdone">
+          <h2 id="kdone" className="mb-3 text-2xl font-extrabold">
+            Hecho hoy
+          </h2>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {doneTemps.map((t) => (
+              <li key={t.equipmentId} className="flex min-h-14 items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-2">
+                {t.withAlert ? <Icon name="alert" size={24} className="shrink-0 text-bad" /> : <Icon name="check" size={24} strokeWidth={3} className="shrink-0 text-ok" />}
+                <span className="min-w-0 flex-1 text-lg font-semibold [overflow-wrap:anywhere]">{t.name}</span>
+                <span className={cn('shrink-0 font-bold', t.withAlert ? 'text-bad' : 'text-ok')}>{t.withAlert ? 'Hecho con alerta' : 'Hecho'}</span>
+              </li>
+            ))}
+            {doneClean.map((c) => (
+              <li key={c.cleaningPlanId} className="flex min-h-14 items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-2">
+                <Icon name="check" size={24} strokeWidth={3} className="shrink-0 text-ok" />
+                <span className="min-w-0 flex-1 text-lg font-semibold [overflow-wrap:anywhere]">{c.name}</span>
+                <span className="shrink-0 font-bold text-ok">Hecho</span>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
 
       <section aria-labelledby="kotros">
@@ -521,53 +731,88 @@ function KioskHome({ ctx, today, readOnly, onStart, onUnpair }: { ctx: KioskCont
           ))}
         </ul>
       </section>
-      <div className="flex justify-between gap-3 border-t border-line pt-4 text-ink-muted">
-        <Link to="/" className="inline-flex min-h-12 items-center underline underline-offset-4">
-          Salir del modo cocina
-        </Link>
-        <button type="button" onClick={onUnpair} className="inline-flex min-h-12 items-center underline underline-offset-4">
-          Desvincular esta tablet
+      {/* 1.10: salir y desvincular piden la contraseña de un propietario o encargado (en el servidor). */}
+      <div className="flex flex-wrap justify-between gap-3 border-t border-line pt-4 text-ink-muted">
+        <button type="button" onClick={onExit} className="inline-flex min-h-12 items-center gap-2 underline underline-offset-4">
+          <Icon name="lock" size={18} /> Salir del modo cocina
+        </button>
+        <button type="button" onClick={onUnpair} className="inline-flex min-h-12 items-center gap-2 underline underline-offset-4">
+          <Icon name="lock" size={18} /> Desvincular esta tablet
         </button>
       </div>
     </div>
   );
 }
 
-function BigTile({ onClick, type, title, subtitle, extra, disabled }: { onClick: () => void; type: RecordType; title: string; subtitle: string; extra?: string; disabled?: boolean }) {
+function BigTile({ onClick, type, title, subtitle, extra, disabled, alert }: { onClick: () => void; type: RecordType; title: string; subtitle: string; extra?: string; disabled?: boolean; alert?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex min-h-28 w-full items-center gap-4 rounded-3xl border-2 border-warn-solid/60 bg-surface p-4 text-left shadow-card transition-transform active:scale-[0.98] disabled:opacity-50"
+      className={cn(
+        'flex min-h-28 w-full items-center gap-4 rounded-3xl border-2 bg-surface p-4 text-left shadow-card transition-transform active:scale-[0.98] disabled:opacity-50',
+        alert ? 'border-bad-solid' : 'border-warn-solid/60',
+      )}
     >
-      <span className={cn('grid size-16 shrink-0 place-items-center rounded-2xl', RECORD_TINT[type])}>
-        <Icon name={RECORD_ICON[type]} size={34} />
+      <span className={cn('grid size-16 shrink-0 place-items-center rounded-2xl', alert ? 'bg-bad-soft text-bad' : RECORD_TINT[type])}>
+        <Icon name={alert ? 'refresh' : RECORD_ICON[type]} size={34} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-xl font-extrabold [overflow-wrap:anywhere]">{title}</span>
         <span className="block text-ink-muted">{subtitle}</span>
-        {extra ? <span className="block text-sm text-ink-muted">{extra}</span> : null}
+        {extra ? <span className={cn('block text-sm', alert ? 'font-semibold text-bad' : 'text-ink-muted')}>{extra}</span> : null}
       </span>
       <Icon name="chevronRight" size={30} className="shrink-0 text-ink-muted" />
     </button>
   );
 }
 
-function WhoScreen({ ctx, onPick, onBack }: { ctx: KioskContext; onPick: (s: KioskContext['staff'][number]) => void; onBack: () => void }) {
+/** «¿Quién eres?»: la lista se refresca al abrirla (1.11) y hay ayuda para quien no aparece. */
+function WhoScreen({
+  ctx,
+  onPick,
+  onBack,
+  onRefresh,
+  refreshing,
+  exclude,
+  title = '¿Quién eres?',
+  back = true,
+}: {
+  ctx: KioskContext;
+  onPick: (s: KioskContext['staff'][number]) => void;
+  onBack: () => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+  exclude?: string;
+  title?: string;
+  back?: boolean;
+}) {
+  const [help, setHelp] = useState(false);
+  // Al mostrar la lista se piden los datos de nuevo: una persona recién dada de alta aparece ya.
+  const refreshRef = useRef(onRefresh);
+  useEffect(() => {
+    refreshRef.current();
+  }, []);
+  const staff = ctx.staff.filter((s) => s.id !== exclude);
   return (
     <section aria-labelledby="kwho">
-      <BackButton onClick={onBack} />
-      <h1 id="kwho" className="mb-5 text-4xl font-extrabold">
-        ¿Quién eres?
-      </h1>
-      {ctx.staff.length === 0 ? (
+      {back ? <BackButton onClick={onBack} /> : null}
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <h1 id="kwho" className="text-4xl font-extrabold">
+          {title}
+        </h1>
+        <span className="min-h-6 text-lg text-ink-muted" role="status">
+          {refreshing ? 'Actualizando la lista…' : ''}
+        </span>
+      </div>
+      {staff.length === 0 ? (
         <Callout tone="warn" title="No hay personal dado de alta">
           Pide al encargado que añada al personal en Ajustes → Personal.
         </Callout>
       ) : (
         <ul className="grid grid-cols-2 gap-3 md:grid-cols-3">
-          {ctx.staff.map((s) => (
+          {staff.map((s) => (
             <li key={s.id}>
               <button
                 type="button"
@@ -577,31 +822,74 @@ function WhoScreen({ ctx, onPick, onBack }: { ctx: KioskContext; onPick: (s: Kio
                 <span className="grid size-14 place-items-center rounded-full bg-brand-soft font-display text-2xl font-extrabold text-brand-strong dark:text-brand" aria-hidden="true">
                   {s.name.trim().charAt(0).toUpperCase()}
                 </span>
-                <span className="text-xl font-bold">{s.name}</span>
+                <span className="text-xl font-bold [overflow-wrap:anywhere]">{s.name}</span>
                 {s.hasPin ? (
                   <span className="inline-flex items-center gap-1 text-sm text-ink-muted">
                     <Icon name="lock" size={14} /> con PIN
                   </span>
-                ) : null}
+                ) : (
+                  <span className="text-sm text-ink-muted">sin PIN</span>
+                )}
               </button>
             </li>
           ))}
         </ul>
       )}
+      <div className="mt-5">
+        <button
+          type="button"
+          onClick={() => setHelp((v) => !v)}
+          aria-expanded={help}
+          className="inline-flex min-h-14 items-center gap-2 rounded-2xl border-2 border-line-strong bg-surface px-5 text-lg font-bold hover:border-ink"
+        >
+          <Icon name="info" size={22} /> No estoy en la lista
+        </button>
+        {help ? (
+          <div className="mt-3 rounded-3xl border-2 border-warn-solid/60 bg-warn-soft p-5 text-lg" data-testid="kiosk-not-listed">
+            <p className="font-bold">No registres con el nombre de otra persona.</p>
+            <ol className="mt-2 list-decimal space-y-1 pl-6">
+              <li>Pide a tu encargado que te dé de alta en la web: Ajustes → Personal → Añadir persona (con tu PIN).</li>
+              <li>En cuanto lo haga, toca «Actualizar la lista» y aparecerás aquí.</li>
+              <li>Mientras tanto, apunta la temperatura o la tarea en papel y regístrala después.</li>
+            </ol>
+            <Button size="lg" className="mt-4" icon="refresh" loading={refreshing} onClick={onRefresh}>
+              Actualizar la lista
+            </Button>
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }
 
-function PinScreen({ person, error, busy, onDone, onBack }: { person: Person; error?: string; busy: boolean; onDone: (pin: string) => void; onBack: () => void }) {
+function PinScreen({
+  person,
+  error,
+  busy,
+  onDone,
+  onBack,
+  title,
+  subtitle = 'Escribe tu PIN',
+  submitLabel = 'Entrar',
+}: {
+  person: Person;
+  error?: string;
+  busy: boolean;
+  onDone: (pin: string) => void;
+  onBack: () => void;
+  title?: string;
+  subtitle?: string;
+  submitLabel?: string;
+}) {
   const [pin, setPin] = useState('');
   const [limit, setLimit] = useState(false);
   return (
     <section aria-labelledby="kpin" className="mx-auto max-w-md">
       <BackButton onClick={onBack} label="Cancelar" />
       <h1 id="kpin" className="text-center text-3xl font-extrabold">
-        Hola, {person.name}
+        {title ?? `Hola, ${person.name}`}
       </h1>
-      <p className="mt-1 text-center text-xl text-ink-muted">Escribe tu PIN</p>
+      <p className="mt-1 text-center text-xl text-ink-muted">{subtitle}</p>
       <div className={cn('my-5 flex justify-center gap-3', error && 'animate-shake')} aria-live="polite" aria-label={`${pin.length} cifras escritas`}>
         {Array.from({ length: Math.max(4, pin.length) }, (_, i) => (
           <span key={i} className={cn('size-5 rounded-full border-2', i < pin.length ? 'border-ink bg-ink' : 'border-line-strong')} />
@@ -628,7 +916,7 @@ function PinScreen({ person, error, busy, onDone, onBack }: { person: Person; er
         maxLength={6}
       />
       <Button size="xl" block className="mt-4" disabled={pin.length < 4} loading={busy} onClick={() => onDone(pin)} icon="check">
-        Entrar
+        {submitLabel}
       </Button>
     </section>
   );
@@ -667,6 +955,9 @@ function TempScreen({
   disabled,
   onSubmit,
   onBack,
+  heading,
+  submitLabel,
+  backLabel,
 }: {
   ctx: KioskContext;
   equipmentId: string;
@@ -675,11 +966,17 @@ function TempScreen({
   disabled: boolean;
   onSubmit: (data: { equipmentId: string; value: number; correctiveAction: string | null }) => void;
   onBack: () => void;
+  /** Título encima del equipo (p. ej. «Escribe el valor correcto» al corregir). */
+  heading?: string;
+  submitLabel?: string;
+  backLabel?: string;
 }) {
   const [eqId, setEqId] = useState(equipmentId);
   const [value, setValue] = useState('');
   const [step, setStep] = useState<'value' | 'action'>('value');
-  const [action, setAction] = useState('');
+  // 1.12: varias acciones rápidas a la vez, más texto libre.
+  const [actions, setActions] = useState<string[]>([]);
+  const [other, setOther] = useState('');
   const eq = ctx.equipment.find((e) => e.id === eqId);
   if (!eq) return <PickEquipment ctx={ctx} onBack={onBack} onPick={setEqId} />;
   const num = keypadToNumber(value);
@@ -689,6 +986,8 @@ function TempScreen({
   const out = valid && isOutOfRange(num!, eq.minTemp, eq.maxTemp);
   const err = serverError ? errorMessage(serverError) : null;
   const retryable = isApiError(serverError) && serverError.retryable;
+  const action = [...actions, other.trim()].filter(Boolean).join('; ');
+  const toggle = (a: string) => setActions((l) => (l.includes(a) ? l.filter((x) => x !== a) : [...l, a]));
 
   if (step === 'action') {
     return (
@@ -702,35 +1001,36 @@ function TempScreen({
             {eq.name}: {formatTemp(num)} <span className="text-lg font-semibold text-ink-muted">(correcto: {formatRange(eq.minTemp, eq.maxTemp)})</span>
           </p>
         </div>
-        <h1 id="kact" className="mt-6 mb-3 text-3xl font-extrabold">
+        <h1 id="kact" className="mt-6 mb-1 text-3xl font-extrabold">
           ¿Qué has hecho?
         </h1>
+        <p className="mb-3 text-lg text-ink-muted">Puedes marcar varias.</p>
         <div className="grid gap-3 sm:grid-cols-2">
           {TEMP_ACTIONS.map((a) => (
             <button
               key={a}
               type="button"
-              aria-pressed={action === a}
-              onClick={() => setAction(a)}
-              className={cn('flex min-h-18 items-center gap-3 rounded-2xl border-2 px-5 text-left text-lg font-bold', action === a ? 'border-ink bg-ink text-paper' : 'border-line-strong bg-surface')}
+              aria-pressed={actions.includes(a)}
+              onClick={() => toggle(a)}
+              className={cn('flex min-h-18 items-center gap-3 rounded-2xl border-2 px-5 text-left text-lg font-bold', actions.includes(a) ? 'border-ink bg-ink text-paper' : 'border-line-strong bg-surface')}
             >
-              {action === a ? <Icon name="check" size={24} strokeWidth={3} /> : null}
+              {actions.includes(a) ? <Icon name="check" size={24} strokeWidth={3} /> : null}
               {a}
             </button>
           ))}
         </div>
         <label className="mt-4 block text-lg font-semibold" htmlFor="kother">
-          O escribe otra cosa
+          Otra cosa (opcional)
         </label>
         <input
           id="kother"
-          value={TEMP_ACTIONS.includes(action) ? '' : action}
-          onChange={(e) => setAction(e.target.value)}
-          maxLength={1000}
+          value={other}
+          onChange={(e) => setOther(e.target.value)}
+          maxLength={800}
           className="mt-1 min-h-16 w-full rounded-2xl border-2 border-line-strong bg-surface px-4 text-lg"
         />
         {err ? (
-          <Callout tone="bad" className="mt-4" live="assertive" action={retryable ? <Button variant="secondary" icon="refresh" loading={saving} onClick={() => num != null && onSubmit({ equipmentId: eq.id, value: num, correctiveAction: action.trim() })}>Reintentar</Button> : undefined}>
+          <Callout tone="bad" className="mt-4" live="assertive" action={retryable ? <Button variant="secondary" icon="refresh" loading={saving} onClick={() => num != null && onSubmit({ equipmentId: eq.id, value: num, correctiveAction: action })}>Reintentar</Button> : undefined}>
             {err}
           </Callout>
         ) : null}
@@ -739,12 +1039,12 @@ function TempScreen({
           block
           variant="danger"
           className="mt-5"
-          disabled={!action.trim() || disabled}
+          disabled={!action || disabled}
           loading={saving}
           icon="check"
-          onClick={() => num != null && onSubmit({ equipmentId: eq.id, value: num, correctiveAction: action.trim() })}
+          onClick={() => num != null && onSubmit({ equipmentId: eq.id, value: num, correctiveAction: action })}
         >
-          Guardar con esta acción
+          {submitLabel ? `${submitLabel} con esta acción` : 'Guardar con esta acción'}
         </Button>
       </section>
     );
@@ -753,9 +1053,10 @@ function TempScreen({
   return (
     <section aria-labelledby="ktemp" className="mx-auto grid max-w-4xl gap-6 md:grid-cols-2">
       <div>
-        <BackButton onClick={onBack} />
+        <BackButton onClick={onBack} label={backLabel} />
+        {heading ? <p className="text-xl font-bold text-brand-strong dark:text-brand">{heading}</p> : null}
         <p className="text-lg font-semibold text-ink-muted">{EQUIPMENT_TYPE_LABELS[eq.type]}</p>
-        <h1 id="ktemp" className="text-4xl font-extrabold">
+        <h1 id="ktemp" className="text-4xl font-extrabold [overflow-wrap:anywhere]">
           {eq.name}
         </h1>
         <p className="mt-1 text-xl text-ink-muted">Correcto: {formatRange(eq.minTemp, eq.maxTemp)}</p>
@@ -811,32 +1112,415 @@ function TempScreen({
             else onSubmit({ equipmentId: eq.id, value: num, correctiveAction: null });
           }}
         >
-          {out ? 'Siguiente' : 'Guardar'}
+          {out ? 'Siguiente' : (submitLabel ?? 'Guardar')}
         </Button>
       </div>
     </section>
   );
 }
 
-function ResultScreen({ record, tz, onDone }: { record: AppRecord; tz: string; onDone: () => void }) {
+/**
+ * Resultado (1.4): «Guardado por Ana» y, durante 15 s, «Seguir como Ana». Si nadie lo pulsa, la
+ * tablet olvida a la persona y vuelve a «¿Quién eres?». «Corregir» se ofrece durante 2 minutos.
+ */
+function ResultScreen({
+  record,
+  person,
+  corrected,
+  tz,
+  canCorrect,
+  onContinue,
+  onSomeoneElse,
+  onCorrect,
+}: {
+  record: AppRecord;
+  person: Person;
+  corrected?: boolean;
+  tz: string;
+  canCorrect: boolean;
+  onContinue: () => void;
+  onSomeoneElse: () => void;
+  onCorrect: () => void;
+}) {
   const s = recordSummary(record);
+  const [until] = useState(() => Date.now() + CONTINUE_SECONDS * 1000);
+  const left = useSecondsLeft(until);
+  const timeout = useRef(onSomeoneElse);
   useEffect(() => {
-    const id = window.setTimeout(onDone, record.alert ? 8000 : 3500);
-    return () => window.clearTimeout(id);
-  }, [onDone, record.alert]);
+    timeout.current = onSomeoneElse;
+  });
+  useEffect(() => {
+    if (left <= 0) timeout.current();
+  }, [left]);
+  const partial = record.type === 'limpieza' && !record.data.completed;
   return (
-    <section role="status" className="mx-auto max-w-xl py-8 text-center" data-testid="kiosk-result">
-      <span className={cn('mx-auto grid size-32 animate-pop place-items-center rounded-[2.5rem] text-white shadow-pop', record.alert ? 'bg-bad-solid' : 'bg-ok-solid')}>
-        <Icon name={record.alert ? 'alert' : 'check'} size={72} strokeWidth={3} />
+    <section role="status" className="mx-auto max-w-xl py-6 text-center" data-testid="kiosk-result">
+      <span className={cn('mx-auto grid size-28 animate-pop place-items-center rounded-[2.5rem] text-white shadow-pop', record.alert ? 'bg-bad-solid' : 'bg-ok-solid')}>
+        <Icon name={record.alert ? 'alert' : 'check'} size={64} strokeWidth={3} />
       </span>
-      <h1 className="mt-6 text-5xl font-extrabold">{record.alert ? 'Guardado con alerta' : record.type === 'limpieza' && !record.data.completed ? 'Guardado como parcial' : 'Hecho'}</h1>
-      <p className="mt-3 text-2xl font-semibold">{s.title}</p>
+      <h1 className="mt-5 text-5xl font-extrabold">
+        {corrected ? 'Corrección guardada' : record.alert ? 'Guardado con alerta' : partial ? 'Guardado como parcial' : 'Hecho'}
+      </h1>
+      <p className="mt-3 text-2xl font-semibold [overflow-wrap:anywhere]">{s.title}</p>
       <p className="text-xl text-ink-muted">
         {s.detail} · {formatTime(record.effectiveAt, tz)}
       </p>
-      <Button size="xl" className="mt-8" onClick={onDone}>
-        Volver al inicio
-      </Button>
+      <p className="mt-3 text-2xl" data-testid="kiosk-saved-by">
+        {corrected ? 'Firma: ' : 'Guardado por '}
+        <strong>{corrected ? signer(record) : person.name}</strong>
+      </p>
+      {corrected ? (
+        <p className="mt-1 text-lg text-ink-muted">El registro original se conserva enlazado. Motivo: {record.amendmentReason}</p>
+      ) : null}
+      <div className="mt-7 grid gap-3">
+        {!corrected ? (
+          <Button size="xl" icon="user" onClick={onContinue}>
+            Seguir como {person.name} ({left})
+          </Button>
+        ) : (
+          <Button size="xl" icon="home" onClick={onContinue}>
+            Volver al inicio
+          </Button>
+        )}
+        <Button size="xl" variant="secondary" onClick={onSomeoneElse}>
+          {corrected ? '¿Quién eres?' : `No soy ${person.name}`}
+        </Button>
+        {canCorrect ? (
+          <Button size="xl" variant="secondary" icon="pencil" onClick={onCorrect}>
+            Corregir este registro
+          </Button>
+        ) : null}
+      </div>
+      {!corrected ? <p className="mt-3 text-lg text-ink-muted">Si no tocas nada, en {left} s se preguntará otra vez quién eres.</p> : null}
+    </section>
+  );
+}
+
+type CorrStep =
+  | { name: 'reason' }
+  | { name: 'other' }
+  | { name: 'value' }
+  | { name: 'person' }
+  | { name: 'newpin'; error?: string; attempt?: number }
+  | { name: 'pin'; error?: string; attempt?: number };
+
+/**
+ * Corrección desde la tablet (1.5): crea una CORRECCIÓN del registro recién hecho, nunca lo borra.
+ * Motivo de un toque; la misma persona confirma con su PIN (si lo tiene) y, si cambia la persona,
+ * la persona correcta con el suyo. El servidor comprueba plazo, dispositivo, persona y local.
+ */
+function CorrectionFlow({
+  token,
+  ctx,
+  formCtx,
+  recent,
+  secondsLeft,
+  onCancel,
+  onDone,
+  onRevoked,
+}: {
+  token: string;
+  ctx: KioskContext;
+  formCtx: FormContext;
+  recent: Recent;
+  secondsLeft: number;
+  onCancel: () => void;
+  onDone: (amended: AppRecord, signerPerson: Person) => void;
+  onRevoked: () => void;
+}) {
+  const { record, person } = recent;
+  const [step, setStep] = useState<CorrStep>({ name: 'reason' });
+  const [reason, setReason] = useState<KioskCorrectionReason | null>(null);
+  const [reasonText, setReasonText] = useState('');
+  const [data, setData] = useState<unknown>(undefined);
+  const [newPerson, setNewPerson] = useState<Person | null>(null);
+  const [newPin, setNewPin] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [keys] = useState(() => new IdempotencyKeys());
+  const s = recordSummary(record);
+
+  const send = async (pin: string | undefined, np = newPin, d = data) => {
+    if (!reason) return;
+    setBusy(true);
+    setError(null);
+    const base = {
+      staffId: person.id,
+      reason,
+      ...(reasonText.trim() ? { reasonText: reasonText.trim() } : {}),
+      ...(d !== undefined ? { data: d } : {}),
+      ...(reason === 'wrong_person' && newPerson ? { newStaffId: newPerson.id } : {}),
+    };
+    try {
+      // El PIN no forma parte de la clave de idempotencia (un reintento con el PIN corregido es la misma corrección).
+      const amended = await kioskApi.amend(token, record.id, { ...base, ...(pin ? { pin } : {}), ...(np && reason === 'wrong_person' ? { newStaffPin: np } : {}) }, keys.keyFor(base));
+      keys.reset();
+      onDone(amended, reason === 'wrong_person' && newPerson ? newPerson : person);
+    } catch (err) {
+      if (isApiError(err)) {
+        if (err.code === 'UNAUTHENTICATED') return onRevoked();
+        if (err.code === 'INVALID_PIN' || err.code === 'PIN_REQUIRED') {
+          // El servidor indica si el PIN que falla es el de la persona correcta (`newStaffPin`).
+          const forNew = err.details.some((x) => x.path === 'newStaffPin');
+          const msg = err.code === 'INVALID_PIN' ? 'PIN incorrecto. Prueba otra vez.' : err.message;
+          if (forNew) setStep((st) => ({ name: 'newpin', error: msg, attempt: (st.name === 'newpin' ? (st.attempt ?? 0) : 0) + 1 }));
+          else setStep((st) => ({ name: 'pin', error: msg, attempt: (st.name === 'pin' ? (st.attempt ?? 0) : 0) + 1 }));
+          return;
+        }
+        if (err.code === 'PIN_LOCKED' || err.code === 'CORRECTION_NOT_ALLOWED' || err.code === 'CONFLICT') setStep({ name: 'reason' });
+      }
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Tras elegir los datos o la persona: PIN de quien registró (si lo tiene) y enviar. */
+  const confirm = (np?: string, d?: unknown) => {
+    if (person.hasPin) setStep({ name: 'pin' });
+    else void send(undefined, np, d);
+  };
+
+  const header = (
+    <div className="mb-5 rounded-3xl border-2 border-line-strong bg-surface p-4">
+      <p className="text-lg text-ink-muted">Corregir el registro de {person.name}</p>
+      <p className="text-2xl font-extrabold [overflow-wrap:anywhere]">{s.title}</p>
+      <p className="text-lg text-ink-muted">
+        {s.detail} · queda {mmss(secondsLeft)} para corregirlo
+      </p>
+    </div>
+  );
+  const errorBox = error ? (
+    <Callout tone="bad" className="mb-4 text-lg" live="assertive" title="No se ha podido corregir">
+      {errorMessage(error)}
+    </Callout>
+  ) : null;
+
+  if (step.name === 'pin') {
+    return (
+      <PinScreen
+        key={`pin-${step.attempt ?? 0}`}
+        person={person}
+        error={step.error}
+        busy={busy}
+        title={`Confirma, ${person.name}`}
+        subtitle="Escribe tu PIN para guardar la corrección"
+        submitLabel="Guardar corrección"
+        onBack={onCancel}
+        onDone={(pin) => void send(pin)}
+      />
+    );
+  }
+  if (step.name === 'newpin' && newPerson) {
+    return (
+      <PinScreen
+        key={`newpin-${step.attempt ?? 0}`}
+        person={newPerson}
+        error={step.error}
+        busy={busy}
+        title={`Hola, ${newPerson.name}`}
+        subtitle="Escribe tu PIN: el registro pasará a tu nombre"
+        submitLabel={person.hasPin ? 'Siguiente' : 'Guardar corrección'}
+        onBack={() => setStep({ name: 'person' })}
+        onDone={(pin) => {
+          setNewPin(pin);
+          confirm(pin);
+        }}
+      />
+    );
+  }
+  if (step.name === 'person') {
+    return (
+      <div>
+        {header}
+        {errorBox}
+        <WhoScreen
+          ctx={ctx}
+          exclude={person.id}
+          refreshing={false}
+          onRefresh={() => undefined}
+          title="¿Quién lo hizo de verdad?"
+          onBack={() => setStep({ name: 'reason' })}
+          onPick={(st) => {
+            const np: Person = { id: st.id, name: st.name, hasPin: st.hasPin };
+            setNewPerson(np);
+            if (st.hasPin) setStep({ name: 'newpin' });
+            else confirm();
+          }}
+        />
+      </div>
+    );
+  }
+  if (step.name === 'value') {
+    return (
+      <div>
+        {header}
+        {errorBox}
+        {record.type === 'temperatura' ? (
+          <TempScreen
+            ctx={ctx}
+            equipmentId={record.data.equipmentId}
+            saving={busy}
+            serverError={null}
+            disabled={false}
+            heading="Escribe el valor correcto"
+            submitLabel={person.hasPin ? 'Siguiente' : 'Guardar corrección'}
+            backLabel="Atrás"
+            onBack={() => setStep({ name: 'reason' })}
+            onSubmit={(d) => {
+              setData(d);
+              confirm(undefined, d);
+            }}
+          />
+        ) : (
+          <section aria-labelledby="kcorr-form">
+            <BackButton onClick={() => setStep({ name: 'reason' })} label="Atrás" />
+            <h1 id="kcorr-form" className="mb-4 text-3xl font-extrabold">
+              Escribe los datos correctos
+            </h1>
+            <div className="rounded-3xl border border-line bg-surface p-4 sm:p-6">
+              <RecordForm
+                type={record.type}
+                ctx={formCtx}
+                initial={record.data as never}
+                large
+                submitLabel={person.hasPin ? 'Siguiente' : 'Guardar corrección'}
+                submitting={busy}
+                onSubmit={(d) => {
+                  setData(d);
+                  confirm(undefined, d);
+                }}
+              />
+            </div>
+          </section>
+        )}
+      </div>
+    );
+  }
+  if (step.name === 'other') {
+    return (
+      <section aria-labelledby="kcorr-other" className="mx-auto max-w-3xl">
+        {header}
+        <BackButton onClick={() => setStep({ name: 'reason' })} label="Atrás" />
+        <h1 id="kcorr-other" className="mb-3 text-3xl font-extrabold">
+          ¿Qué ha pasado?
+        </h1>
+        <label htmlFor="kcorr-text" className="text-lg font-semibold">
+          Motivo de la corrección
+        </label>
+        <input
+          id="kcorr-text"
+          value={reasonText}
+          onChange={(e) => setReasonText(e.target.value)}
+          maxLength={500}
+          className="mt-1 min-h-16 w-full rounded-2xl border-2 border-line-strong bg-surface px-4 text-lg"
+        />
+        <Button size="xl" block className="mt-5" icon="arrowRight" disabled={!reasonText.trim()} onClick={() => setStep({ name: 'value' })}>
+          Siguiente: datos correctos
+        </Button>
+      </section>
+    );
+  }
+
+  // Paso 1: motivo de un toque.
+  return (
+    <section aria-labelledby="kcorr" className="mx-auto max-w-3xl">
+      <BackButton onClick={onCancel} label="Cancelar" />
+      {header}
+      {errorBox}
+      <h1 id="kcorr" className="mb-3 text-3xl font-extrabold">
+        ¿Qué quieres corregir?
+      </h1>
+      <p className="mb-4 text-lg text-ink-muted">El registro original no se borra: se guarda una corrección con el motivo y la hora.</p>
+      <div className="grid gap-3">
+        {(['wrong_value', 'wrong_person', 'other'] as const).map((r) => (
+          <button
+            key={r}
+            type="button"
+            onClick={() => {
+              setReason(r);
+              setError(null);
+              setStep(r === 'wrong_value' ? { name: 'value' } : r === 'wrong_person' ? { name: 'person' } : { name: 'other' });
+            }}
+            className="flex min-h-20 items-center gap-4 rounded-3xl border-2 border-line-strong bg-surface px-5 text-left text-xl font-bold hover:border-ink"
+          >
+            <Icon name={r === 'wrong_value' ? 'thermometer' : r === 'wrong_person' ? 'users' : 'pencil'} size={30} className="shrink-0" />
+            {KIOSK_CORRECTION_REASON_LABELS[r]}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Salir del modo cocina o desvincular la tablet (1.10): email y contraseña de un propietario o
+ * encargado del local, comprobados en el servidor (con límite de intentos).
+ */
+function ManagerAuthScreen({
+  token,
+  action,
+  onCancel,
+  onDone,
+  onRevoked,
+}: {
+  token: string;
+  action: 'exit' | 'unpair';
+  onCancel: () => void;
+  onDone: (by: string) => void;
+  onRevoked: () => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!email.trim() || !password) return setError('Escribe el email y la contraseña de un propietario o encargado del local.');
+    setBusy(true);
+    setError(null);
+    try {
+      const r = action === 'exit' ? await kioskApi.exit(token, { email: email.trim(), password }) : await kioskApi.unpair(token, { email: email.trim(), password });
+      onDone(r.by.name);
+    } catch (err) {
+      if (isApiError(err) && err.code === 'UNAUTHENTICATED') return onRevoked();
+      setPassword('');
+      setError(
+        isApiError(err) && err.code === 'RATE_LIMITED'
+          ? `Demasiados intentos en esta tablet.${err.retryAfter ? ` Espera ${formatWait(err.retryAfter)}.` : ' Espera unos minutos.'}`
+          : errorMessage(err),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section aria-labelledby="kmgr" className="mx-auto max-w-xl">
+      <BackButton onClick={onCancel} label="Cancelar" />
+      <h1 id="kmgr" className="text-3xl font-extrabold">
+        {action === 'exit' ? 'Salir del modo cocina' : 'Desvincular esta tablet'}
+      </h1>
+      <p className="mt-2 text-lg text-ink-muted">
+        {action === 'exit'
+          ? 'Solo un propietario o encargado del local puede cerrar el modo cocina. La tablet seguirá vinculada.'
+          : 'Solo un propietario o encargado del local puede desvincularla. Dejará de funcionar hasta que se vuelva a vincular desde Ajustes → Dispositivos de cocina.'}
+      </p>
+      <form onSubmit={onSubmit} noValidate className="mt-5 space-y-4 text-lg">
+        <Field label="Email del propietario o encargado">
+          <Input type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} className="min-h-14 text-lg" maxLength={254} />
+        </Field>
+        <Field label="Contraseña">
+          <Input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} className="min-h-14 text-lg" maxLength={128} />
+        </Field>
+        {error ? (
+          <Callout tone="bad" live="assertive">
+            {error}
+          </Callout>
+        ) : null}
+        <Button type="submit" size="xl" block loading={busy} variant={action === 'unpair' ? 'danger' : 'primary'} icon="lock">
+          {action === 'exit' ? 'Salir del modo cocina' : 'Desvincular'}
+        </Button>
+      </form>
     </section>
   );
 }

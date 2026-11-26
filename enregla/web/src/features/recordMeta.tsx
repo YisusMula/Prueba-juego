@@ -1,4 +1,4 @@
-import { RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
+import { RECORD_TYPES, RECORD_TYPE_LABELS, recordCorrector, recordSignature } from '@shared/schemas';
 import type { IconName } from '@/components/icons/Icon';
 import type { AlertKind, AppRecord, RecordType } from '@/api/types';
 import { formatLocalDate, formatPercent, formatTemp } from '@/lib/format';
@@ -80,9 +80,14 @@ export function recordSummary(r: AppRecord): { title: string; detail: string } {
         title: `${r.data.product} · ${r.data.supplierName}`,
         detail: r.data.accepted
           ? [
-              'Aceptada',
+              r.alert ? 'Aceptada con alerta' : 'Aceptada',
               r.data.temperature != null ? formatTemp(r.data.temperature) : null,
-              r.data.temperatureOutOfRange && r.data.maxTemperature != null ? `por encima de ${formatTemp(r.data.maxTemperature)}` : null,
+              r.data.temperatureOutOfRange && r.data.maxTemperature != null && r.data.temperature != null && r.data.temperature > r.data.maxTemperature
+                ? `por encima de ${formatTemp(r.data.maxTemperature)}`
+                : null,
+              r.data.temperatureOutOfRange && r.data.minTemperature != null && r.data.temperature != null && r.data.temperature < r.data.minTemperature
+                ? `por debajo de ${formatTemp(r.data.minTemperature)}`
+                : null,
               r.data.expired ? 'caducada' : null,
             ]
               .filter(Boolean)
@@ -109,8 +114,16 @@ export function recordSummary(r: AppRecord): { title: string; detail: string } {
   }
 }
 
+/**
+ * Firma, igual que en el PDF y el CSV: «Ana Martín (anotado por Laura Gil)» cuando un usuario lo
+ * registró en la web para un empleado; el empleado desde la tablet; el usuario si no indicó a nadie.
+ * En una corrección, quien figura como autor del hecho (quién corrigió: `corrector`).
+ */
 export function signer(r: AppRecord): string {
-  const parts = [r.staff?.name, r.user && r.user.name !== r.staff?.name ? r.user.name : null].filter(Boolean);
-  if (parts.length === 0) return r.deviceId ? 'Tablet de cocina' : '—';
-  return parts.join(' · ');
+  return r.signature ?? recordSignature({ staffName: r.staff?.name ?? null, userName: r.user?.name ?? null, deviceId: r.deviceId, isAmendment: r.amendsRecordId != null });
+}
+
+/** Quién hizo una corrección: el usuario (web) o el empleado (tablet); nunca el firmante del original. */
+export function corrector(r: AppRecord): string {
+  return r.correctedBy ?? recordCorrector({ staffName: r.staff?.name ?? null, userName: r.user?.name ?? null });
 }

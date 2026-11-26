@@ -288,9 +288,9 @@ test('formularios: email inválido se señala en el email; PIN de más de 6 cifr
   await page.goto(`${org}/ajustes/personal`);
   await page.getByRole('button', { name: /Añadir persona/ }).first().click();
   const dlg = page.getByRole('dialog');
-  await dlg.getByLabel(/PIN/).pressSequentially('1234567');
+  await dlg.getByLabel('PIN', { exact: true }).pressSequentially('1234567');
   await expect(dlg.getByText('El PIN tiene como máximo 6 cifras.')).toBeVisible();
-  await expect(dlg.getByLabel(/PIN/)).toHaveValue('123456');
+  await expect(dlg.getByLabel('PIN', { exact: true })).toHaveValue('123456');
 
   await page.goto(`${org}/alergenos/imprimir`);
   await expect(page.getByTestId('print-legend')).toContainText('Puede contener trazas');

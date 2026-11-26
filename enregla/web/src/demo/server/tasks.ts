@@ -55,7 +55,8 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
   const equipment = db.equipment.filter((e) => e.orgId === org.id && e.active && e.checksPerDay > 0).sort((a, b) => a.createdAt - b.createdAt);
   const readings = live
     .filter((r) => r.type === 'temperatura' && r.effectiveAt >= startToday && r.effectiveAt < endToday)
-    .sort((a, b) => a.effectiveAt - b.effectiveAt);
+    // A igual fecha del hecho, por orden de inserción (en el servidor, `seq`).
+    .sort((a, b) => a.effectiveAt - b.effectiveAt || db.records.indexOf(a) - db.records.indexOf(b));
   const temperatures = equipment.map((e) => {
     const mine = readings.filter((r) => r.equipmentId === e.id);
     const last = mine[mine.length - 1];
@@ -72,6 +73,8 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
       status: done >= e.checksPerDay ? ('done' as const) : ('pending' as const),
       correctedLater,
       countsToday: stateAt(e.history, startToday)?.active === true,
+      withAlert: mine.some((r) => r.alert),
+      remeasure: last?.alert === true,
       lastReading: last ? { value: Number(last.data.value), outOfRange: last.alert, at: iso(last.effectiveAt) } : null,
     };
   });
@@ -105,12 +108,14 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
   const total = counted.reduce((a, t) => a + t.required, 0) + countedCleaning.length;
   const done = counted.reduce((a, t) => a + t.done, 0) + countedCleaning.filter((c) => c.status === 'done').length;
   const correctedLater = counted.reduce((a, t) => a + t.correctedLater, 0) + countedCleaning.filter((c) => c.correctedLater).length;
+  const doneWithAlert = counted.filter((t) => t.status === 'done' && t.withAlert).length;
+  const remeasure = temperatures.filter((t) => t.remeasure).length;
   return {
     date: today,
     timezone: tz,
     temperatures,
     cleaning,
-    summary: { total, done, pending: total - done, percent: total === 0 ? 100 : Math.round((done / total) * 100), correctedLater },
+    summary: { total, done, pending: total - done, percent: total === 0 ? 100 : Math.round((done / total) * 100), correctedLater, doneWithAlert, remeasure },
     alerts,
   };
 }

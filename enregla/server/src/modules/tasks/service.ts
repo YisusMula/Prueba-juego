@@ -141,7 +141,9 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
     .where('r.effective_at', '>=', startOf(today, tz))
     .where('r.effective_at', '<', endOf(today, tz))
     .where(NOT_SUPERSEDED)
+    // A igual fecha del hecho, por orden de inserción: «última lectura» es siempre la última anotada.
     .orderBy('r.effective_at')
+    .orderBy('r.seq')
     .execute();
 
   const temperatures = equipment.map((e) => {
@@ -165,6 +167,10 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
       correctedLater,
       /** false si el equipo se dio de alta (o se reactivó) hoy: hoy no es exigible ni cuenta en el resumen. */
       countsToday,
+      /** 1.12: alguna lectura vigente de hoy está fuera de rango («Hecho con alerta» si además está hecho). */
+      withAlert: mine.some((r) => r.alert),
+      /** 1.12: la ÚLTIMA lectura vigente de hoy está fuera de rango: hay que volver a medir (desaparece con una lectura posterior correcta). */
+      remeasure: last?.alert === true,
       lastReading: last
         ? { value: last.data.value as number, outOfRange: last.alert, at: last.effective_at.toISOString() }
         : null,
@@ -227,12 +233,16 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
   const total = counted.reduce((a, t) => a + t.required, 0) + countedCleaning.length;
   const done = counted.reduce((a, t) => a + t.done, 0) + countedCleaning.filter((c) => c.status === 'done').length;
   const correctedLater = counted.reduce((a, t) => a + t.correctedLater, 0) + countedCleaning.filter((c) => c.correctedLater).length;
+  // «Hecho con alerta» cuenta como hecho en el porcentaje (el registro se hizo); la alerta y la
+  // remedición se informan aparte para que no se confundan con «todo correcto».
+  const doneWithAlert = counted.filter((t) => t.status === 'done' && t.withAlert).length;
+  const remeasure = temperatures.filter((t) => t.remeasure).length;
   return {
     date: today,
     timezone: tz,
     temperatures,
     cleaning,
-    summary: { total, done, pending: total - done, percent: total === 0 ? 100 : Math.round((done / total) * 100), correctedLater },
+    summary: { total, done, pending: total - done, percent: total === 0 ? 100 : Math.round((done / total) * 100), correctedLater, doneWithAlert, remeasure },
     alerts,
   };
 }
@@ -294,6 +304,7 @@ async function computeAlerts(db: DB, org: Organization, today: string): Promise<
 export function pendingLabels(t: Awaited<ReturnType<typeof computeToday>>): string[] {
   return [
     ...t.temperatures.filter((x) => x.countsToday && x.status === 'pending').map((x) => `Temperatura de ${x.name} (${x.done}/${x.required})`),
+    ...t.temperatures.filter((x) => x.remeasure).map((x) => `Volver a medir: ${x.name} (la última lectura estaba fuera de rango)`),
     ...t.cleaning.filter((x) => x.countsToday && x.status === 'pending').map((x) => `Limpieza: ${x.name}`),
   ];
 }

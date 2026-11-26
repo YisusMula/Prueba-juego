@@ -201,8 +201,9 @@ describe('formularios', () => {
     await user.type(screen.getByLabelText(/Fecha de caducidad/), '2020-01-01');
     expect(screen.getByText('La fecha de caducidad ya ha pasado')).toBeInTheDocument();
     await user.type(screen.getByLabelText(/Temperatura al recibir/), '12');
-    await user.click(screen.getByRole('button', { name: /Refrigerado/ }));
-    expect(screen.getByText(/supera la máxima admisible/)).toBeInTheDocument();
+    // El tipo de producto (obligatorio) fija la máxima por defecto (refrigerado: 4 °C).
+    await user.click(screen.getByRole('radio', { name: /Refrigerado/ }));
+    expect(screen.getByText(/está fuera del límite \(máx\. 4 °C\)/)).toBeInTheDocument();
     await user.click(screen.getByText('Sí, aceptarla con motivo'));
     await user.click(screen.getByRole('button', { name: 'Guardar registro' }));
     expect(screen.getByText(/Está caducada: indica por qué la aceptas/)).toBeInTheDocument();

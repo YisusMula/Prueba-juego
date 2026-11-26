@@ -8,7 +8,6 @@ import { AppError, badRequest, rateLimited } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { audit } from '../../lib/audit.js';
 import { diffDays } from '../../lib/dates.js';
-import { keysetAfter } from '../../lib/pagination.js';
 import type { DB } from '../../db/index.js';
 import type { Organization } from '../../db/types.js';
 import { amendedBySelect } from '../records/routes.js';
@@ -55,14 +54,18 @@ export async function* iterateRecords(db: DB, org: Organization, from: string, t
       .select(amendedBySelect())
       // Cuándo y quién corrigió el registro (para «Corregido el … por …», sin ids internos).
       .select(sql<Date | null>`(SELECT a.created_at FROM records a WHERE a.amends_record_id = r.id)`.as('amended_at'))
-      .select(sql<string | null>`(SELECT coalesce(a.staff_name, a.user_name) FROM records a WHERE a.amends_record_id = r.id)`.as('amended_by_name'))
+      // Autor de la corrección: el usuario que la hizo en la web o, desde la tablet, el empleado.
+      .select(sql<string | null>`(SELECT coalesce(a.user_name, a.staff_name) FROM records a WHERE a.amends_record_id = r.id)`.as('amended_by_name'))
+      .select(sql<string | null>`(SELECT coalesce(o.staff_name, o.user_name) FROM records o WHERE o.id = r.amends_record_id)`.as('amends_signer'))
       .where('r.organization_id', '=', org.id)
       .where('r.type', 'in', types)
       .where('r.effective_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)
       .where('r.effective_at', '<', sql<Date>`(${to}::date + 1)::timestamp AT TIME ZONE ${tz}`);
-    if (cursor) q = q.where(keysetAfter({ table: 'records', alias: 'r', cursor, orgId: org.id, direction: 'asc', orderColumn: 'effective_at' }));
-    // Por fecha del hecho: cada enmienda sale junto a su original.
-    const batch = await q.orderBy('r.effective_at').orderBy('r.id').limit(BATCH).execute();
+    // Keyset por (effective_at, seq) resuelto en la base de datos (sin perder los microsegundos).
+    if (cursor) q = q.where(sql<boolean>`(r.effective_at, r.seq) > (SELECT c.effective_at, c.seq FROM records c WHERE c.id = ${cursor} AND c.organization_id = ${org.id})`);
+    // Por fecha del hecho y, a igual fecha, por orden de inserción: cada corrección sale justo
+    // después de su original (comparten la fecha del hecho), también en cadenas de correcciones.
+    const batch = await q.orderBy('r.effective_at').orderBy('r.seq').limit(BATCH).execute();
     if (batch.length > 0) yield batch;
     if (batch.length < BATCH) return;
     cursor = batch[batch.length - 1]!.id;
@@ -180,7 +183,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       const compliance = await computeCompliance(db, ctx.org, q.from, q.to, app.deps.now());
       const dayNotes = compliance.days.filter((d) => d.correctedLater > 0);
       await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'pdf', from: q.from, to: q.to, types: q.types } });
-      const job: PdfJob = { appName: config.appName, org: ctx.org, from: q.from, to: q.to, types: q.types, records, maxRows, dayNotes, maxBytes: MAX_PDF_BYTES };
+      const job: PdfJob = { appName: config.appName, org: ctx.org, from: q.from, to: q.to, types: q.types, records, maxRows, dayNotes, maxBytes: MAX_PDF_BYTES, deletionGraceDays: config.orgDeletionGraceDays };
       const t0 = performance.now();
       let pdf: Buffer;
       try {

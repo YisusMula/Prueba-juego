@@ -64,6 +64,24 @@ const COLOR = {
   border: '#cbd2d9',
 };
 
+/**
+ * Nota sobre la conservación de los registros (1.8). Describe con exactitud lo que hace la
+ * aplicación, sin prometer más: no hay forma de modificar ni borrar un registro desde ella, las
+ * correcciones son registros nuevos con autor, fecha y motivo, y eliminar el local borra sus
+ * registros pasado el plazo de conservación.
+ */
+export function pdfIntegrityNote(graceDays = 30): string {
+  return (
+    'Documento generado a partir de los registros introducidos por el establecimiento. ' +
+    'La aplicación no permite modificar ni borrar registros: cada corrección se guarda como un registro nuevo, ' +
+    'a continuación del original, con su autor, fecha y motivo. ' +
+    `Si el establecimiento elimina el local en la aplicación, sus registros se conservan ${graceDays} días (durante los que puede restaurarlo) y después se borran definitivamente; ` +
+    'su titular también puede pedir la eliminación inmediata. ' +
+    'Las filas destacadas en rojo indican valores fuera de los límites configurados por el local.'
+  );
+}
+export const PDF_INTEGRITY_NOTE = pdfIntegrityNote(30);
+
 /** Filas entre cesiones del event loop (cada fila cuesta ~1 ms de CPU). */
 const YIELD_EVERY_ROWS = 20;
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -88,6 +106,8 @@ export interface PdfInput {
   maxRows: number;
   /** Días del periodo con `correctedLater > 0` (nota por día). */
   dayNotes?: DayNote[];
+  /** Días que se conserva un local pendiente de eliminación (ORG_DELETION_GRACE_DAYS). */
+  deletionGraceDays?: number;
 }
 
 /**
@@ -158,9 +178,7 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
       .fontSize(8)
       .fillColor(COLOR.muted)
       .text(
-        pdfText(
-          'Documento generado a partir de los registros introducidos por el establecimiento. Los registros no se pueden modificar ni borrar: las correcciones figuran a continuación del registro original, con cuándo, quién y por qué se corrigió. Las filas destacadas en rojo indican valores fuera de los límites configurados por el local.',
-        ),
+        pdfText(pdfIntegrityNote(input.deletionGraceDays ?? 30)),
         { width },
       );
     doc.moveDown(0.8);

@@ -2,6 +2,7 @@ import { loadConfig, ConfigError } from './config.js';
 import { createDeps } from './deps.js';
 import { buildApp } from './app.js';
 import { runMigrations } from './db/migrate.js';
+import { recordsHardeningStatus } from './db/privileges.js';
 import { startEmailWorker, startScheduler } from './modules/reminders/scheduler.js';
 
 let config;
@@ -17,6 +18,18 @@ const app = await buildApp(deps);
 
 if (process.env.MIGRATE_ON_START !== 'false') {
   await runMigrations(deps.pool, (m) => app.log.info(m));
+}
+// 1.8: aviso si el rol con el que conecta la app puede alterar el historial de registros
+// (despliegue sin separación de roles: ver docs/OPERACIONES.md, «Roles de la base de datos»).
+try {
+  const h = await recordsHardeningStatus(deps.pool);
+  if (!h.hardened) {
+    const msg = `El rol de base de datos de la app (${h.role}) ${h.problems.join(', ')}: los registros solo están protegidos por la aplicación. Separa los roles (docs/OPERACIONES.md).`;
+    if (config.isProduction) app.log.warn(msg);
+    else app.log.info(msg);
+  }
+} catch (err) {
+  app.log.warn({ err }, 'No se pudo comprobar la separación de roles de la base de datos');
 }
 if (!config.stripe) app.log.warn('Stripe no está configurado: los endpoints de facturación responderán 503.');
 else if (config.isProduction && config.stripe.secretKey.startsWith('sk_test_')) app.log.warn('Stripe está en modo test en producción.');

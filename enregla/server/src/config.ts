@@ -15,7 +15,7 @@ const csv = z
       .filter(Boolean),
   );
 
-const WEAK_DB_PASSWORDS = new Set(['', 'postgres', 'password', 'enregla', 'changeme', 'secret', 'admin', 'root', '123456']);
+const WEAK_DB_PASSWORDS = new Set(['', 'postgres', 'password', 'enregla', 'changeme', 'secret', 'admin', 'root', '123456', 'cambia-esta-clave-larga', 'cambia-esta-otra-clave-larga', 'y-esta-tambien-distinta']);
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -144,6 +144,10 @@ export interface Config {
     inviteRecipient: RateLimitRule;
     inviteOrg: RateLimitRule;
     inviteUser: RateLimitRule;
+    /** Salir del modo cocina / desvincular la tablet con la contraseña de un responsable: intentos por dispositivo. */
+    kioskManagerAuthDevice: RateLimitRule;
+    /** Correcciones desde la tablet (por dispositivo). */
+    kioskCorrectionDevice: RateLimitRule;
   };
   pinMaxFailures: number;
   pinLockMinutes: number;
@@ -335,6 +339,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
       inviteRecipient: { limit: 3, windowSeconds: 24 * 3600 },
       inviteOrg: { limit: 20, windowSeconds: 24 * 3600 },
       inviteUser: { limit: 30, windowSeconds: 24 * 3600 },
+      kioskManagerAuthDevice: { limit: 10, windowSeconds: 15 * 60 },
+      kioskCorrectionDevice: { limit: 20, windowSeconds: 10 * 60 },
     },
     pinMaxFailures: 5,
     pinLockMinutes: 15,

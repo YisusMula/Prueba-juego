@@ -58,6 +58,8 @@ export type DSupplier = {
   email: string | null;
   products: string[];
   notes: string | null;
+  /** Categoría de producto por defecto en la recepción (servidor: suppliers.default_category). */
+  defaultCategory?: 'refrigerado' | 'congelado' | 'ambiente' | 'caliente' | null;
   createdAt: number;
 };
 export type DDish = {
@@ -119,4 +121,5 @@ export type DemoState = {
   pinFailsByDevice: Record<string, number[]>;
 };
 
-export const STATE_VERSION = 1;
+/** 2: categoría de proveedor y de recepción, firma «anotado por», correcciones desde la tablet (fase 1). */
+export const STATE_VERSION = 2;

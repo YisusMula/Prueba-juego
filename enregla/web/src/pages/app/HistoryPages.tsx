@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
+import { RECEPTION_CATEGORY_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
 import { orgApi, useRecord, useRecords, type RecordFilters } from '@/api/queries';
 import { isApiError } from '@/api/client';
 import type { AppRecord, RecordType } from '@/api/types';
@@ -12,7 +12,7 @@ import { Badge, Callout, EmptyState, ErrorState, LoadingBlock } from '@/componen
 import { Card, DetailList, PageHeader } from '@/components/ui/Layout';
 import { Field, Input, Select, Switch, Textarea } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
-import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, cleaningResult, isRecordType, recordSummary, signer } from '@/features/recordMeta';
+import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, cleaningResult, corrector, isRecordType, recordSummary, signer } from '@/features/recordMeta';
 import { RecordForm } from '@/features/RecordForms';
 import { WriteGuard } from '@/features/SubscriptionBanner';
 import { useFormContext } from './RecordPages';
@@ -212,12 +212,17 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
         { label: 'Producto', value: r.data.product },
         { label: 'Lote', value: r.data.lot ?? '—' },
         {
+          label: 'Tipo de producto',
+          value: r.data.category ? `${RECEPTION_CATEGORY_LABELS[r.data.category]}${r.data.categoryAssumed ? ' (aplicado por defecto: el registro no indicaba el tipo)' : ''}` : '—',
+        },
+        {
           label: 'Temperatura',
           value: (
             <>
               {formatTemp(r.data.temperature)}
               {r.data.maxTemperature != null ? <span className="font-normal text-ink-muted"> (máx. {formatTemp(r.data.maxTemperature)})</span> : null}
-              {r.data.temperatureOutOfRange ? <Badge tone="bad" icon="alert" className="ml-2">Por encima</Badge> : null}
+              {r.data.minTemperature != null ? <span className="font-normal text-ink-muted"> (mín. {formatTemp(r.data.minTemperature)})</span> : null}
+              {r.data.temperatureOutOfRange ? <Badge tone="bad" icon="alert" className="ml-2">Fuera del límite</Badge> : null}
             </>
           ),
         },
@@ -353,7 +358,7 @@ function RecordDetail({ recordId }: { recordId: string }) {
               </Link>
             }
           >
-            Corregido el {formatDateTime(amendedBy.createdAt, tz)} por {signer(amendedBy)}. Motivo: {amendedBy.amendmentReason}
+            Corregido el {formatDateTime(amendedBy.createdAt, tz)} por {corrector(amendedBy)}. Motivo: {amendedBy.amendmentReason}
           </Callout>
         ) : null}
         {amends ? (
@@ -367,7 +372,8 @@ function RecordDetail({ recordId }: { recordId: string }) {
               </Link>
             }
           >
-            Corregido el {formatDateTime(r.createdAt, tz)} por {signer(r)}. Motivo: {r.amendmentReason}. Valor original: {recordSummary(amends).title}.
+            Firmó: {signer(r)} · Corrigió: {corrector(r)} el {formatDateTime(r.createdAt, tz)} · Motivo: {r.amendmentReason}. Valor original: {recordSummary(amends).title}
+            {(amends.staff?.name ?? amends.user?.name) !== (r.staff?.name ?? r.user?.name) ? ` · Firmante anterior: ${amends.staff?.name ?? amends.user?.name ?? '—'}` : ''}.
           </Callout>
         ) : null}
         {mode === 'view' ? (
@@ -381,12 +387,14 @@ function RecordDetail({ recordId }: { recordId: string }) {
             <RecordDetails record={r} />
             <dl className="mt-6 grid gap-x-6 gap-y-3 border-t border-line pt-4 text-sm sm:grid-cols-3">
               <div>
-                <dt className="text-ink-muted">Firmado por (personal)</dt>
-                <dd className="font-semibold">{r.staff?.name ?? '—'}</dd>
+                <dt className="text-ink-muted">Firma</dt>
+                <dd className="font-semibold" data-testid="record-signature">{signer(r)}</dd>
               </div>
               <div>
-                <dt className="text-ink-muted">Usuario</dt>
-                <dd className="font-semibold">{r.user?.name ?? (r.deviceId ? 'Tablet de cocina' : '—')}</dd>
+                <dt className="text-ink-muted">Registrado desde</dt>
+                <dd className="font-semibold">
+                  {r.deviceId ? 'Tablet de cocina' : r.user ? `La web, con la cuenta de ${r.user.name}` : '—'}
+                </dd>
               </div>
               <div>
                 <dt className="text-ink-muted">Fecha del registro</dt>
@@ -396,7 +404,8 @@ function RecordDetail({ recordId }: { recordId: string }) {
                 <div className="sm:col-span-3">
                   <dt className="text-ink-muted">Corrección</dt>
                   <dd className="font-semibold">
-                    Corregido el {formatDateTime(r.createdAt, tz)} por {signer(r)}
+                    Corrigió: {corrector(r)} el {formatDateTime(r.createdAt, tz)}
+                    {r.deviceId && !r.user ? ' (en la tablet de cocina)' : ''}
                   </dd>
                 </div>
               ) : null}
@@ -419,6 +428,8 @@ function AmendForm({ record, close, onCancel }: { record: AppRecord; close: bool
   const [lastData, setLastData] = useState<unknown>(undefined);
   const [reason, setReason] = useState(close ? 'Incidencia resuelta' : '');
   const [reasonError, setReasonError] = useState<string | null>(null);
+  // Firmante de la versión corregida: por defecto, el del original (1.5: se puede cambiar con motivo).
+  const [staffId, setStaffId] = useState(record.staff?.id ?? '');
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<unknown>(null);
 
@@ -432,7 +443,7 @@ function AmendForm({ record, close, onCancel }: { record: AppRecord; close: bool
     setSaving(true);
     setServerError(null);
     setLastData(data);
-    const body = { reason: reason.trim(), data, staffId: record.staff?.id ?? null };
+    const body = { reason: reason.trim(), data, staffId: staffId || null };
     try {
       const amended = await orgApi(orgId).amend(record.id, body, keys.keyFor(body));
       keys.reset();
@@ -484,9 +495,35 @@ function AmendForm({ record, close, onCancel }: { record: AppRecord; close: bool
             serverError={serverError}
             submitLabel={close ? 'Cerrar incidencia' : 'Guardar corrección'}
             footer={
-              <Field label="Motivo de la corrección" error={reasonError} id="amend-reason">
-                <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} rows={2} placeholder="Ej.: se apuntó en el equipo equivocado" />
-              </Field>
+              <>
+                {!close ? (
+                  <Field
+                    label="¿Quién lo hizo?"
+                    hint={
+                      staffId !== (record.staff?.id ?? '')
+                        ? 'Vas a cambiar la persona que firma el registro: explica el motivo abajo.'
+                        : 'Si se registró con la persona equivocada, cámbiala aquí. Tú constarás como quien corrige.'
+                    }
+                  >
+                    <Select value={staffId} onChange={(e) => setStaffId(e.target.value)} name="amend-staff">
+                      <option value="">Nadie del personal (solo usuarios)</option>
+                      {record.staff && !ctx.staff.some((x) => x.id === record.staff!.id && x.active !== false) ? (
+                        <option value={record.staff.id}>{record.staff.name} (desactivado)</option>
+                      ) : null}
+                      {ctx.staff
+                        .filter((x) => x.active !== false)
+                        .map((x) => (
+                          <option key={x.id} value={x.id}>
+                            {x.name}
+                          </option>
+                        ))}
+                    </Select>
+                  </Field>
+                ) : null}
+                <Field label="Motivo de la corrección" error={reasonError} id="amend-reason">
+                  <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} rows={2} placeholder="Ej.: se apuntó en el equipo equivocado" />
+                </Field>
+              </>
             }
           />
         </WriteGuard>

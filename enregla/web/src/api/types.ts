@@ -3,10 +3,10 @@
  * se importan directamente de `@shared/schemas` (enregla/server/src/schemas) para usar
  * exactamente las mismas reglas que el servidor.
  */
-import type { AllergenId, RecordType } from '@shared/schemas';
+import type { AllergenId, ReceptionCategory, RecordType } from '@shared/schemas';
 import type { BUSINESS_TYPES, EQUIPMENT_TYPES } from '@shared/schemas';
 
-export type { AllergenId, RecordType };
+export type { AllergenId, ReceptionCategory, RecordType };
 export type BusinessType = (typeof BUSINESS_TYPES)[number];
 export type EquipmentType = (typeof EQUIPMENT_TYPES)[number];
 export type Role = 'owner' | 'manager';
@@ -115,6 +115,8 @@ export type Supplier = {
   email: string | null;
   products: string[];
   notes: string | null;
+  /** Categoría de producto que se preselecciona en la recepción. */
+  defaultCategory?: ReceptionCategory | null;
   createdAt: string;
 };
 
@@ -141,7 +143,11 @@ export type RecepcionStored = {
   product: string;
   lot: string | null;
   temperature: number | null;
+  /** Tipo de producto (registros nuevos); `categoryAssumed`: aplicado por defecto a una petición sin categoría. */
+  category?: ReceptionCategory | null;
+  categoryAssumed?: boolean;
   maxTemperature?: number | null;
+  minTemperature?: number | null;
   temperatureOutOfRange?: boolean;
   expiryDate: string | null;
   expired?: boolean;
@@ -183,6 +189,10 @@ type RecordBase = {
   staff: { id: string; name: string } | null;
   user: { id: string; name: string } | null;
   deviceId: string | null;
+  /** Firma legible: «Ana Martín (anotado por Laura Gil)» si un usuario lo anotó para un empleado. */
+  signature?: string;
+  /** En una corrección: quién la hizo (usuario en la web, empleado en la tablet). */
+  correctedBy?: string | null;
   alert: boolean;
   amendsRecordId: string | null;
   amendmentReason: string | null;
@@ -250,6 +260,10 @@ export type TodayTasks = {
     countsToday: boolean;
     /** Lecturas hechas que solo cuentan por una corrección registrada en un día posterior. */
     correctedLater?: number;
+    /** Alguna lectura vigente de hoy está fuera de rango («Hecho con alerta» si además está hecho). */
+    withAlert?: boolean;
+    /** La última lectura de hoy está fuera de rango: hay que volver a medir. */
+    remeasure?: boolean;
     lastReading: { value: number; outOfRange: boolean; at: string } | null;
   }[];
   cleaning: {
@@ -264,7 +278,7 @@ export type TodayTasks = {
     /** Última limpieza PARCIAL del periodo (no cuenta como hecha). */
     partial?: { done: number; total: number; at: string; recordId: string } | null;
   }[];
-  summary: { total: number; done: number; pending: number; percent: number; correctedLater?: number };
+  summary: { total: number; done: number; pending: number; percent: number; correctedLater?: number; doneWithAlert?: number; remeasure?: number };
   alerts: { kind: AlertKind; recordId: string; message: string; createdAt: string }[];
 };
 
@@ -291,5 +305,5 @@ export type KioskContext = {
   staff: { id: string; name: string; hasPin: boolean }[];
   equipment: { id: string; name: string; type: EquipmentType; minTemp: number | null; maxTemp: number | null; checksPerDay: number }[];
   cleaningPlans: { id: string; name: string; frequency: Frequency; weekday: number | null; monthDay: number | null; items: CleaningItem[] }[];
-  suppliers: { id: string; name: string; products: string[] }[];
+  suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null }[];
 };

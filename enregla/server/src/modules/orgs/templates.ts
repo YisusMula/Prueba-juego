@@ -7,7 +7,7 @@
  * en menos de 24 h: ≤ 8 °C), congelación ≤ −18 °C, mantenimiento en caliente ≥ 63 °C.
  * Los límites pueden ser solo máximo, solo mínimo o ambos.
  */
-import type { BUSINESS_TYPES, EQUIPMENT_TYPES } from '../../schemas/index.js';
+import { REFERENCE_TEMPS, type BUSINESS_TYPES, type EQUIPMENT_TYPES } from '../../schemas/index.js';
 
 type BusinessType = (typeof BUSINESS_TYPES)[number];
 type EquipmentType = (typeof EQUIPMENT_TYPES)[number];
@@ -28,9 +28,9 @@ export interface CleaningPlanTemplate {
   items: { area: string; product: string | null; method: string | null }[];
 }
 
-const fridge = (name: string, type: EquipmentType = 'camara', checksPerDay = 2): EquipmentTemplate => ({ name, type, minTemp: null, maxTemp: 4, checksPerDay });
-const freezer = (name: string, checksPerDay = 1): EquipmentTemplate => ({ name, type: 'congelador', minTemp: null, maxTemp: -18, checksPerDay });
-const hot = (name: string, checksPerDay = 3): EquipmentTemplate => ({ name, type: 'mesa_caliente', minTemp: 63, maxTemp: null, checksPerDay });
+const fridge = (name: string, type: EquipmentType = 'camara', checksPerDay = 2): EquipmentTemplate => ({ name, type, minTemp: null, maxTemp: REFERENCE_TEMPS.chilledMax, checksPerDay });
+const freezer = (name: string, checksPerDay = 1): EquipmentTemplate => ({ name, type: 'congelador', minTemp: null, maxTemp: REFERENCE_TEMPS.frozenMax, checksPerDay });
+const hot = (name: string, checksPerDay = 3): EquipmentTemplate => ({ name, type: 'mesa_caliente', minTemp: REFERENCE_TEMPS.hotMin, maxTemp: null, checksPerDay });
 const fryer = (name: string): EquipmentTemplate => ({ name, type: 'freidora', minTemp: null, maxTemp: null, checksPerDay: 0 });
 
 const DAILY_KITCHEN: CleaningPlanTemplate = {

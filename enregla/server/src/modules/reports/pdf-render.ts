@@ -21,6 +21,8 @@ export interface PdfJob {
   maxRows: number;
   dayNotes: DayNote[];
   maxBytes: number;
+  /** Días que se conserva un local pendiente de eliminación (para la nota del PDF). */
+  deletionGraceDays?: number;
 }
 
 export type PdfWorkerReply = { ok: true; pdf: Uint8Array } | { ok: false; tooLarge: boolean; message: string };
@@ -55,6 +57,7 @@ export function renderPdfInProcess(job: PdfJob, signal?: AbortSignal): Promise<B
         records: (type) => once(job.records[type] ?? []),
         maxRows: job.maxRows,
         dayNotes: job.dayNotes,
+        deletionGraceDays: job.deletionGraceDays,
       },
       () => undefined,
     );

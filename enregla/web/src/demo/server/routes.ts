@@ -123,16 +123,22 @@ function parseReportQuery(query: URLSearchParams) {
   return q;
 }
 
-/** Registros del periodo y tipos, por fecha del hecho (cada enmienda junto a su original). */
+/** Orden de inserción (en el servidor, la columna `seq`): el array de registros se rellena en ese orden. */
+function insertionOrder(db: DemoState, r: DRecord): number {
+  return db.records.indexOf(r);
+}
+
+/** Registros del periodo y tipos, por fecha del hecho (cada enmienda justo después de su original). */
 export function reportRecords(db: DemoState, org: DOrg, from: string, to: string, types: RecordType[]): ReportRecord[] {
   const tz = org.timezone;
   const a = dayStart(from, tz);
   const b = dayStart(addDays(to, 1), tz);
   return db.records
     .filter((r) => r.orgId === org.id && types.includes(r.type) && r.effectiveAt >= a && r.effectiveAt < b)
-    .sort((x, y) => x.effectiveAt - y.effectiveAt || x.id.localeCompare(y.id))
+    .sort((x, y) => x.effectiveAt - y.effectiveAt || insertionOrder(db, x) - insertionOrder(db, y))
     .map((r) => {
       const amendment = db.records.find((x) => x.amendsRecordId === r.id);
+      const previous = r.amendsRecordId ? db.records.find((x) => x.id === r.amendsRecordId) : undefined;
       return {
         id: r.id,
         organization_id: r.orgId,
@@ -152,7 +158,9 @@ export function reportRecords(db: DemoState, org: DOrg, from: string, to: string
         effective_at: new Date(r.effectiveAt),
         amended_by: amendment?.id ?? null,
         amended_at: amendment ? new Date(amendment.createdAt) : null,
-        amended_by_name: amendment ? (amendment.staffName ?? amendment.userName) : null,
+        // Autor de la corrección: el usuario (web) o, desde la tablet, el empleado.
+        amended_by_name: amendment ? (amendment.userName ?? amendment.staffName) : null,
+        amends_signer: previous ? (previous.staffName ?? previous.userName) : null,
       };
     });
 }
@@ -720,7 +728,7 @@ route('GET', `${ORG}/suppliers/:supplierId`, (db, req) => {
 route('POST', `${ORG}/suppliers`, (db, req) => {
   const c = requireWritable(orgCtx(db, req));
   const b = parse(S.supplierBody, req.body);
-  const s = { id: uuid(), orgId: c.org.id, name: b.name, contactName: b.contactName, phone: b.phone, email: b.email, products: b.products, notes: b.notes, createdAt: Date.now() };
+  const s = { id: uuid(), orgId: c.org.id, name: b.name, contactName: b.contactName, phone: b.phone, email: b.email, products: b.products, notes: b.notes, defaultCategory: b.defaultCategory, createdAt: Date.now() };
   db.suppliers.push(s);
   return ok({ supplier: supplierView(s) }, 201);
 });
@@ -759,7 +767,8 @@ route('GET', `${ORG}/records`, (db, req) => {
         r.effectiveAt >= from &&
         r.effectiveAt < to,
     )
-    .sort((a, b) => b.effectiveAt - a.effectiveAt || (a.id < b.id ? 1 : -1));
+    // Más reciente primero y, a igual fecha del hecho, por orden de inserción (original → corrección), como el servidor.
+    .sort((a, b) => b.effectiveAt - a.effectiveAt || insertionOrder(db, a) - insertionOrder(db, b));
   return ok(paginate(list, req.query, (r) => recordView(db, r), S.listRecordsQuery.shape));
 });
 route('GET', `${ORG}/records/:recordId`, (db, req) => {
@@ -783,7 +792,7 @@ route('POST', `${ORG}/records/:recordId/amendments`, (db, req) => {
   const id = idParam(req.params.recordId, 'Registro');
   const b = parse(S.amendmentBody, req.body);
   return withIdempotency(db, req, c.org.id, `amendment:${id}`, b, () =>
-    createRecord(db, c.org, { userId: c.user.id, userName: c.user.name, staffId: b.staffId ?? null, deviceId: null }, null, b.data, { originalId: id, reason: b.reason }),
+    createRecord(db, c.org, { userId: c.user.id, userName: c.user.name, staffId: b.staffId, deviceId: null }, null, b.data, { originalId: id, reason: b.reason }),
   );
 });
 
@@ -940,7 +949,7 @@ route('GET', '/api/kiosk/context', (db, req) => {
     suppliers: db.suppliers
       .filter((s) => s.orgId === org.id)
       .sort(byName)
-      .map((s) => ({ id: s.id, name: s.name, products: s.products })),
+      .map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.defaultCategory ?? null })),
   });
 });
 route('GET', '/api/kiosk/tasks/today', (db, req) => ok(computeToday(db, deviceCtx(db, req).org)));
@@ -967,6 +976,73 @@ route('POST', '/api/kiosk/records', (db, req) => {
   return withIdempotency(db, req, ctx.org.id, 'kiosk', payload, () =>
     createRecord(db, ctx.org, { userId: null, userName: null, staffId: staff.id, deviceId: ctx.device.id }, b.type, b.data),
   );
+});
+
+route('POST', '/api/kiosk/records/:recordId/amendments', (db, req) => {
+  const ctx = deviceCtx(db, req);
+  if (!isWritable(ctx.org)) throw readOnly();
+  const b = parse(S.kioskAmendmentBody, req.body);
+  const original = db.records.find((r) => r.id === req.params.recordId && r.orgId === ctx.org.id);
+  if (!original) throw notFound('Registro');
+  const notAllowed = (msg: string) => new DemoError(403, 'CORRECTION_NOT_ALLOWED', msg);
+  if (original.deviceId !== ctx.device.id || original.userId != null) throw notAllowed('Solo se puede corregir desde la tablet en la que se hizo el registro. Pide a un encargado que lo corrija desde la web.');
+  if (original.amendsRecordId != null) throw notAllowed('Esta corrección ya no se puede cambiar desde la tablet. Pide a un encargado que la corrija desde la web.');
+  if (original.staffId !== b.staffId) throw notAllowed('Solo puede corregirlo la persona que hizo el registro.');
+  if (Date.now() - original.createdAt > (S.KIOSK_CORRECTION_MINUTES * 60 + S.KIOSK_CORRECTION_GRACE_SECONDS) * 1000) {
+    throw notAllowed(`Solo se puede corregir en la tablet durante los ${S.KIOSK_CORRECTION_MINUTES} minutos siguientes a guardarlo. Pide a un encargado que lo corrija desde la web.`);
+  }
+  if (db.records.some((r) => r.amendsRecordId === original.id)) throw conflict('Este registro ya tiene una corrección.');
+  // Con «Me equivoqué de persona» hay dos PIN: los errores del segundo se marcan con `newStaffPin` (como el servidor).
+  const checkPin = (staffId: string, pin: string | null | undefined, own: boolean) => {
+    const st = kioskStaff(db, ctx.org, staffId);
+    const path = own ? 'pin' : 'newStaffPin';
+    if (st.pin) {
+      if (!pin) {
+        const msg = own ? 'Introduce tu PIN' : `Introduce el PIN de ${st.name}`;
+        throw new DemoError(401, 'PIN_REQUIRED', msg, [{ path, message: msg }]);
+      }
+      try {
+        verifyPin(db, ctx, st.id, pin);
+      } catch (err) {
+        if (err instanceof DemoError && err.code === 'INVALID_PIN') throw new DemoError(401, 'INVALID_PIN', err.message, [{ path, message: err.message }]);
+        throw err;
+      }
+    }
+  };
+  checkPin(b.staffId, b.pin, true);
+  const signerId = b.reason === 'wrong_person' ? b.newStaffId! : b.staffId;
+  if (b.reason === 'wrong_person') checkPin(signerId, b.newStaffPin, false);
+  const { pin: _p, newStaffPin: _np, ...payload } = b;
+  return withIdempotency(db, req, ctx.org.id, `kiosk-amendment:${original.id}`, payload, () =>
+    createRecord(db, ctx.org, { userId: null, userName: null, staffId: signerId, deviceId: ctx.device.id }, null, b.data === undefined ? original.data : b.data, {
+      originalId: original.id,
+      reason: S.kioskAmendmentReason(b, original.staffName),
+    }),
+  );
+});
+
+/** Salir / desvincular: email y contraseña de un propietario o encargado del local (como el servidor). */
+function kioskManagerAuth(db: DemoState, req: DemoRequest) {
+  const ctx = deviceCtx(db, req);
+  const b = parse(S.kioskManagerAuthBody, req.body);
+  const user = db.users.find((u) => u.email === b.email.toLowerCase());
+  const member = user ? db.memberships.find((m) => m.userId === user.id && m.orgId === ctx.org.id) : undefined;
+  if (!user || !member || user.password !== b.password) {
+    audit(db, ctx.org.id, 'device.kiosk_auth_failed', user?.id ?? null, { deviceId: ctx.device.id, deviceName: ctx.device.name });
+    throw new DemoError(401, 'INVALID_CREDENTIALS', 'Email o contraseña incorrectos, o esa cuenta no es propietaria ni encargada de este local.');
+  }
+  return { ctx, user };
+}
+route('POST', '/api/kiosk/exit', (db, req) => {
+  const { ctx, user } = kioskManagerAuth(db, req);
+  audit(db, ctx.org.id, 'device.kiosk_exit', user.id, { deviceId: ctx.device.id, deviceName: ctx.device.name });
+  return ok({ ok: true, by: { name: user.name } });
+});
+route('POST', '/api/kiosk/unpair', (db, req) => {
+  const { ctx, user } = kioskManagerAuth(db, req);
+  ctx.device.revokedAt = Date.now();
+  audit(db, ctx.org.id, 'device.revoked', user.id, { deviceId: ctx.device.id, name: ctx.device.name, fromKiosk: true });
+  return ok({ ok: true, by: { name: user.name } });
 });
 
 // ---------------------------------------------------------------------------

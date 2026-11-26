@@ -1,14 +1,18 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
   POLAR_COMPOUNDS_LIMIT,
-  RECEPTION_MAX_TEMP_PRESETS,
+  RECEPTION_CATEGORIES,
+  RECEPTION_CATEGORY_LABELS,
+  RECEPTION_CATEGORY_LIMITS,
   RECEPTION_TEMP_MAX,
   RECEPTION_TEMP_MESSAGE,
   RECEPTION_TEMP_MIN,
   TEMP_MAX,
   TEMP_MIN,
   TEMP_RANGE_MESSAGE,
-  receptionOverTemperature,
+  receptionLimits,
+  receptionOutOfLimits,
+  type ReceptionCategory,
   aceiteData,
   formacionData,
   incidenciaData,
@@ -20,6 +24,7 @@ import {
 } from '@shared/schemas';
 import type { z } from 'zod';
 import type { CleaningItem, Frequency, RecordDataMap, RecordType, EquipmentType } from '@/api/types';
+import { TemperatureInput } from '@/components/ui/TemperatureInput';
 import { ApiError, errorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { Callout } from '@/components/ui/Feedback';
@@ -33,7 +38,7 @@ import { formatLocalDate, formatRange, formatTemp, frequencyLabel, isOutOfRange,
 export type FormContext = {
   equipment: { id: string; name: string; type: EquipmentType; minTemp: number | null; maxTemp: number | null; active?: boolean }[];
   cleaningPlans: { id: string; name: string; frequency: Frequency; weekday: number | null; monthDay: number | null; items: CleaningItem[]; active?: boolean }[];
-  suppliers: { id: string; name: string; products: string[] }[];
+  suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null }[];
   staff: { id: string; name: string; active?: boolean }[];
   timezone: string;
 };
@@ -71,6 +76,8 @@ export const TEMP_ACTIONS = [
 /** Motivos coherentes con ACEPTAR mercancía caducada o caliente (devolver o desechar solo tiene sentido al rechazarla). */
 export const ACCEPT_EXPIRED_ACTIONS = ['Error en la etiqueta: confirmado con el proveedor', 'Fecha revisada: producto en buen estado', 'Se consume hoy bajo control del responsable'];
 export const ACCEPT_HOT_ACTIONS = ['Se usa de inmediato', 'Pasada a cámara al momento', 'Avisado el proveedor'];
+/** Producto que debía llegar caliente (≥ 63 °C) y llega por debajo. */
+export const ACCEPT_COLD_HOT_FOOD_ACTIONS = ['Regenerado a más de 70 °C antes de servir', 'Se mantiene en caliente y se vuelve a medir', 'Avisado el proveedor'];
 export const REJECT_REASONS = ['Se devuelve al proveedor', 'Se desecha'];
 export const OIL_ACTIONS = ['Aceite cambiado', 'Aceite filtrado', 'Freidora parada hasta el cambio'];
 
@@ -134,7 +141,19 @@ function FormShell({ onSubmit, children, footer, submitting, submitLabel, large,
   );
 }
 
-/** Sugerencias rápidas de acción correctora (un toque) + texto libre. */
+/** Acciones separadas por «; » (varias acciones rápidas + texto libre en un solo campo). */
+export const splitActions = (v: string) =>
+  v
+    .split(/\s*;\s*/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+/** Marca o desmarca una acción rápida sin tocar el resto del texto. */
+export function toggleAction(value: string, action: string): string {
+  const parts = splitActions(value);
+  return (parts.includes(action) ? parts.filter((x) => x !== action) : [...parts, action]).join('; ');
+}
+
+/** Sugerencias rápidas de acción correctora (se pueden marcar varias) + texto libre. */
 export function CorrectiveAction({
   value,
   onChange,
@@ -152,38 +171,42 @@ export function CorrectiveAction({
 }) {
   return (
     <div className="space-y-2 rounded-2xl border-2 border-bad/40 bg-bad-soft/60 p-4">
-      <Field label={label} error={error} hint="Toca una opción o escríbela tú.">
-        <Suggestions value={value} onChange={onChange} suggestions={suggestions} large={large} />
+      <Field label={label} error={error} hint="Toca una o varias opciones, o escríbelo tú.">
+        <Suggestions value={value} onChange={onChange} suggestions={suggestions} large={large} multiple />
         <Textarea value={value} onChange={(e) => onChange(e.target.value)} maxLength={1000} rows={2} placeholder="Describe la acción tomada" />
       </Field>
     </div>
   );
 }
 
-function Suggestions({ value, onChange, suggestions, large }: { value: string; onChange: (v: string) => void; suggestions: string[]; large?: boolean }) {
+function Suggestions({ value, onChange, suggestions, large, multiple }: { value: string; onChange: (v: string) => void; suggestions: string[]; large?: boolean; multiple?: boolean }) {
   const field = useField();
+  const parts = multiple ? splitActions(value) : [value];
   return (
-        <div className="flex flex-wrap gap-2 pb-1">
-          {suggestions.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => {
-                onChange(s);
-                field?.onEdit?.();
-              }}
-              aria-pressed={value === s}
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-full border-2 px-4 font-semibold transition-colors',
-                large ? 'min-h-14 text-lg' : 'min-h-11',
-                value === s ? 'border-ink bg-ink text-paper' : 'border-line-strong bg-surface hover:border-ink',
-              )}
-            >
-              {value === s ? <Icon name="check" size={16} strokeWidth={3} /> : null}
-              {s}
-            </button>
-          ))}
-        </div>
+    <div className="flex flex-wrap gap-2 pb-1">
+      {suggestions.map((s) => {
+        const on = parts.includes(s);
+        return (
+          <button
+            key={s}
+            type="button"
+            onClick={() => {
+              onChange(multiple ? toggleAction(value, s) : s);
+              field?.onEdit?.();
+            }}
+            aria-pressed={on}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border-2 px-4 text-left font-semibold transition-colors',
+              large ? 'min-h-14 text-lg' : 'min-h-11',
+              on ? 'border-ink bg-ink text-paper' : 'border-line-strong bg-surface hover:border-ink',
+            )}
+          >
+            {on ? <Icon name="check" size={16} strokeWidth={3} /> : null}
+            {s}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -249,19 +272,15 @@ export function TemperaturaForm(p: Props<'temperatura'>) {
       </fieldset>
 
       <Field label="Temperatura (°C)" live={!!liveError} error={liveError || errors.value || server.value} hint={eq ? `Rango correcto: ${formatRange(eq.minTemp, eq.maxTemp)}` : undefined}>
-        <div className="relative max-w-60">
-          <Input
-            inputMode="decimal"
-            autoComplete="off"
-            value={value}
-            onChange={(e) => setValue(e.target.value.replace('.', ',').replace('-', '−'))}
-            placeholder="Ej.: 3,5"
-            maxLength={7}
-            className={cn('pr-14 font-display text-3xl font-bold tabular', large(p) && 'min-h-16')}
-            name="value"
-          />
-          <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-lg text-ink-muted">°C</span>
-        </div>
+        <TemperatureInput
+          value={value}
+          onChange={setValue}
+          placeholder="Ej.: 3,5"
+          name="value"
+          large
+          className="max-w-72"
+          inputClassName={cn('min-h-16 font-display text-3xl font-bold tabular')}
+        />
       </Field>
 
       {eq && valid ? (
@@ -281,8 +300,6 @@ export function TemperaturaForm(p: Props<'temperatura'>) {
     </FormShell>
   );
 }
-
-const large = (p: { large?: boolean }) => !!p.large;
 
 // ---------------------------------------------------------------------------
 // Limpieza
@@ -406,7 +423,9 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   const [product, setProduct] = useState(i?.product ?? '');
   const [lot, setLot] = useState(i?.lot ?? '');
   const [temperature, setTemperature] = useState(numText(i?.temperature));
-  const [maxTemp, setMaxTemp] = useState(numText(i?.maxTemperature));
+  // Tipo de producto (obligatorio en la interfaz): fija el límite por defecto, que se puede editar.
+  const [category, setCategory] = useState<ReceptionCategory | null>(i ? (i.category ?? null) : (p.ctx.suppliers.find((x) => x.id === supplierId)?.defaultCategory ?? null));
+  const [limit, setLimit] = useState(numText(i ? (i.category === 'caliente' ? i.minTemperature : i.maxTemperature) : null));
   const [expiry, setExpiry] = useState(i?.expiryDate ?? '');
   const [accepted, setAccepted] = useState<'si' | 'no' | null>(i ? (i.accepted ? 'si' : 'no') : null);
   const [reason, setReason] = useState(i?.rejectionReason ?? '');
@@ -416,27 +435,39 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   const supplier = p.ctx.suppliers.find((s) => s.id === supplierId);
   const listId = 'products-list';
 
+  const chooseCategory = (c: ReceptionCategory) => {
+    setCategory(c);
+    const def = RECEPTION_CATEGORY_LIMITS[c];
+    setLimit(numText(c === 'caliente' ? def.min : def.max));
+  };
+  const limitKind: 'max' | 'min' | null = category === 'caliente' ? 'min' : category === 'ambiente' || category == null ? null : 'max';
+  // Si se ha borrado el límite de una categoría que lo tiene, se usa el de la categoría (como el servidor).
+  const lText = limitKind ? limit : '';
   const t = temperature.trim() ? parseDecimal(temperature) : null;
-  const mt = maxTemp.trim() ? parseDecimal(maxTemp) : null;
+  const l = lText.trim() ? parseDecimal(lText) : null;
   const tError = temperature.trim() && (t == null || !physicallyValidTemp(t, RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX)) ? RECEPTION_TEMP_MESSAGE : null;
-  const mtError = maxTemp.trim() && (mt == null || !physicallyValidTemp(mt, RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX)) ? RECEPTION_TEMP_MESSAGE : null;
-  const overTemp = !tError && !mtError && receptionOverTemperature({ temperature: t, maxTemperature: mt });
+  const lError = lText.trim() && (l == null || !physicallyValidTemp(l, RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX)) ? RECEPTION_TEMP_MESSAGE : null;
+  const input = { category, temperature: t, maxTemperature: limitKind === 'max' ? l : null, minTemperature: limitKind === 'min' ? l : null };
+  const limits = category ? receptionLimits(input) : null;
+  const outOfLimits = !tError && !lError && limits != null && receptionOutOfLimits(input, limits);
   const expired = !!expiry && expiry < today;
-  const issue = overTemp || expired;
+  const issue = outOfLimits || expired;
   const needsReason = accepted === 'si' && issue;
+  const limitLabel = limits?.max != null ? `máx. ${formatTemp(limits.max)}` : limits?.min != null ? `mín. ${formatTemp(limits.min)}` : '';
 
   return (
     <FormShell
       {...p}
       danger={accepted === 'no' || needsReason}
-      disabled={!!tError || !!mtError}
+      disabled={!!tError || !!lError}
       onSubmit={(e) => {
         e.preventDefault();
-        if (tError || mtError) return;
+        if (tError || lError) return;
         const extra: Record<string, string> = {};
+        if (!category) extra.category = 'Elige el tipo de producto: fija la temperatura límite';
         if (accepted == null) extra.accepted = expired ? 'La mercancía está caducada: decide si la rechazas o la aceptas con un motivo' : 'Indica si aceptas o rechazas la mercancía';
         if (needsReason && !corrective.trim()) {
-          extra.correctiveAction = expired ? 'Está caducada: indica por qué la aceptas o recházala' : 'Supera la temperatura máxima: indica qué has hecho o por qué la aceptas';
+          extra.correctiveAction = expired ? 'Está caducada: indica por qué la aceptas o recházala' : 'Está fuera del límite de temperatura: indica qué has hecho o por qué la aceptas';
         }
         submit(
           {
@@ -445,7 +476,9 @@ export function RecepcionForm(p: Props<'recepcion'>) {
             product: product.trim(),
             lot: lot.trim() || null,
             temperature: t,
-            maxTemperature: mt,
+            category,
+            maxTemperature: input.maxTemperature,
+            minTemperature: input.minTemperature,
             expiryDate: expiry || null,
             accepted: accepted === 'si',
             rejectionReason: reason.trim() || null,
@@ -456,7 +489,15 @@ export function RecepcionForm(p: Props<'recepcion'>) {
       }}
     >
       <Field label="Proveedor" error={errors.supplierName || server.supplierId || server.supplierName}>
-        <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+        <Select
+          value={supplierId}
+          onChange={(e) => {
+            setSupplierId(e.target.value);
+            // La categoría habitual del proveedor se preselecciona (se puede cambiar).
+            const def = p.ctx.suppliers.find((x) => x.id === e.target.value)?.defaultCategory;
+            if (def) chooseCategory(def);
+          }}
+        >
           <option value="">Elige un proveedor…</option>
           {p.ctx.suppliers.map((s) => (
             <option key={s.id} value={s.id}>
@@ -485,37 +526,43 @@ export function RecepcionForm(p: Props<'recepcion'>) {
         <Field label="Lote" optional error={errors.lot}>
           <Input value={lot} onChange={(e) => setLot(e.target.value)} maxLength={100} />
         </Field>
+      </div>
+      <ChoiceGroup
+        legend="Tipo de producto"
+        value={category}
+        onChange={(v) => chooseCategory(v)}
+        error={errors.category || server.category}
+        columns={2}
+        size={p.large ? 'xl' : 'md'}
+        options={RECEPTION_CATEGORIES.map((c) => {
+          const d = RECEPTION_CATEGORY_LIMITS[c];
+          return {
+            value: c,
+            label: RECEPTION_CATEGORY_LABELS[c],
+            description: d.max != null ? `Hasta ${formatTemp(d.max)}` : d.min != null ? `Desde ${formatTemp(d.min)}` : 'Sin límite de temperatura',
+          };
+        })}
+      />
+      <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Temperatura al recibir (°C)" optional live={!!tError} error={tError || errors.temperature || server.temperature}>
-          <Input inputMode="decimal" value={temperature} onChange={(e) => setTemperature(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="Ej.: 2,5" maxLength={7} />
+          <TemperatureInput value={temperature} onChange={setTemperature} placeholder="Ej.: 2,5" large={p.large} />
         </Field>
+        {limitKind ? (
+          <Field
+            label={limitKind === 'min' ? 'Temperatura mínima admisible (°C)' : 'Temperatura máxima admisible (°C)'}
+            hint="Valor orientativo de la categoría: cámbialo si tu plan dice otro."
+            live={!!lError}
+            error={lError || errors.maxTemperature || errors.minTemperature || server.maxTemperature || server.minTemperature}
+          >
+            <TemperatureInput value={limit} onChange={setLimit} placeholder={numText(limitKind === 'min' ? RECEPTION_CATEGORY_LIMITS.caliente.min : RECEPTION_CATEGORY_LIMITS[category!].max)} large={p.large} />
+          </Field>
+        ) : null}
         <Field label="Fecha de caducidad" optional error={errors.expiryDate || server.expiryDate}>
           <Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
         </Field>
       </div>
-      <Field
-        label="Temperatura máxima admisible (°C)"
-        optional
-        live={!!mtError}
-        hint="Para avisar si el producto llega demasiado caliente. Valores orientativos."
-        error={mtError || errors.maxTemperature || server.maxTemperature}
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <Input inputMode="decimal" value={maxTemp} onChange={(e) => setMaxTemp(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="—" className="max-w-32" maxLength={7} />
-          {RECEPTION_MAX_TEMP_PRESETS.map((pr) => (
-            <button
-              key={pr.label}
-              type="button"
-              aria-pressed={mt === pr.value}
-              onClick={() => setMaxTemp(numText(pr.value))}
-              className={cn('min-h-11 rounded-full border-2 px-4 font-semibold', mt === pr.value ? 'border-ink bg-ink text-paper' : 'border-line-strong bg-surface hover:border-ink')}
-            >
-              {pr.label} ({formatTemp(pr.value)})
-            </button>
-          ))}
-        </div>
-      </Field>
-      {overTemp ? (
-        <Callout tone="bad" title={`${formatTemp(t!)} supera la máxima admisible (${formatTemp(mt!)})`} live="polite">
+      {outOfLimits ? (
+        <Callout tone="bad" title={`${formatTemp(t!)} está fuera del límite (${limitLabel})`} live="polite">
           Lo normal es rechazarla. Si la aceptas, quedará como alerta y tendrás que indicar qué has hecho.
         </Callout>
       ) : null}
@@ -546,7 +593,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
           label={expired ? '¿Por qué la aceptas?' : '¿Qué has hecho?'}
           value={corrective}
           onChange={setCorrective}
-          suggestions={expired ? ACCEPT_EXPIRED_ACTIONS : ACCEPT_HOT_ACTIONS}
+          suggestions={expired ? ACCEPT_EXPIRED_ACTIONS : category === 'caliente' ? ACCEPT_COLD_HOT_FOOD_ACTIONS : ACCEPT_HOT_ACTIONS}
           error={errors.correctiveAction || server.correctiveAction}
           large={p.large}
         />

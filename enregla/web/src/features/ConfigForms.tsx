@@ -10,15 +10,20 @@ import {
   TEMP_MAX,
   TEMP_MIN,
   TEMP_RANGE_MESSAGE,
+  RECEPTION_CATEGORIES,
+  RECEPTION_CATEGORY_LABELS,
+  RECEPTION_CATEGORY_LIMITS,
+  type ReceptionCategory,
 } from '@shared/schemas';
 import { api, isApiError, errorMessage } from '@/api/client';
 import type { CleaningPlan, Equipment, EquipmentType, Frequency, Staff, Supplier } from '@/api/types';
 import { Button } from '@/components/ui/Button';
 import { Callout } from '@/components/ui/Feedback';
 import { Dialog } from '@/components/ui/Overlay';
-import { Field, Input, PinInput, Select, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
+import { Checkbox, Field, Input, PinInput, Select, Switch, Textarea, detailsToFieldErrors, zodToFieldErrors } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
-import { WEEKDAYS, numberFieldError, parseDecimal } from '@/lib/format';
+import { TemperatureInput } from '@/components/ui/TemperatureInput';
+import { WEEKDAYS, formatTemp, numberFieldError, parseDecimal } from '@/lib/format';
 
 type DialogFormProps<T> = { orgId: string; open: boolean; onClose: () => void; initial?: T | null; onSaved: (item: T) => void };
 
@@ -109,10 +114,10 @@ export function EquipmentDialog({ orgId, open, onClose, initial, onSaved }: Dial
           <p className="mb-2 text-sm text-ink-muted">Opcionales, entre −60 y 300 °C. Valores orientativos: frío máx. 4 °C, congelación máx. −18 °C, caliente mín. 63 °C. Ajústalos a tu plan.</p>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Mínima" optional live={!!minError} error={minError || s.errors.minTemp}>
-              <Input inputMode="decimal" value={minTemp} onChange={(e) => setMin(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="—" maxLength={7} />
+              <TemperatureInput value={minTemp} onChange={setMin} placeholder="—" />
             </Field>
             <Field label="Máxima" optional live={!!maxError} error={maxError || s.errors.maxTemp}>
-              <Input inputMode="decimal" value={maxTemp} onChange={(e) => setMax(e.target.value.replace('.', ',').replace('-', '−'))} placeholder="—" maxLength={7} />
+              <TemperatureInput value={maxTemp} onChange={setMax} placeholder="—" />
             </Field>
           </div>
         </fieldset>
@@ -147,12 +152,15 @@ export function StaffDialog({ orgId, open, onClose, initial, onSaved }: DialogFo
   const [name, setName] = useState(initial?.name ?? '');
   const [pinMode, setPinMode] = useState<'keep' | 'set' | 'remove'>(initial ? 'keep' : 'set');
   const [pin, setPin] = useState('');
+  // Alta: PIN propuesto por defecto (1.4). Sin PIN, cualquiera puede firmar con ese nombre en la tablet.
+  const [usePin, setUsePin] = useState(true);
   const [active, setActive] = useState(initial?.active ?? true);
   const s = useSave();
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const pinValue = pinMode === 'set' ? (pin.trim() ? pin.trim() : null) : pinMode === 'remove' ? null : undefined;
+    if (!initial && usePin && !pin.trim()) return s.setErrors({ pin: 'Escribe un PIN de 4 a 6 cifras o desmarca «Proteger con PIN»' });
+    const pinValue = !initial && !usePin ? null : pinMode === 'set' ? (pin.trim() ? pin.trim() : null) : pinMode === 'remove' ? null : undefined;
     const body: Record<string, unknown> = { name: name.trim() };
     if (pinValue !== undefined && !(initial == null && pinValue === null)) body.pin = pinValue;
     if (initial) body.active = active;
@@ -180,8 +188,21 @@ export function StaffDialog({ orgId, open, onClose, initial, onSaved }: DialogFo
             </Select>
           </Field>
         ) : null}
-        {pinMode === 'set' ? (
-          <Field label={initial ? 'Nuevo PIN' : 'PIN'} optional={!initial} hint="De 4 a 6 cifras. Evita que alguien firme en nombre de otra persona." error={s.errors.pin}>
+        {!initial ? (
+          <div className="rounded-2xl border border-line bg-paper p-3">
+            <Checkbox
+              checked={usePin}
+              onChange={(v) => {
+                setUsePin(v);
+                if (!v) s.setErrors({});
+              }}
+              label={<span className="font-semibold">Proteger con PIN (recomendado)</span>}
+              description="La tablet de cocina es compartida: con PIN, nadie puede firmar por otra persona y cada firma es fiable ante una inspección. Sin PIN, cualquiera puede elegir a esta persona en la tablet."
+            />
+          </div>
+        ) : null}
+        {pinMode === 'set' && (initial || usePin) ? (
+          <Field label={initial ? 'Nuevo PIN' : 'PIN'} hint="De 4 a 6 cifras. Díselo solo a esta persona." error={s.errors.pin}>
             <PinInput value={pin} onChange={setPin} />
           </Field>
         ) : null}
@@ -355,12 +376,14 @@ export function SupplierDialog({ orgId, open, onClose, initial, onSaved }: Dialo
   const [email, setEmail] = useState(initial?.email ?? '');
   const [products, setProducts] = useState(initial?.products.join(', ') ?? '');
   const [notes, setNotes] = useState(initial?.notes ?? '');
+  const [category, setCategory] = useState<string>(initial?.defaultCategory ?? '');
   const s = useSave();
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const body = {
       name: name.trim(),
+      defaultCategory: (category || null) as ReceptionCategory | null,
       contactName: contactName.trim() || null,
       phone: phone.trim() || null,
       email: email.trim(),
@@ -397,6 +420,17 @@ export function SupplierDialog({ orgId, open, onClose, initial, onSaved }: Dialo
         </div>
         <Field label="Email" optional error={s.errors.email}>
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={254} />
+        </Field>
+        <Field label="Tipo de producto habitual" optional hint="Se preselecciona al registrar una recepción de este proveedor y fija la temperatura límite." error={s.errors.defaultCategory}>
+          <Select value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">Sin preselección</option>
+            {RECEPTION_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {RECEPTION_CATEGORY_LABELS[c]}
+                {RECEPTION_CATEGORY_LIMITS[c].max != null ? ` (hasta ${formatTemp(RECEPTION_CATEGORY_LIMITS[c].max)})` : RECEPTION_CATEGORY_LIMITS[c].min != null ? ` (desde ${formatTemp(RECEPTION_CATEGORY_LIMITS[c].min)})` : ' (sin límite)'}
+              </option>
+            ))}
+          </Select>
         </Field>
         <Field label="Productos habituales" optional hint="Separados por comas. Se sugieren al registrar una recepción." error={s.errors.products}>
           <Input value={products} onChange={(e) => setProducts(e.target.value)} placeholder="Pollo, ternera, huevos" />

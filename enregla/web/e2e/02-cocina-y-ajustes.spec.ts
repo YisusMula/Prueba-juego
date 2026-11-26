@@ -18,10 +18,10 @@ test('ajustes clave: equipo, personal e invitación', async ({ page }) => {
   await page.getByRole('button', { name: 'Añadir persona' }).click();
   dlg = page.getByRole('dialog');
   await dlg.getByLabel('Nombre').fill('Rocío E2E');
-  await dlg.getByLabel(/PIN/).fill('24a68');
+  await dlg.getByLabel('PIN', { exact: true }).fill('24a68');
   // Las letras no se descartan en silencio: se avisa.
   await expect(dlg.getByText('El PIN solo admite números (0–9).')).toBeVisible();
-  await expect(dlg.getByLabel(/PIN/)).toHaveValue('2468');
+  await expect(dlg.getByLabel('PIN', { exact: true })).toHaveValue('2468');
   await dlg.getByRole('button', { name: 'Guardar' }).click();
   await expect(page.locator('li').filter({ hasText: 'Rocío E2E' })).toContainText('Con PIN');
 

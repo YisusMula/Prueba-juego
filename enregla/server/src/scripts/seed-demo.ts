@@ -46,7 +46,8 @@ const pool = createPool(url, 2);
 const db = createDb(pool);
 
 try {
-  await runMigrations(pool, (m) => console.log(m));
+  // Con roles separados (1.8) el rol de la app no puede migrar: MIGRATE_ON_START=false lo omite.
+  if (process.env.MIGRATE_ON_START !== 'false') await runMigrations(pool, (m) => console.log(m));
 
   // Limpieza de una ejecución anterior
   const old = await db.selectFrom('users').select('id').where('email', '=', DEMO_EMAIL).executeTakeFirst();
@@ -89,10 +90,10 @@ try {
   const suppliers = await db
     .insertInto('suppliers')
     .values([
-      { organization_id: org.id, name: 'Frutas y Verduras Huerta Sol', contact_name: 'Rosa', phone: '600 111 222', products: json(['Tomate', 'Lechuga', 'Patata', 'Cebolla']) },
-      { organization_id: org.id, name: 'Carnes Hermanos López', contact_name: 'Javier', phone: '600 333 444', products: json(['Ternera', 'Pollo', 'Cerdo ibérico']) },
-      { organization_id: org.id, name: 'Pescados del Puerto', contact_name: 'Carmen', phone: '600 555 666', products: json(['Merluza', 'Gambas', 'Mejillones']) },
-      { organization_id: org.id, name: 'Lácteos La Vaca', products: json(['Leche', 'Nata', 'Queso manchego']) },
+      { organization_id: org.id, name: 'Frutas y Verduras Huerta Sol', contact_name: 'Rosa', phone: '600 111 222', products: json(['Tomate', 'Lechuga', 'Patata', 'Cebolla']), default_category: 'ambiente' },
+      { organization_id: org.id, name: 'Carnes Hermanos López', contact_name: 'Javier', phone: '600 333 444', products: json(['Ternera', 'Pollo', 'Cerdo ibérico']), default_category: 'refrigerado' },
+      { organization_id: org.id, name: 'Pescados del Puerto', contact_name: 'Carmen', phone: '600 555 666', products: json(['Merluza', 'Gambas', 'Mejillones']), default_category: 'refrigerado' },
+      { organization_id: org.id, name: 'Lácteos La Vaca', products: json(['Leche', 'Nata', 'Queso manchego']), default_category: 'refrigerado' },
     ])
     .returningAll()
     .execute();
@@ -197,6 +198,7 @@ try {
       const s = pick(suppliers);
       const product = pick(s.products);
       const accepted = rand() > 0.05;
+      const chilled = s.default_category === 'refrigerado';
       push(
         date,
         10,
@@ -206,7 +208,14 @@ try {
           supplierName: s.name,
           product,
           lot: `L${Math.floor(rand() * 90000 + 10000)}`,
-          temperature: round1(1 + rand() * 3),
+          temperature: chilled ? round1(1 + rand() * 3) : null,
+          category: s.default_category,
+          categoryAssumed: false,
+          maxTemperature: chilled ? 4 : null,
+          minTemperature: null,
+          temperatureOutOfRange: false,
+          expired: false,
+          correctiveAction: null,
           expiryDate: addDays(date, 3 + Math.floor(rand() * 10)),
           accepted,
           rejectionReason: accepted ? null : 'Envase dañado / temperatura de llegada superior a la acordada',

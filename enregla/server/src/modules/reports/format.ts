@@ -1,8 +1,16 @@
 import type { RecordRow } from '../../db/types.js';
-import type { RecordType } from '../../schemas/index.js';
+import { RECEPTION_CATEGORY_LABELS, recordCorrector, recordSignature, type ReceptionCategory, type RecordType } from '../../schemas/index.js';
 import { formatDateTimeEs } from '../../lib/dates.js';
 
-export type ReportRecord = RecordRow & { amended_by: string | null; amended_at?: Date | null; amended_by_name?: string | null };
+export type ReportRecord = Omit<RecordRow, 'seq'> & {
+  seq?: number;
+  amended_by: string | null;
+  amended_at?: Date | null;
+  /** Quién hizo la corrección que sustituye a este registro (usuario en la web, empleado en la tablet). */
+  amended_by_name?: string | null;
+  /** En una corrección: quién figuraba como autor en la versión anterior (empleado o, si no, usuario). */
+  amends_signer?: string | null;
+};
 
 export interface Column {
   header: string;
@@ -22,12 +30,23 @@ const range = (min: unknown, max: unknown): string => {
   if (a) return `mín. ${a} °C`;
   return '—';
 };
-export const signer = (r: RecordRow): string => [r.staff_name, r.user_name && !r.staff_name ? r.user_name : null].filter(Boolean).join(' / ') || '—';
+type SignerRow = Pick<RecordRow, 'staff_name' | 'user_name' | 'device_id' | 'amends_record_id'>;
+/** Firma: «Ana Martín (anotado por Laura Gil)» si un usuario lo anotó en la web para un empleado. */
+export const signer = (r: SignerRow): string =>
+  recordSignature({ staffName: r.staff_name, userName: r.user_name, deviceId: r.device_id, isAmendment: r.amends_record_id != null });
+/** Autor de una corrección: quien la hizo (nunca el firmante del original). */
+export const corrector = (r: Pick<RecordRow, 'staff_name' | 'user_name'>): string => recordCorrector({ staffName: r.staff_name, userName: r.user_name });
+
+/** La corrección cambió la persona que figura como autora del hecho. */
+const signerChanged = (r: ReportRecord): boolean => r.amends_record_id != null && r.amends_signer != null && r.amends_signer !== (r.staff_name ?? r.user_name);
 
 export function notes(r: ReportRecord, tz = 'UTC'): string {
   const parts: string[] = [];
   if (r.amends_record_id) {
-    parts.push(`CORRECCIÓN de un registro anterior, hecha el ${formatDateTimeEs(r.created_at, tz)} por ${signer(r)}. Motivo: ${r.amendment_reason ?? ''}`);
+    const changed = signerChanged(r) ? ` · Firmante anterior: ${r.amends_signer}` : '';
+    parts.push(
+      `CORRECCIÓN de un registro anterior. Firmó: ${signer(r)} · Corrigió: ${corrector(r)} el ${formatDateTimeEs(r.created_at, tz)} · Motivo: ${r.amendment_reason ?? ''}${changed}`,
+    );
   }
   if (r.amended_by) {
     parts.push(
@@ -62,11 +81,11 @@ export const COLUMNS: Record<RecordType, Column[]> = {
     { header: 'Fecha y hora', weight: 1.1 },
     { header: 'Proveedor', weight: 1.3 },
     { header: 'Producto', weight: 1.4 },
-    { header: 'Lote', weight: 0.8 },
-    { header: 'T.ª', weight: 0.6 },
-    { header: 'Caducidad', weight: 0.9 },
-    { header: 'Resultado', weight: 1.4 },
-    { header: 'Firma', weight: 1 },
+    { header: 'Lote', weight: 0.7 },
+    { header: 'T.ª (límite)', weight: 1.2 },
+    { header: 'Caducidad', weight: 0.8 },
+    { header: 'Resultado', weight: 1.5 },
+    { header: 'Firma', weight: 1.1 },
     { header: 'Notas', weight: 1.2 },
   ],
   aceite: [
@@ -106,6 +125,16 @@ export const COLUMNS: Record<RecordType, Column[]> = {
   ],
 };
 
+/** « (Refrigerado, máx. 4 °C)»: categoría y límite aplicados a la recepción (vacío si no hay ninguno). */
+function receptionLimitText(d: Record<string, unknown>): string {
+  const cat = typeof d.category === 'string' ? (RECEPTION_CATEGORY_LABELS[d.category as ReceptionCategory] ?? d.category) : null;
+  const lim = [typeof d.minTemperature === 'number' ? `mín. ${pdfNum(d.minTemperature)} °C` : null, typeof d.maxTemperature === 'number' ? `máx. ${pdfNum(d.maxTemperature)} °C` : null]
+    .filter(Boolean)
+    .join(', ');
+  const parts = [cat ? `${cat}${d.categoryAssumed ? ' por defecto' : ''}` : null, lim || (cat ? 'sin límite' : null)].filter(Boolean);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
 const esDate = (iso: unknown): string => (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '');
 
 export function formatRow(type: RecordType, r: ReportRecord, tz: string): string[] {
@@ -134,12 +163,10 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         str(d.supplierName),
         str(d.product),
         str(d.lot),
-        typeof d.temperature === 'number'
-          ? `${pdfNum(d.temperature)} °C${typeof d.maxTemperature === 'number' ? ` (máx. ${pdfNum(d.maxTemperature)} °C)` : ''}`
-          : '',
+        typeof d.temperature === 'number' ? `${pdfNum(d.temperature)} °C${receptionLimitText(d)}` : '',
         `${esDate(d.expiryDate)}${d.expired ? ' (caducada)' : ''}`,
         d.accepted
-          ? `Aceptada${d.correctiveAction ? `. Motivo/acción: ${str(d.correctiveAction)}` : ''}`
+          ? `${d.temperatureOutOfRange ? 'Aceptada con alerta: supera el límite de temperatura' : d.expired ? 'Aceptada con alerta: caducada' : 'Aceptada'}${d.correctiveAction ? `. Motivo/acción: ${str(d.correctiveAction)}` : ''}`
           : `Rechazada: ${str(d.rejectionReason)}`,
         signer(r),
         notes(r, tz),
@@ -210,6 +237,12 @@ export const CSV_HEADERS = [
   'estado_limpieza',
   'temperatura_maxima_c',
   'caducada',
+  // Añadidas en la fase 1 (firma legible, autoría de las correcciones y categoría de la recepción).
+  'firma',
+  'corregido_por_nombre',
+  'firmante_anterior',
+  'categoria_producto',
+  'temperatura_minima_c',
 ];
 
 export function csvRow(r: ReportRecord, tz: string): string[] {
@@ -220,7 +253,13 @@ export function csvRow(r: ReportRecord, tz: string): string[] {
     tipo: r.type,
     fecha_hora: formatDateTimeEs(r.effective_at, tz),
     fecha_registro: formatDateTimeEs(r.created_at, tz),
-    enmendado_por: r.amends_record_id ? signer(r) : '',
+    // Quién hizo la corrección (usuario en la web, empleado en la tablet), no el firmante del hecho.
+    enmendado_por: r.amends_record_id ? corrector(r) : '',
+    firma: signer(r),
+    corregido_por_nombre: str(r.amended_by_name),
+    firmante_anterior: signerChanged(r) ? str(r.amends_signer) : '',
+    categoria_producto: r.type === 'recepcion' ? str(d.category) : '',
+    temperatura_minima_c: num(d.minTemperature),
     firmado_por_personal: str(r.staff_name),
     firmado_por_usuario: str(r.user_name),
     dispositivo_cocina: r.device_id ? 'sí' : 'no',

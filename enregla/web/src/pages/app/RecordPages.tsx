@@ -153,7 +153,11 @@ export function RegisterTypePage() {
               serverError={serverError}
               footer={
                 ctx.staff.filter((s) => s.active !== false).length > 0 ? (
-                  <Field label="¿Quién lo ha hecho?" optional hint="Persona del personal que firma el registro. Tú quedas registrado igualmente como usuario.">
+                  <Field
+                    label="¿Quién lo ha hecho?"
+                    optional
+                    hint={staffId ? 'Constará como «persona (anotado por ti)»: tú quedas siempre como autor de la anotación.' : 'Si lo hizo otra persona del personal, elígela. Tú quedas siempre como autor de la anotación.'}
+                  >
                     <Select value={staffId} onChange={(e) => setStaffId(e.target.value)}>
                       <option value="">Solo yo</option>
                       {ctx.staff

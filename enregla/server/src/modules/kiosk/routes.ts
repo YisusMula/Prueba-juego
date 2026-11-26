@@ -3,9 +3,9 @@ import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
 import { deviceCtx } from '../../http/guards.js';
-import { AppError, notFound, rateLimited, readOnly } from '../../lib/errors.js';
+import { AppError, conflict, notFound, rateLimited, readOnly } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
-import { verifySecret } from '../../lib/password.js';
+import { getDummyHash, verifySecret } from '../../lib/password.js';
 import { audit } from '../../lib/audit.js';
 import { sha256 } from '../../lib/crypto.js';
 import { isWritable } from '../billing/status.js';
@@ -58,7 +58,7 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       db.selectFrom('staff').select(['id', 'name', 'pin_hash']).where('organization_id', '=', orgId).where('active', '=', true).orderBy('name').limit(500).execute(),
       db.selectFrom('equipment').selectAll().where('organization_id', '=', orgId).where('active', '=', true).orderBy('created_at').limit(500).execute(),
       db.selectFrom('cleaning_plans').selectAll().where('organization_id', '=', orgId).where('active', '=', true).orderBy('created_at').limit(500).execute(),
-      db.selectFrom('suppliers').select(['id', 'name', 'products']).where('organization_id', '=', orgId).orderBy('name').limit(500).execute(),
+      db.selectFrom('suppliers').select(['id', 'name', 'products', 'default_category']).where('organization_id', '=', orgId).orderBy('name').limit(500).execute(),
     ]);
     return {
       device: { id: ctx.deviceId, name: ctx.deviceName },
@@ -66,7 +66,7 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       staff: staff.map((s) => ({ id: s.id, name: s.name, hasPin: s.pin_hash != null })),
       equipment: equipment.map((e) => ({ id: e.id, name: e.name, type: e.type, minTemp: e.min_temp, maxTemp: e.max_temp, checksPerDay: e.checks_per_day })),
       cleaningPlans: plans.map((p) => ({ id: p.id, name: p.name, frequency: p.frequency, weekday: p.weekday, monthDay: p.month_day, items: p.items })),
-      suppliers: suppliers.map((s) => ({ id: s.id, name: s.name, products: s.products })),
+      suppliers: suppliers.map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.default_category ?? null })),
     };
   });
 
@@ -181,5 +181,118 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     );
     if (replayed) reply.header('Idempotent-Replayed', 'true');
     return reply.status(replayed ? 200 : 201).send({ record: recordView(record) });
+  });
+
+  const notAllowed = (msg: string) => new AppError(403, 'CORRECTION_NOT_ALLOWED', msg);
+
+  /** Comprueba (si lo tiene) el PIN de un miembro activo del personal del local. */
+  async function checkStaffPin(ctx: { org: { id: string }; deviceId: string }, staffId: string, pin: string | null | undefined, ip: string, path = 'staffId') {
+    const st = await db.selectFrom('staff').selectAll().where('id', '=', staffId).where('organization_id', '=', ctx.org.id).executeTakeFirst();
+    if (!st) throw notFound('Miembro del personal');
+    if (!st.active) throw new AppError(400, 'VALIDATION_ERROR', 'Ese miembro del personal está desactivado', [{ path, message: 'Ese miembro del personal está desactivado' }]);
+    // Con «Me equivoqué de persona» hay dos PIN: los errores del segundo se marcan con `newStaffPin`.
+    const pinPath = path === 'staffId' ? 'pin' : 'newStaffPin';
+    if (st.pin_hash) {
+      if (!pin) {
+        const msg = path === 'staffId' ? 'Introduce tu PIN' : `Introduce el PIN de ${st.name}`;
+        throw new AppError(401, 'PIN_REQUIRED', msg, [{ path: pinPath, message: msg }]);
+      }
+      await enforce(rateLimiter, `pin:device:${ctx.deviceId}`, config.rateLimits.pinDevice);
+      try {
+        await verifyPinWithReservation(ctx, st.id, st.pin_hash, pin, ip);
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'INVALID_PIN') throw new AppError(401, 'INVALID_PIN', err.message, [{ path: pinPath, message: err.message }]);
+        throw err;
+      }
+    }
+    return st;
+  }
+
+  /**
+   * 1.5: corregir desde la tablet el registro RECIÉN hecho (2 minutos + 30 s de margen). Nunca borra:
+   * crea una corrección (enmienda) enlazada. Solo el mismo dispositivo y la misma persona (con su
+   * PIN si lo tiene); un registro de otro local responde 404. Con «Me equivoqué de persona» la
+   * persona correcta se identifica con su propio PIN.
+   */
+  app.post('/records/:recordId/amendments', async (req, reply) => {
+    const ctx = deviceCtx(req);
+    if (!isWritable(ctx.org)) throw readOnly();
+    const id = (req.params as { recordId?: string }).recordId ?? '';
+    if (!S.uuid.safeParse(id).success) throw notFound('Registro');
+    const body = parse(S.kioskAmendmentBody, req.body);
+    const key = idempotencyKey(req);
+    await enforce(rateLimiter, `kiosk-correction:device:${ctx.deviceId}`, config.rateLimits.kioskCorrectionDevice, 'Demasiadas correcciones seguidas desde esta tablet. Espera unos minutos.');
+    const original = await db.selectFrom('records').selectAll().where('id', '=', id).where('organization_id', '=', ctx.org.id).executeTakeFirst();
+    if (!original) throw notFound('Registro');
+    if (original.device_id !== ctx.deviceId || original.user_id != null) throw notAllowed('Solo se puede corregir desde la tablet en la que se hizo el registro. Pide a un encargado que lo corrija desde la web.');
+    if (original.amends_record_id != null) throw notAllowed('Esta corrección ya no se puede cambiar desde la tablet. Pide a un encargado que la corrija desde la web.');
+    if (original.staff_id !== body.staffId) throw notAllowed('Solo puede corregirlo la persona que hizo el registro.');
+    const windowMs = (S.KIOSK_CORRECTION_MINUTES * 60 + S.KIOSK_CORRECTION_GRACE_SECONDS) * 1000;
+    if (app.deps.now().getTime() - original.created_at.getTime() > windowMs) {
+      throw notAllowed(`Solo se puede corregir en la tablet durante los ${S.KIOSK_CORRECTION_MINUTES} minutos siguientes a guardarlo. Pide a un encargado que lo corrija desde la web.`);
+    }
+    const already = await db.selectFrom('records').select('id').where('amends_record_id', '=', original.id).executeTakeFirst();
+    if (already) throw conflict('Este registro ya tiene una corrección.');
+    // La persona que hizo el registro confirma con su PIN (si lo tiene) y, al cambiar de persona,
+    // la persona correcta con el suyo.
+    await checkStaffPin(ctx, body.staffId, body.pin, req.ip);
+    const signerId = body.reason === 'wrong_person' ? body.newStaffId! : body.staffId;
+    if (body.reason === 'wrong_person') await checkStaffPin(ctx, signerId, body.newStaffPin, req.ip, 'newStaffId');
+    await enforce(rateLimiter, `records:device:${ctx.deviceId}`, config.rateLimits.recordCreateDevice, 'Demasiados registros seguidos desde este dispositivo. Espera un minuto.');
+    const reason = S.kioskAmendmentReason(body, original.staff_name);
+    const { pin: _p, newStaffPin: _np, ...payload } = body;
+    const { record, replayed } = await withIdempotency(db, { orgId: ctx.org.id, key, scope: `kiosk-amendment:${id}`, payload }, (tx) =>
+      createRecord(
+        tx,
+        ctx.org,
+        { userId: null, userName: null, staffId: signerId, deviceId: ctx.deviceId },
+        null,
+        // Sin datos nuevos (p. ej. solo cambia la persona) se reutilizan los del original.
+        body.data === undefined ? original.data : body.data,
+        { originalId: original.id, reason },
+        { now: app.deps.now() },
+      ),
+    );
+    if (replayed) reply.header('Idempotent-Replayed', 'true');
+    return reply.status(replayed ? 200 : 201).send({ record: recordView(record) });
+  });
+
+  /**
+   * 1.10: salir del modo cocina o desvincular la tablet exige el email y la contraseña de un
+   * propietario o encargado de ESTE local, verificados aquí (nunca un secreto guardado en la
+   * tablet), con límite de intentos por dispositivo y por cuenta.
+   */
+  async function managerAuth(req: FastifyRequest) {
+    const ctx = deviceCtx(req);
+    await enforce(rateLimiter, `kiosk-manager:device:${ctx.deviceId}`, config.rateLimits.kioskManagerAuthDevice, 'Demasiados intentos en esta tablet. Espera unos minutos.');
+    const body = parse(S.kioskManagerAuthBody, req.body);
+    const email = body.email.toLowerCase();
+    await enforce(rateLimiter, `login:acct:${email}`, config.rateLimits.loginAccount);
+    const user = await db
+      .selectFrom('users as u')
+      .innerJoin('memberships as m', (j) => j.onRef('m.user_id', '=', 'u.id').on('m.organization_id', '=', ctx.org.id))
+      .select(['u.id', 'u.name', 'u.password_hash', 'u.email_verified_at', 'm.role'])
+      .where('u.email', '=', email)
+      .executeTakeFirst();
+    // Mismo coste con y sin cuenta (hash ficticio) y mismo mensaje: no revela qué emails existen.
+    const ok = await verifySecret(user?.password_hash ?? (await getDummyHash()), body.password);
+    if (!user || !ok || !user.email_verified_at || (user.role !== 'owner' && user.role !== 'manager')) {
+      await audit(db, { event: 'device.kiosk_auth_failed', organizationId: ctx.org.id, userId: user?.id ?? null, ip: req.ip, metadata: { deviceId: ctx.deviceId, deviceName: ctx.deviceName } });
+      throw new AppError(401, 'INVALID_CREDENTIALS', 'Email o contraseña incorrectos, o esa cuenta no es propietaria ni encargada de este local.');
+    }
+    return { ctx, user };
+  }
+
+  app.post('/exit', async (req) => {
+    const { ctx, user } = await managerAuth(req);
+    await audit(db, { event: 'device.kiosk_exit', organizationId: ctx.org.id, userId: user.id, ip: req.ip, metadata: { deviceId: ctx.deviceId, deviceName: ctx.deviceName } });
+    return { ok: true, by: { name: user.name } };
+  });
+
+  app.post('/unpair', async (req) => {
+    const { ctx, user } = await managerAuth(req);
+    await db.updateTable('devices').set({ revoked_at: sql<Date>`now()` }).where('id', '=', ctx.deviceId).where('revoked_at', 'is', null).execute();
+    await audit(db, { event: 'device.revoked', organizationId: ctx.org.id, userId: user.id, ip: req.ip, metadata: { deviceId: ctx.deviceId, name: ctx.deviceName, fromKiosk: true } });
+    return { ok: true, by: { name: user.name } };
   });
 }

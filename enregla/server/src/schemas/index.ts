@@ -232,6 +232,8 @@ export const updateCleaningPlanBody = z
 // ---------------------------------------------------------------------------
 export const supplierBody = z.object({
   name: text(LIMITS.supplierName),
+  /** Categoría de producto que se preselecciona en la recepción (opcional). */
+  defaultCategory: z.lazy(() => receptionCategory).optional().nullable().transform((v) => v ?? null),
   contactName: optionalText(150),
   phone: optionalText(40),
   email: z
@@ -247,6 +249,7 @@ export const updateSupplierBody = z
     contactName: optionalText(150),
     phone: optionalText(40),
     email: z.union([email, z.literal(''), z.null()]).transform((v) => (v ? v : null)),
+    defaultCategory: z.lazy(() => receptionCategory).nullable(),
     products: z.array(text(100)).max(200),
     notes: optionalText(1000),
   })
@@ -287,6 +290,67 @@ export const limpiezaData = z.object({
     .refine((items) => items.some((i) => i.done), 'Marca al menos una zona hecha'),
   observations: optionalText(1000),
 });
+/**
+ * Temperaturas de referencia de las plantillas (orientativas; cada local las revisa): refrigerado
+ * ≤ 4 °C, congelado ≤ −18 °C y mantenimiento en caliente ≥ 63 °C. Las usan las plantillas de
+ * equipos y los límites por defecto de la recepción, para que sean coherentes.
+ */
+export const REFERENCE_TEMPS = { chilledMax: 4, frozenMax: -18, hotMin: 63 } as const;
+
+/** Categoría del producto recibido: fija el límite de temperatura por defecto. */
+export const RECEPTION_CATEGORIES = ['refrigerado', 'congelado', 'ambiente', 'caliente'] as const;
+export type ReceptionCategory = (typeof RECEPTION_CATEGORIES)[number];
+export const receptionCategory = z.enum(RECEPTION_CATEGORIES, { error: 'Elige el tipo de producto (refrigerado, congelado, ambiente o caliente)' });
+export const RECEPTION_CATEGORY_LABELS: Record<ReceptionCategory, string> = {
+  refrigerado: 'Refrigerado',
+  congelado: 'Congelado',
+  ambiente: 'Ambiente',
+  caliente: 'Caliente',
+};
+/** Límites por defecto de cada categoría (°C). `null` = sin límite. */
+export const RECEPTION_CATEGORY_LIMITS: Record<ReceptionCategory, { min: number | null; max: number | null }> = {
+  refrigerado: { min: null, max: REFERENCE_TEMPS.chilledMax },
+  congelado: { min: null, max: REFERENCE_TEMPS.frozenMax },
+  ambiente: { min: null, max: null },
+  caliente: { min: REFERENCE_TEMPS.hotMin, max: null },
+};
+
+export interface ReceptionLimits {
+  category: ReceptionCategory | null;
+  min: number | null;
+  max: number | null;
+  /**
+   * Categoría presupuesta: petición de un cliente antiguo con temperatura pero sin categoría ni
+   * límites. Se aplica la regla de refrigerado (la más estricta para el producto que se recibe con
+   * control de temperatura) y, si se supera, el registro queda con alerta.
+   */
+  assumed: boolean;
+}
+
+/**
+ * Límites que se aplican a una recepción:
+ * - con categoría: los indicados (editables) o, si faltan, los de la categoría;
+ * - sin categoría pero con límites explícitos (clientes antiguos): esos límites;
+ * - sin categoría ni límites y con temperatura: refrigerado (≤ 4 °C), marcado como presupuesto;
+ * - sin temperatura: ninguno.
+ */
+export function receptionLimits(d: { category?: ReceptionCategory | null; temperature?: number | null; maxTemperature?: number | null; minTemperature?: number | null }): ReceptionLimits {
+  if (d.category) {
+    const def = RECEPTION_CATEGORY_LIMITS[d.category];
+    return { category: d.category, min: d.minTemperature ?? def.min, max: d.maxTemperature ?? def.max, assumed: false };
+  }
+  if (d.maxTemperature != null || d.minTemperature != null) {
+    return { category: null, min: d.minTemperature ?? null, max: d.maxTemperature ?? null, assumed: false };
+  }
+  if (d.temperature != null) return { category: 'refrigerado', ...RECEPTION_CATEGORY_LIMITS.refrigerado, assumed: true };
+  return { category: null, min: null, max: null, assumed: false };
+}
+
+/** La temperatura medida incumple los límites (por encima de la máxima o por debajo de la mínima). */
+export function receptionOutOfLimits(d: { temperature?: number | null }, l: { min: number | null; max: number | null }): boolean {
+  return d.temperature != null && ((l.max != null && d.temperature > l.max) || (l.min != null && d.temperature < l.min));
+}
+
 export const recepcionData = z
   .object({
     supplierId: uuid.optional().nullable(),
@@ -294,30 +358,50 @@ export const recepcionData = z
     product: text(LIMITS.product),
     lot: optionalText(LIMITS.lot),
     temperature: temperature(RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX, RECEPTION_TEMP_MESSAGE).optional().nullable(),
-    /** Temperatura máxima admisible para este producto (p. ej. 4 °C refrigerado, −18 °C congelado). Opcional. */
+    /**
+     * Tipo de producto (NUEVO): fija el límite por defecto (refrigerado ≤ 4 °C, congelado ≤ −18 °C,
+     * ambiente sin límite, caliente ≥ 63 °C). La interfaz lo pide siempre; en la API es opcional
+     * por compatibilidad (ver `receptionLimits`).
+     */
+    category: receptionCategory.optional().nullable(),
+    /** Temperatura máxima admisible (editable; por defecto, la de la categoría). */
     maxTemperature: temperature(RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX, RECEPTION_TEMP_MESSAGE).optional().nullable(),
+    /** Temperatura mínima admisible (NUEVO; productos calientes: por defecto 63 °C). */
+    minTemperature: temperature(RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX, RECEPTION_TEMP_MESSAGE).optional().nullable(),
     expiryDate: isoDate.optional().nullable(),
     accepted: z.boolean({ error: 'Indica si aceptas o rechazas la mercancía' }),
     rejectionReason: optionalText(LIMITS.shortText),
-    /** Obligatoria si se ACEPTA mercancía caducada o por encima de la temperatura máxima (lo comprueba el servidor). */
+    /** Obligatoria si se ACEPTA mercancía caducada o fuera del límite de temperatura (lo comprueba el servidor). */
     correctiveAction: optionalText(LIMITS.shortText),
   })
   .superRefine((d, ctx) => {
     if (!d.supplierId && !d.supplierName) ctx.addIssue({ code: 'custom', path: ['supplierName'], message: 'Indica el proveedor' });
     if (!d.accepted && !d.rejectionReason) ctx.addIssue({ code: 'custom', path: ['rejectionReason'], message: 'Indica el motivo del rechazo' });
-    if (d.accepted && receptionOverTemperature(d) && !d.correctiveAction) {
-      ctx.addIssue({ code: 'custom', path: ['correctiveAction'], message: 'La temperatura supera la máxima admisible: indica qué has hecho o por qué la aceptas' });
+    if (d.minTemperature != null && d.maxTemperature != null && d.minTemperature > d.maxTemperature) {
+      ctx.addIssue({ code: 'custom', path: ['minTemperature'], message: 'La temperatura mínima no puede ser mayor que la máxima' });
+    }
+    const limits = receptionLimits(d);
+    // Con categoría presupuesta (cliente antiguo) no se exige: queda con alerta (ver receptionLimits).
+    if (d.accepted && !limits.assumed && receptionOutOfLimits(d, limits) && !d.correctiveAction) {
+      ctx.addIssue({ code: 'custom', path: ['correctiveAction'], message: receptionLimitMessage(limits) });
     }
   });
 
-/** Recepción por encima de la temperatura máxima admisible indicada. */
+/** Mensaje cuando se acepta mercancía fuera del límite de temperatura sin indicar la acción. */
+export function receptionLimitMessage(l: { min: number | null; max: number | null }): string {
+  return l.min != null && l.max == null
+    ? 'La temperatura está por debajo de la mínima admisible: indica qué has hecho o por qué la aceptas'
+    : 'La temperatura supera la máxima admisible: indica qué has hecho o por qué la aceptas';
+}
+
+/** Recepción por encima de la temperatura máxima admisible indicada (compatibilidad; ver `receptionOutOfLimits`). */
 export function receptionOverTemperature(d: { temperature?: number | null; maxTemperature?: number | null }): boolean {
   return d.temperature != null && d.maxTemperature != null && d.temperature > d.maxTemperature;
 }
-/** Atajos de temperatura máxima admisible en recepción (orientativos). */
+/** Atajos de temperatura máxima admisible en recepción (orientativos; compatibilidad). */
 export const RECEPTION_MAX_TEMP_PRESETS = [
-  { label: 'Refrigerado', value: 4 },
-  { label: 'Congelado', value: -18 },
+  { label: 'Refrigerado', value: REFERENCE_TEMPS.chilledMax },
+  { label: 'Congelado', value: REFERENCE_TEMPS.frozenMax },
 ] as const;
 export const aceiteData = z.object({
   equipmentId: uuid,
@@ -535,6 +619,8 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   'device.created': 'Dispositivo de cocina vinculado',
   'device.revoked': 'Dispositivo de cocina desvinculado',
   'device.revoked_with_member': 'Dispositivo desvinculado al salir quien lo vinculó',
+  'device.kiosk_exit': 'Salida del modo cocina autorizada',
+  'device.kiosk_auth_failed': 'Contraseña de responsable incorrecta en la tablet',
   'staff.pin_changed': 'PIN del personal cambiado',
   'staff.pin_failed': 'PIN incorrecto en la cocina',
   'staff.pin_locked': 'PIN bloqueado por intentos fallidos',
@@ -590,3 +676,77 @@ export const kioskVerifyPinBody = z.object({
   staffId: uuid,
   pin: z.string().max(12),
 });
+
+/** Minutos durante los que la tablet ofrece «Corregir» tras guardar (el servidor da un margen de 30 s). */
+export const KIOSK_CORRECTION_MINUTES = 2;
+export const KIOSK_CORRECTION_GRACE_SECONDS = 30;
+export const KIOSK_CORRECTION_REASONS = ['wrong_value', 'wrong_person', 'other'] as const;
+export type KioskCorrectionReason = (typeof KIOSK_CORRECTION_REASONS)[number];
+export const KIOSK_CORRECTION_REASON_LABELS: Record<KioskCorrectionReason, string> = {
+  wrong_value: 'Me equivoqué de número',
+  wrong_person: 'Me equivoqué de persona',
+  other: 'Otro motivo',
+};
+
+/**
+ * Corrección desde la tablet del registro recién hecho (POST /api/kiosk/records/{id}/amendments).
+ * `staffId`/`pin`: la persona que hizo el registro. `data`: entrada completa corregida (si falta, se
+ * reutilizan los datos del original, p. ej. al cambiar solo la persona). `newStaffId`/`newStaffPin`:
+ * con `wrong_person`, quién lo hizo de verdad (con su PIN si lo tiene).
+ */
+export const kioskAmendmentBody = z
+  .object({
+    staffId: uuid,
+    pin: z.string().max(12).optional().nullable(),
+    reason: z.enum(KIOSK_CORRECTION_REASONS, { error: 'Elige el motivo de la corrección' }),
+    reasonText: optionalText(500),
+    data: z.unknown().optional(),
+    newStaffId: uuid.optional().nullable(),
+    newStaffPin: z.string().max(12).optional().nullable(),
+  })
+  .superRefine((b, ctx) => {
+    if (b.reason === 'wrong_person' && !b.newStaffId) ctx.addIssue({ code: 'custom', path: ['newStaffId'], message: 'Indica quién lo hizo' });
+    if (b.reason === 'wrong_person' && b.newStaffId === b.staffId) ctx.addIssue({ code: 'custom', path: ['newStaffId'], message: 'Elige a otra persona' });
+    if (b.reason === 'other' && !b.reasonText) ctx.addIssue({ code: 'custom', path: ['reasonText'], message: 'Escribe el motivo de la corrección' });
+    if (b.reason !== 'wrong_person' && b.data === undefined) ctx.addIssue({ code: 'custom', path: ['data'], message: 'Indica los datos corregidos' });
+  });
+
+/** Texto del motivo guardado en la corrección hecha desde la tablet. */
+export function kioskAmendmentReason(b: { reason: KioskCorrectionReason; reasonText?: string | null }, originalSigner: string | null): string {
+  if (b.reason === 'other') return b.reasonText ?? KIOSK_CORRECTION_REASON_LABELS.other;
+  const base = b.reason === 'wrong_person' && originalSigner ? `Me equivoqué de persona (figuraba ${originalSigner})` : KIOSK_CORRECTION_REASON_LABELS[b.reason];
+  return b.reasonText ? `${base}: ${b.reasonText}` : base;
+}
+
+/** Salir del modo cocina o desvincular la tablet: credenciales de un propietario o encargado del local. */
+export const kioskManagerAuthBody = z.object({
+  email: z.string().trim().min(1, 'Escribe el email').max(254),
+  password: z.string().min(1, 'Escribe la contraseña').max(128),
+});
+
+// ---------------------------------------------------------------------------
+// Firma de los registros (misma redacción en la app, el PDF y el CSV)
+// ---------------------------------------------------------------------------
+export interface SignatureInput {
+  staffName: string | null;
+  userName: string | null;
+  deviceId?: string | null;
+  isAmendment?: boolean;
+}
+
+/**
+ * Quién firma un registro. En la web el autor es siempre el usuario con sesión: si indica un
+ * empleado, «Ana Martín (anotado por Laura Gil)». Desde la tablet, el empleado. En una corrección,
+ * la persona que figura como autora del hecho (quién la corrigió va aparte, `recordCorrector`).
+ */
+export function recordSignature(r: SignatureInput): string {
+  if (r.staffName && r.userName && !r.isAmendment) return `${r.staffName} (anotado por ${r.userName})`;
+  if (r.staffName) return r.staffName;
+  if (r.userName) return r.userName;
+  return r.deviceId ? 'Tablet de cocina' : '—';
+}
+
+/** Quién hizo una corrección: el usuario con sesión (web) o, desde la tablet, el empleado. */
+export function recordCorrector(r: { staffName: string | null; userName: string | null }): string {
+  return r.userName ?? r.staffName ?? '—';
+}

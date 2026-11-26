@@ -19,6 +19,8 @@ export function supplierView(s: Selectable<SuppliersTable>) {
     email: s.email,
     products: s.products,
     notes: s.notes,
+    /** Categoría de producto que se preselecciona en la recepción (NUEVO, puede ser null). */
+    defaultCategory: (s.default_category ?? null) as S.ReceptionCategory | null,
     createdAt: s.created_at.toISOString(),
   };
 }
@@ -61,6 +63,7 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
         email: body.email,
         products: json(body.products),
         notes: body.notes,
+        default_category: body.defaultCategory,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -80,6 +83,7 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
         ...(body.email !== undefined ? { email: body.email } : {}),
         ...(body.products !== undefined ? { products: json(body.products) } : {}),
         ...(body.notes !== undefined ? { notes: body.notes } : {}),
+        ...(body.defaultCategory !== undefined ? { default_category: body.defaultCategory } : {}),
         updated_at: sql<Date>`now()`,
       })
       .where('id', '=', id)

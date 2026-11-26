@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'PIN_REQUIRED'
   | 'INVALID_PIN'
   | 'PIN_LOCKED'
+  | 'CORRECTION_NOT_ALLOWED'
   | 'RATE_LIMITED'
   | 'REPORT_TOO_LARGE'
   | 'PAYLOAD_TOO_LARGE'

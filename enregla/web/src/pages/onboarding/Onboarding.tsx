@@ -109,7 +109,7 @@ export function OnboardingPage() {
           ) : effectiveStep === 3 ? (
             <StepShell
               title="Añade a tu equipo de cocina"
-              intro="Quienes firmarán los registros en la tablet. No necesitan email ni cuenta; el PIN es opcional."
+              intro="Quienes firmarán los registros en la tablet. No necesitan email ni cuenta. Te recomendamos darles un PIN: así nadie firma con el nombre de otra persona."
               onBack={() => go(2)}
               onNext={() => go(4)}
               nextLabel="Terminar"

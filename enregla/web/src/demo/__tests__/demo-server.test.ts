@@ -90,4 +90,57 @@ describe('API de la demo', () => {
     expect(r.status).toBe(200);
     expect(r.text?.startsWith('\uFEFF"id";"tipo"')).toBe(true);
   });
+
+  // Fase 1: la demo refleja el comportamiento del servidor real.
+  it('fase 1: firma «anotado por», autor de la corrección y orden original → corrección', () => {
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    const ana = get<Page<Staff>>(`/api/orgs/${orgId}/staff`).json.items.find((s) => s.name === 'Ana Martín')!;
+    const r = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', staffId: ana.id, data: { equipmentId: eq.id, value: 2 } }).json.record;
+    expect(r.signature).toMatch(/^Ana Martín \(anotado por .+\)$/);
+    const am = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records/${r.id}/amendments`, { reason: 'Ajuste', data: { equipmentId: eq.id, value: 3 } }).json.record;
+    // Sin staffId se conserva el firmante; corrige el usuario con sesión.
+    expect(am.staff?.name).toBe('Ana Martín');
+    expect(am.correctedBy).toBe(am.user?.name);
+    const list = get<Page<AppRecord>>(`/api/orgs/${orgId}/records?limit=10`).json.items.map((x) => x.id);
+    expect(list.indexOf(r.id)).toBeLessThan(list.indexOf(am.id));
+    const day = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.date;
+    const csv = handle('GET', `/api/orgs/${orgId}/reports/csv?from=${day}&to=${day}&types=temperatura`).text!;
+    expect(csv.indexOf(r.id)).toBeLessThan(csv.indexOf(am.id));
+  });
+
+  it('fase 1: recepción con categoría (6 °C refrigerado exige acción; cliente antiguo queda con alerta)', () => {
+    const base = { supplierName: 'P', product: 'Merluza', accepted: true };
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'refrigerado', temperature: 6 } }).status).toBe(400);
+    const old = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6 } }).json.record;
+    expect(old.alert).toBe(true);
+    expect(old.data).toMatchObject({ category: 'refrigerado', categoryAssumed: true, maxTemperature: 4 });
+  });
+
+  it('fase 1: «volver a medir» hasta una lectura correcta posterior', () => {
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    send('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: 9, correctiveAction: 'Puerta cerrada' } });
+    let t = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.temperatures.find((x) => x.equipmentId === eq.id)!;
+    expect(t).toMatchObject({ withAlert: true, remeasure: true });
+    send('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: 3 } });
+    t = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.temperatures.find((x) => x.equipmentId === eq.id)!;
+    expect(t).toMatchObject({ withAlert: true, remeasure: false });
+  });
+
+  it('fase 1: correcciones en la tablet (misma persona y dispositivo) y salir/desvincular con contraseña', () => {
+    const token = send<{ token: string }>('POST', `/api/orgs/${orgId}/devices`, { name: 'T' }).json.token;
+    const auth = { Authorization: `Bearer ${token}` };
+    const staff = get<Page<Staff>>(`/api/orgs/${orgId}/staff`).json.items;
+    const luis = staff.find((s) => s.name === 'Luis Pérez')!;
+    const ana = staff.find((s) => s.name === 'Ana Martín')!;
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    const rec = send<{ record: AppRecord }>('POST', '/api/kiosk/records', { staffId: luis.id, type: 'temperatura', data: { equipmentId: eq.id, value: 2 } }, auth).json.record;
+    expect(send<{ error: { code: string } }>('POST', `/api/kiosk/records/${rec.id}/amendments`, { staffId: ana.id, pin: '1234', reason: 'wrong_value', data: { equipmentId: eq.id, value: 3 } }, auth).json.error.code).toBe('CORRECTION_NOT_ALLOWED');
+    const ok = send<{ record: AppRecord }>('POST', `/api/kiosk/records/${rec.id}/amendments`, { staffId: luis.id, reason: 'wrong_person', newStaffId: ana.id, newStaffPin: '1234' }, auth);
+    expect(ok.status).toBe(201);
+    expect(ok.json.record).toMatchObject({ staff: { name: 'Ana Martín' }, amendmentReason: 'Me equivoqué de persona (figuraba Luis Pérez)', correctedBy: 'Ana Martín' });
+    expect(send('POST', '/api/kiosk/exit', { email: DEMO_EMAIL, password: 'mala' }, auth).status).toBe(401);
+    expect(send('POST', '/api/kiosk/exit', { email: DEMO_EMAIL, password: DEMO_PASSWORD }, auth).status).toBe(200);
+    expect(send('POST', '/api/kiosk/unpair', { email: DEMO_EMAIL, password: DEMO_PASSWORD }, auth).status).toBe(200);
+    expect(get('/api/kiosk/context', auth).status).toBe(401);
+  });
 });

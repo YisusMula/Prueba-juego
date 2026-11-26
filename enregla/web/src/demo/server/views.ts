@@ -13,6 +13,7 @@ import type {
 } from '@/api/types';
 import type { DDevice, DDish, DemoState, DEquipment, DOrg, DPlan, DRecord, DStaff, DSupplier } from './state';
 import { iso } from './time';
+import { recordCorrector, recordSignature } from '@shared/schemas';
 
 export function isWritable(org: DOrg, now = Date.now()): boolean {
   if (org.deletionScheduledAt) return false;
@@ -89,6 +90,7 @@ export const supplierView = (s: DSupplier): Supplier => ({
   email: s.email,
   products: s.products,
   notes: s.notes,
+  defaultCategory: s.defaultCategory ?? null,
   createdAt: iso(s.createdAt),
 });
 
@@ -129,6 +131,8 @@ export function recordView(db: DemoState, r: DRecord): AppRecord {
     staff: r.staffId ? { id: r.staffId, name: r.staffName ?? '' } : null,
     user: r.userId ? { id: r.userId, name: r.userName ?? '' } : null,
     deviceId: r.deviceId,
+    signature: recordSignature({ staffName: r.staffName, userName: r.userName, deviceId: r.deviceId, isAmendment: r.amendsRecordId != null }),
+    correctedBy: r.amendsRecordId ? recordCorrector({ staffName: r.staffName, userName: r.userName }) : null,
     alert: r.alert,
     amendsRecordId: r.amendsRecordId,
     amendmentReason: r.amendmentReason,

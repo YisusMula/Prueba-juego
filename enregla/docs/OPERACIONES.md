@@ -18,6 +18,7 @@ Guía para quien despliega EnRegla por primera vez en un servidor propio (un VPS
 10. [Datos temporales y eliminación de locales](#10-datos-temporales-y-eliminación-de-locales)
 11. [Configuración de Stripe](#11-configuración-de-stripe)
 12. [Memoria del contenedor e informes PDF](#12-memoria-del-contenedor-e-informes-pdf)
+13. [Roles de la base de datos (registros no modificables)](#13-roles-de-la-base-de-datos-registros-no-modificables)
 
 ---
 
@@ -45,7 +46,9 @@ Edita `server/.env` (`nano server/.env`). Valores mínimos para producción:
 | `APP_URL` | `https://app.tudominio.es` (exactamente el origen público, sin barra final) |
 | `DOMAIN` | `app.tudominio.es` |
 | `ACME_EMAIL` | tu email (avisos de Let's Encrypt) |
-| `POSTGRES_PASSWORD` | una clave larga y aleatoria: `openssl rand -base64 32`. Puede contener cualquier carácter: los compose la pasan a la app como `PGPASSWORD`, **no** dentro de una URL |
+| `POSTGRES_PASSWORD` | clave larga y aleatoria (`openssl rand -base64 32`) del **administrador** de PostgreSQL (`enregla`): solo para administración y copias, la app no la usa |
+| `DB_OWNER_PASSWORD` | otra clave distinta: rol `enregla_owner`, propietario del esquema, que solo usa el servicio `migrate` |
+| `DB_APP_PASSWORD` | otra clave distinta: rol `enregla_app`, con el que corre la app (sin permisos para modificar ni borrar registros, apartado 13). Las tres pueden contener cualquier carácter: los compose las pasan como `PGPASSWORD`, **no** dentro de una URL |
 | `DATABASE_URL` | déjala como esté: los compose la anulan y usan `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`. *Solo si despliegas sin compose* y usas `DATABASE_URL`, los caracteres especiales de la contraseña (`@ : / # ? %`…) deben ir codificados (`node -p 'encodeURIComponent(process.argv[1])' 'la-clave'`), o usa tú también las variables `PG*` |
 | `MAIL_TRANSPORT` | `smtp` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` | los de tu proveedor (`SMTP_SECURE=true` con el puerto 465; con 587, `false` y se exige STARTTLS) |
@@ -61,7 +64,7 @@ docker compose -f docker-compose.prod.yml --env-file server/.env ps        # tod
 docker compose -f docker-compose.prod.yml --env-file server/.env logs -f app   # Ctrl+C para salir
 ```
 
-La app aplica las migraciones de la base de datos al arrancar. Si la configuración no es válida, el contenedor `app` se para con un mensaje claro en los logs (p. ej. «APP_URL debe usar https en producción»): corrígelo en `server/.env` y repite el `up -d`.
+Al crear la base de datos, `deploy/postgres-init/10-enregla-roles.sh` crea los roles `enregla_owner` y `enregla_app`. El servicio `migrate` aplica las migraciones con `enregla_owner`, fija los permisos de `enregla_app` y termina; solo entonces arranca la app, conectada como `enregla_app` (apartado 13). Si la configuración no es válida, el contenedor `app` se para con un mensaje claro en los logs (p. ej. «APP_URL debe usar https en producción»): corrígelo en `server/.env` y repite el `up -d`. Si `migrate` falla, la app no arranca: `$C logs migrate`.
 
 Comprueba:
 
@@ -72,7 +75,7 @@ curl -fsS https://app.tudominio.es/readyz    # {"status":"ok"}  (la base de dato
 
 Después, desde el navegador: regístrate, confirma el email (si no llega, ver apartado 9), crea un local y haz un registro de prueba.
 
-> Recomendado: separa el rol de migraciones del rol de ejecución de la app (`docs/db-roles-hardening.sql`, explicado en el README) para que nadie con las credenciales de la app pueda alterar el historial de registros.
+> La separación de roles se aplica **por defecto** (apartado 13): nadie con las credenciales de la app puede modificar, borrar ni desactivar la protección del historial de registros. Si actualizas un despliegue anterior a esta versión, sigue el apartado 13 **antes** del `up -d`.
 
 ## 3. Copias de seguridad
 
@@ -160,8 +163,9 @@ $C exec db dropdb -U enregla enregla_restore_test
    $C exec -T db pg_restore -U enregla --no-owner --no-privileges --exit-on-error -d enregla < "$F"
    ```
 
-4. Arranca la app: `$C start app` y comprueba `/readyz`, el login y el historial de un local. Las sesiones no están en la copia: **todos los usuarios tendrán que volver a iniciar sesión** (y los enlaces de email pendientes habrá que pedirlos de nuevo).
-5. Si la copia es de una versión anterior de la app, la app aplica sola las migraciones que falten al arrancar.
+4. Vuelve a separar los roles (lo restaurado queda a nombre del administrador): `$C exec -T db sh /docker-entrypoint-initdb.d/10-enregla-roles.sh` y `$C run --rm migrate` (apartado 13).
+5. Arranca la app: `$C start app` y comprueba `/readyz`, el login y el historial de un local. Las sesiones no están en la copia: **todos los usuarios tendrán que volver a iniciar sesión** (y los enlaces de email pendientes habrá que pedirlos de nuevo).
+6. Si la copia es de una versión anterior de la app, `migrate` aplica las migraciones que falten.
 
 En un servidor nuevo: instala Docker, clona el repositorio, recupera `server/.env` (guárdalo en tu gestor de contraseñas: sin él no tienes los secretos), `up -d db`, restaura como arriba y después `up -d --build`.
 
@@ -173,8 +177,9 @@ git fetch && git log --oneline HEAD..origin/main     # qué cambia
 C="docker compose -f docker-compose.prod.yml --env-file server/.env"
 $C exec backup sh /usr/local/bin/enregla-backup.sh  # copia ANTES de actualizar
 git pull
-$C up -d --build app                                 # reconstruye y reinicia solo la app
-$C logs -f app                                       # migraciones aplicadas, sin errores
+$C up -d --build migrate app                         # migraciones (rol propietario) y después la app
+$C logs migrate                                      # migraciones y permisos aplicados, sin errores
+$C logs -f app
 curl -fsS https://app.tudominio.es/readyz
 ```
 
@@ -206,7 +211,8 @@ Tras cambiar cualquier valor de `server/.env`: `$C up -d app` (recrea el contene
 
 | Secreto | Cómo rotarlo |
 |---|---|
-| `POSTGRES_PASSWORD` | `$C exec db psql -U enregla -d enregla -c "ALTER ROLE enregla PASSWORD 'NUEVA'"`, cambia `POSTGRES_PASSWORD` en `server/.env` y `$C up -d app backup` (la variable del contenedor `db` solo se usa al crear el volumen la primera vez) |
+| `POSTGRES_PASSWORD` | `$C exec db psql -U enregla -d enregla -c "ALTER ROLE enregla PASSWORD 'NUEVA'"`, cambia `POSTGRES_PASSWORD` en `server/.env` y `$C up -d backup` (la variable del contenedor `db` solo se usa al crear el volumen la primera vez) |
+| `DB_APP_PASSWORD` / `DB_OWNER_PASSWORD` | cambia el valor en `server/.env` y ejecuta `$C up -d db` y `$C exec -T db sh /docker-entrypoint-initdb.d/10-enregla-roles.sh` (fija las contraseñas nuevas); después `$C up -d migrate app` |
 | `SMTP_PASS` | genera una nueva credencial en el proveedor, cámbiala en `.env`, reinicia la app y revoca la antigua |
 | `STRIPE_SECRET_KEY` | en Stripe (Developers → API keys) usa «Roll key» con un periodo de solapamiento, cambia `.env`, reinicia y deja caducar la antigua. Mejor aún, usa una *restricted key* con los permisos mínimos (Checkout, portal, suscripciones) |
 | `STRIPE_WEBHOOK_SECRET` | en el endpoint de webhook, «Roll secret»; Stripe firma con ambos durante el periodo indicado; cambia `.env` y reinicia |
@@ -273,3 +279,41 @@ Los informes PDF se maquetan en un `worker_thread` aparte (no frenan el resto de
 **Límite de memoria recomendado del contenedor `app`: 1 GB** (ya fijado con `mem_limit: 1g` en `docker-compose.prod.yml`): proceso principal ~250 MB + 2 workers de PDF (≤ 256 MB de heap cada uno más el búfer del PDF, máx. 64 MB) con margen. Si subes `PDF_MAX_CONCURRENCY`, añade ~350 MB por cada PDF simultáneo adicional. Si el contenedor se queda sin memoria, Docker lo mata y lo reinicia (`restart: unless-stopped`): vigila `docker stats` y los reinicios (`docker compose ps`).
 
 **Timeouts del proxy** (`deploy/Caddyfile`): cabeceras 15 s, cuerpo 60 s, conexión inactiva 120 s del lado del cliente; hacia la app, conexiones reutilizables 60 s (menos que el keep-alive de 125 s de la app) y hasta 290 s para recibir la respuesta (menos que el límite de 300 s de la app).
+
+## 13. Roles de la base de datos (registros no modificables)
+
+La aplicación no tiene ninguna forma de modificar ni borrar un registro (las correcciones son registros nuevos) y un trigger de PostgreSQL rechaza `UPDATE` y `DELETE` en `records`. Pero un trigger lo puede desactivar el **propietario** de la tabla. Por eso los compose separan, **por defecto**, tres roles:
+
+| Rol | Para qué | Qué puede hacer |
+|---|---|---|
+| `enregla` (`POSTGRES_PASSWORD`) | administración y copias (`backup`) | todo (superusuario del contenedor) |
+| `enregla_owner` (`DB_OWNER_PASSWORD`) | servicio `migrate`: migraciones y permisos, en un paso aparte que termina antes de arrancar la app | propietario del esquema y de las tablas |
+| `enregla_app` (`DB_APP_PASSWORD`) | la app (`MIGRATE_ON_START=false`) | leer y escribir las tablas normales; en `records` **solo `SELECT` e `INSERT`**. Sin DDL (no puede crear, alterar ni borrar tablas), sin ser propietario de nada (no puede desactivar triggers) y sin `TRUNCATE` |
+
+Los crea `deploy/postgres-init/10-enregla-roles.sh` (lo ejecuta PostgreSQL al crear el volumen) y los permisos los fija `migrate` tras cada migración (`APP_DB_ROLE=enregla_app` → `server/src/db/privileges.ts`), así que también cubren las tablas nuevas. Al eliminar un local, el borrado en cascada de sus registros lo hace PostgreSQL con los permisos del propietario de la tabla y el trigger solo lo permite cuando el local ya no existe.
+
+Al arrancar, la app comprueba con qué permisos conecta y, si su rol puede alterar `records` (superusuario, propietario o con `UPDATE`/`DELETE`/`TRUNCATE`), escribe un aviso en el log: «El rol de base de datos de la app (…) …: los registros solo están protegidos por la aplicación».
+
+**Comprobado** (PostgreSQL 16, base desechable): con `enregla_app`, `ALTER TABLE records DISABLE TRIGGER …` → «must be owner of table records»; `UPDATE`/`DELETE`/`TRUNCATE records` → «permission denied for table records»; `CREATE TABLE` → «permission denied for schema public»; `SET session_replication_role` → denegado. La app arranca y funciona con ese rol (la suite e2e completa pasa contra él) y el borrado en cascada de un local funciona.
+
+Comprobación en tu servidor:
+
+```bash
+C="docker compose -f docker-compose.prod.yml --env-file server/.env"
+$C exec -T db sh -c 'PGPASSWORD="$DB_APP_PASSWORD" psql -h 127.0.0.1 -U enregla_app -d enregla -c "ALTER TABLE records DISABLE TRIGGER records_immutable_trg"'   # debe fallar
+$C exec -T db sh -c 'PGPASSWORD="$DB_APP_PASSWORD" psql -h 127.0.0.1 -U enregla_app -d enregla -c "UPDATE records SET alert = alert"'                       # debe fallar
+```
+
+### Migrar un despliegue existente (anterior a esta versión)
+
+Antes la app se conectaba como `enregla`, el superusuario del contenedor. Para pasar a roles separados sin perder datos:
+
+1. Copia de seguridad: `$C exec backup sh /usr/local/bin/enregla-backup.sh` (o `pg_dump` a mano) y comprueba que el fichero existe.
+2. `git pull` y añade a `server/.env` dos claves nuevas y distintas: `DB_OWNER_PASSWORD` y `DB_APP_PASSWORD` (`openssl rand -base64 32`).
+3. Recrea `db` con el nuevo volumen de inicio y sus variables (los datos no se tocan): `$C up -d db`.
+4. Crea los roles y pasa la propiedad de todo a `enregla_owner` (idempotente): `$C exec -T db sh /docker-entrypoint-initdb.d/10-enregla-roles.sh`.
+5. Migraciones y permisos con el rol propietario: `$C run --rm migrate` (debe terminar con «Permisos del rol de la app (enregla_app) aplicados»).
+6. Arranca la app con el rol de ejecución: `$C up -d --build migrate app`. Comprueba `/readyz`, que el log **no** muestra el aviso de roles y las dos órdenes de comprobación de arriba.
+
+Volver atrás: el código anterior conectaba como `enregla` (superusuario), que sigue teniendo acceso a todo, así que basta con desplegar la versión anterior. Si despliegas sin Docker, aplica lo mismo a mano: crea los dos roles con el script (como superusuario y con `POSTGRES_DB`/`POSTGRES_USER` exportados), ejecuta `npm run migrate:prod` con el rol propietario y `APP_DB_ROLE=enregla_app`, y arranca la app con el rol de ejecución y `MIGRATE_ON_START=false`. `docs/db-roles-hardening.sql` queda como referencia del mismo esquema en SQL.
+

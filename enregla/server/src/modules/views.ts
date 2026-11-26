@@ -1,6 +1,7 @@
 import type { CleaningPlan, Equipment, Organization, RecordRow, Staff } from '../db/types.js';
 import type { Role } from '../db/types.js';
 import { subscriptionView } from './billing/status.js';
+import { recordCorrector, recordSignature } from '../schemas/index.js';
 
 export function orgView(o: Organization, role: Role) {
   return {
@@ -64,6 +65,10 @@ export function recordView(r: RecordRow & { amended_by?: string | null }) {
     staff: r.staff_id ? { id: r.staff_id, name: r.staff_name } : null,
     user: r.user_id ? { id: r.user_id, name: r.user_name } : null,
     deviceId: r.device_id,
+    /** Firma legible (NUEVO): «Ana Martín (anotado por Laura Gil)» si un usuario lo anotó para un empleado. */
+    signature: recordSignature({ staffName: r.staff_name, userName: r.user_name, deviceId: r.device_id, isAmendment: r.amends_record_id != null }),
+    /** En una corrección (NUEVO): quién la hizo (el usuario en la web; el empleado en la tablet). */
+    correctedBy: r.amends_record_id ? recordCorrector({ staffName: r.staff_name, userName: r.user_name }) : null,
     alert: r.alert,
     amendsRecordId: r.amends_record_id,
     amendmentReason: r.amendment_reason,

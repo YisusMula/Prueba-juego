@@ -161,6 +161,8 @@ export interface SuppliersTable {
   email: string | null;
   products: Json<string[]>;
   notes: string | null;
+  /** Categoría de producto por defecto en la recepción (migración 0006). */
+  default_category: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -183,6 +185,8 @@ export interface RecordsTable {
   created_at: Timestamp;
   /** Fecha del hecho: la del registro raíz en una enmienda. La rellena un trigger. */
   effective_at: ColumnType<Date, never, never>;
+  /** Orden de inserción (migración 0006): desempata original → corrección con la misma fecha del hecho. */
+  seq: ColumnType<number, never, never>;
 }
 
 export interface DishesTable {

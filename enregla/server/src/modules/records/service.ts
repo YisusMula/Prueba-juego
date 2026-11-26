@@ -9,7 +9,11 @@ import { localDate } from '../../lib/dates.js';
 export interface Actor {
   userId: string | null;
   userName: string | null;
-  staffId: string | null;
+  /**
+   * Empleado que figura como autor del hecho. En una corrección, `undefined` conserva el del
+   * registro original (corregir un dato no cambia quién lo hizo); `null` lo quita.
+   */
+  staffId: string | null | undefined;
   deviceId: string | null;
 }
 
@@ -94,15 +98,17 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
         if (!s) throw notFound('Proveedor');
         supplierName = s.name;
       }
-      const temperatureOutOfRange = S.receptionOverTemperature(d);
+      // Límites según la categoría del producto (o los indicados); sin categoría en una petición
+      // antigua con temperatura se aplica refrigerado (≤ 4 °C) y queda marcado (S.receptionLimits).
+      const limits = S.receptionLimits(d);
+      const temperatureOutOfRange = S.receptionOutOfLimits(d, limits);
       // Caducidad anterior a hoy (fecha local del local).
       const expired = d.expiryDate != null && d.expiryDate < today;
-      if (d.accepted && (expired || temperatureOutOfRange) && !d.correctiveAction) {
+      const needsReason = expired || (temperatureOutOfRange && !limits.assumed);
+      if (d.accepted && needsReason && !d.correctiveAction) {
         throw validationError(
           'data.correctiveAction',
-          expired
-            ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas'
-            : 'La temperatura supera la máxima admisible: indica qué has hecho o por qué la aceptas',
+          expired ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas' : S.receptionLimitMessage(limits),
         );
       }
       return {
@@ -112,7 +118,10 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
           product: d.product,
           lot: d.lot,
           temperature: d.temperature ?? null,
-          maxTemperature: d.maxTemperature ?? null,
+          category: limits.category,
+          categoryAssumed: limits.assumed,
+          maxTemperature: limits.max,
+          minTemperature: limits.min,
           temperatureOutOfRange,
           expiryDate: d.expiryDate ?? null,
           expired,
@@ -120,7 +129,7 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
           rejectionReason: d.accepted ? null : d.rejectionReason,
           correctiveAction: d.accepted ? d.correctiveAction : null,
         },
-        // Alerta: rechazo, o aceptación de mercancía caducada o por encima de la temperatura máxima.
+        // Alerta: rechazo, o aceptación de mercancía caducada o fuera del límite de temperatura.
         alert: !d.accepted || expired || temperatureOutOfRange,
         equipmentId: null,
         cleaningPlanId: null,
@@ -219,9 +228,12 @@ export async function createRecord(
     if (already) throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
   }
   const prepared = await prepare(db, org.id, type, rawData, localDate(opts.now ?? new Date(), org.timezone));
+  // En una corrección, por defecto se conserva el firmante del original (aunque ya esté desactivado).
+  const staffId = actor.staffId === undefined ? (original?.staff_id ?? null) : actor.staffId;
   let staffName: string | null = null;
-  if (actor.staffId) staffName = (await resolveStaff(db, org.id, actor.staffId)).name;
-  if (!actor.staffId && !actor.userId) throw validationError('staffId', 'Indica quién realiza el registro');
+  if (staffId && original && staffId === original.staff_id) staffName = original.staff_name;
+  else if (staffId) staffName = (await resolveStaff(db, org.id, staffId)).name;
+  if (!staffId && !actor.userId) throw validationError('staffId', 'Indica quién realiza el registro');
   try {
     return await db
       .insertInto('records')
@@ -229,7 +241,7 @@ export async function createRecord(
         organization_id: org.id,
         type,
         data: json(prepared.data),
-        staff_id: actor.staffId,
+        staff_id: staffId,
         staff_name: staffName,
         user_id: actor.userId,
         user_name: actor.userName,

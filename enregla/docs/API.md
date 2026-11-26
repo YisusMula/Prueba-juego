@@ -50,6 +50,7 @@ type ErrorResponse = {
 | 400 | `REPORT_TOO_LARGE` | Informe PDF con más de 5000 registros (acota fechas/tipos o usa el CSV) o CSV con más de 500 000 (acota y descárgalo en partes). |
 | 429 | `RATE_LIMITED` | Límite de peticiones (o servidor ocupado generando PDF). Cabecera `Retry-After` (segundos). Muestra `error.message`, que explica el motivo. |
 | 429 | `PIN_LOCKED` | Kiosko: PIN bloqueado tras 5 fallos (15 min). Cabecera `Retry-After`. |
+| 403 | `CORRECTION_NOT_ALLOWED` | Kiosko (NUEVO, fase 1): la corrección desde la tablet no está permitida (otra persona, otro dispositivo, registro web o ya corregido, o fuera de los 2 minutos). `error.message` lo explica. |
 | 502 | `BILLING_ERROR` | Fallo al hablar con Stripe (también al cancelar la suscripción cuando se elimina un local: el local NO se elimina). En el webhook, 503 `BILLING_ERROR` = «reintentar» (solo lo ve Stripe). |
 | 503 | `BILLING_NOT_CONFIGURED` | Stripe no configurado en el servidor. |
 | 500 | `INTERNAL_ERROR` | Error inesperado (sin detalles internos). |
@@ -143,6 +144,8 @@ Todas las respuestas 429 llevan `Retry-After` (segundos) y un `error.message` en
 | Kiosko por dispositivo | 600 / min; intentos de PIN 30 / 15 min; **PIN erróneos 20 / 15 min** (todas las personas) |
 | Alta de registros y enmiendas (web) por usuario y local | 120 / min |
 | Alta de registros (kiosko) por dispositivo | 120 / min |
+| Correcciones desde la tablet por dispositivo (NUEVO) | 20 / 10 min (además del límite de altas y de los de PIN) |
+| Salir / desvincular la tablet con contraseña de responsable (NUEVO) | 10 intentos / 15 min por dispositivo, más el techo de login por cuenta (100 / hora) |
 | Informes PDF | 10 / 10 min por local **y** por usuario |
 | Informes CSV | 20 / 10 min por local y por usuario |
 | Exportación RGPD | 5 / hora por local y por usuario |
@@ -155,7 +158,7 @@ Todas las respuestas 429 llevan `Retry-After` (segundos) y un `error.message` en
 
 ### 1.7 Idempotencia al crear registros (`Idempotency-Key`)
 
-`POST /api/orgs/{orgId}/records`, `POST /api/orgs/{orgId}/records/{recordId}/amendments` y `POST /api/kiosk/records` aceptan la cabecera opcional **`Idempotency-Key: <UUID>`**. Sirve para que un reintento (red móvil que se corta, doble toque en «Guardar», cola offline de la tablet) no duplique el registro.
+`POST /api/orgs/{orgId}/records`, `POST /api/orgs/{orgId}/records/{recordId}/amendments`, `POST /api/kiosk/records` y `POST /api/kiosk/records/{recordId}/amendments` aceptan la cabecera opcional **`Idempotency-Key: <UUID>`**. Sirve para que un reintento (red móvil que se corta, doble toque en «Guardar», cola offline de la tablet) no duplique el registro.
 
 Cómo usarla en el cliente:
 
@@ -383,7 +386,7 @@ Query: `limit` (1–200), `cursor` (string numérica = `id` del último). Orden:
 ```ts
 200 { items: { id: string; event: string; user: { id: string; name: string | null } | null; ip: string | null; metadata: object; createdAt: string }[]; nextCursor: string | null }
 ```
-Etiquetas legibles de TODOS los eventos que emite el servidor: `AUDIT_EVENT_LABELS` en `schemas/index.ts` (un test comprueba que no falta ninguno). Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.deletion_scheduled`, `org.restored`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `device.revoked_with_member`, `billing.subscription_canceled`, `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
+Etiquetas legibles de TODOS los eventos que emite el servidor: `AUDIT_EVENT_LABELS` en `schemas/index.ts` (un test comprueba que no falta ninguno). Eventos (solo los asociados al local; los de cuenta como `auth.login` no aparecen aquí): `org.created`, `org.updated`, `org.deletion_scheduled`, `org.restored`, `org.exported`, `member.invited`, `member.role_changed`, `member.removed`, `member.joined`, `device.created`, `device.revoked`, `device.revoked_with_member`, `billing.subscription_canceled`, `device.kiosk_exit` (NUEVO: salida del modo cocina autorizada), `device.kiosk_auth_failed` (NUEVO: contraseña de responsable incorrecta en la tablet), `staff.pin_changed`, `staff.pin_failed`, `staff.pin_locked`, `report.generated`, `billing.checkout_started`, `billing.subscription_updated`, `public_menu.updated`, `member.invitation_revoked`.
 
 ---
 
@@ -484,6 +487,8 @@ type Record = {
   staff: { id: string; name: string } | null;      // quién firma (personal)
   user: { id: string; name: string } | null;       // usuario que lo creó (null desde kiosko)
   deviceId: string | null;                          // dispositivo de cocina, si aplica
+  signature: string;                                // NUEVO (fase 1): firma legible, la misma del PDF y el CSV (ver abajo)
+  correctedBy: string | null;                       // NUEVO (fase 1): en una enmienda, quién la hizo (usuario en la web; empleado en la tablet). null si no es enmienda
   alert: boolean;                                   // fuera de rango / rechazo / indicios / incidencia abierta
   amendsRecordId: string | null;                    // si es una enmienda: id del original
   amendmentReason: string | null;
@@ -492,6 +497,10 @@ type Record = {
   createdAt: string;                                // hora real de inserción (en una enmienda: cuándo se enmendó)
 };
 ```
+
+**Firma (NUEVO, fase 1).** En la web el autor de un registro es **siempre** el usuario con sesión (`user`). Si indica un empleado (`staffId`), el registro es de ese empleado **anotado por** el usuario: `signature = "Ana Martín (anotado por Laura Gil)"`; sin empleado, el usuario (`"Laura Gil"`); desde la tablet, el empleado (`"Ana Martín"`, con su PIN si lo tiene). En una enmienda, `signature` es quien figura como autor del hecho y `correctedBy` quien corrigió (nunca el firmante del original). `recordSignature` y `recordCorrector` (`schemas`) generan el mismo texto que el servidor.
+
+**Orden (NUEVO, fase 1).** Una enmienda comparte `effectiveAt` con su original; a igual `effectiveAt` el orden es el de inserción (columna `seq`, migración `0006`): original → corrección → corrección…, también con la misma hora exacta. Lo usan el historial, el PDF, el CSV y «Hoy».
 
 ### Datos por tipo (entrada → almacenado)
 
@@ -503,10 +512,14 @@ Almacenado: `{ equipmentId, equipmentName, value, minTemp, maxTemp, outOfRange: 
 Los `itemId` deben pertenecer al plan, sin duplicados; los ítems no enviados cuentan como no hechos. **Al menos una zona debe estar hecha** (si no → 400 `data.items`: «Marca al menos una zona hecha»).
 Almacenado: `{ cleaningPlanId, planName, items: { itemId, area, done }[], completed: boolean, observations }`. `alert = false`. Una limpieza con `completed: false` es **parcial**: se guarda, pero **no cuenta como tarea hecha** en Hoy ni en el cumplimiento (muéstrala como «Parcial (2 de 5)»).
 
-**recepcion** — entrada `{ supplierId?: uuid; supplierName?: string; product: string; lot?: string; temperature?: number (−60…100); maxTemperature?: number (−60…100); expiryDate?: "AAAA-MM-DD"; accepted: boolean; rejectionReason?: string; correctiveAction?: string }`.
+**recepcion** — entrada `{ supplierId?: uuid; supplierName?: string; product: string; lot?: string; temperature?: number (−60…100); category?: 'refrigerado' | 'congelado' | 'ambiente' | 'caliente'; maxTemperature?: number (−60…100); minTemperature?: number (−60…100); expiryDate?: "AAAA-MM-DD"; accepted: boolean; rejectionReason?: string; correctiveAction?: string }`.
 Hace falta `supplierId` o `supplierName`; si `accepted = false`, `rejectionReason` es obligatorio. Con `supplierId`, el nombre se toma del proveedor.
-`maxTemperature` (NUEVO, opcional) es la temperatura máxima admisible del producto (atajos orientativos: refrigerado 4 °C, congelado −18 °C; `RECEPTION_MAX_TEMP_PRESETS`). Si se **acepta** mercancía con `temperature > maxTemperature` o con `expiryDate` anterior a hoy (fecha local del local), `correctiveAction` (motivo / acción) es obligatoria (400 `data.correctiveAction`) y el registro queda con alerta.
-Almacenado: `{ supplierId, supplierName, product, lot, temperature, maxTemperature, temperatureOutOfRange, expiryDate, expired, accepted, rejectionReason, correctiveAction }`. `alert = !accepted || expired || temperatureOutOfRange`.
+**Tipo de producto (NUEVO, fase 1)**: `category` fija el límite por defecto, el mismo de las plantillas de equipos (`RECEPTION_CATEGORY_LIMITS`, `REFERENCE_TEMPS`): refrigerado máx. 4 °C, congelado máx. −18 °C, ambiente sin límite, caliente mín. 63 °C. `maxTemperature`/`minTemperature` lo sustituyen si se envían (límite editado); si faltan o son `null`, se usa el de la categoría. La interfaz exige la categoría; en la API es opcional por compatibilidad:
+- sin `category` pero con `maxTemperature`/`minTemperature` (cliente antiguo con atajo): se usan esos límites, como antes;
+- sin `category` ni límites y **con** `temperature` (cliente antiguo): se aplica refrigerado (máx. 4 °C) y se guarda `categoryAssumed: true`. Es la regla más segura que no rompe a un cliente antiguo: la mercancía con control de temperatura suele ser refrigerada, y 4 °C es el límite más estricto que no marca como incidencia todo lo refrigerado; si se supera, el registro queda **con alerta** (no se rechaza con 400, porque el cliente antiguo no puede pedir la acción correctora y se perdería la anotación).
+- sin `temperature` no se aplica ningún límite.
+Si se **acepta** mercancía fuera del límite (`temperature > max` o `< min`) con la categoría indicada (o con límites explícitos), o con `expiryDate` anterior a hoy (fecha local del local), `correctiveAction` (motivo / acción) es obligatoria (400 `data.correctiveAction`) y el registro queda con alerta. Lo valida el servidor (también desde el kiosko).
+Almacenado: `{ supplierId, supplierName, product, lot, temperature, category, categoryAssumed, maxTemperature, minTemperature, temperatureOutOfRange, expiryDate, expired, accepted, rejectionReason, correctiveAction }` (`maxTemperature`/`minTemperature`: el límite aplicado). Los registros anteriores no tienen `category`/`minTemperature`/`categoryAssumed`. `alert = !accepted || expired || temperatureOutOfRange`.
 
 **aceite** — entrada `{ equipmentId: uuid (de tipo 'freidora'); action: 'revisado' | 'cambiado'; polarCompounds?: number (0–100, %); correctiveAction?: string }`.
 Si `polarCompounds > 25` (umbral de referencia `POLAR_COMPOUNDS_LIMIT`), `correctiveAction` es obligatoria.
@@ -524,18 +537,19 @@ Almacenado: `{ traineeStaffId, traineeName, course, trainingDate, trainer, hours
 En la entrada, los textos opcionales vacíos se guardan como `null`.
 
 ### GET `/records`
-Query: `type?`, `from?` y `to?` (`AAAA-MM-DD`, fechas locales del local, inclusive; se comparan con `effectiveAt`), `equipmentId?`, `staffId?`, `alert?` (`true`/`false`), `limit`, `cursor`. → `200 Page<Record>` ordenado por `effectiveAt` descendente (más recientes primero; una enmienda aparece junto a su original).
+Query: `type?`, `from?` y `to?` (`AAAA-MM-DD`, fechas locales del local, inclusive; se comparan con `effectiveAt`), `equipmentId?`, `staffId?`, `alert?` (`true`/`false`), `limit`, `cursor`. → `200 Page<Record>` ordenado por `effectiveAt` descendente (más recientes primero) y, a igual `effectiveAt`, por orden de inserción (una enmienda aparece **justo después** de su original).
 
 ### GET `/records/{recordId}`
 `200 { record: Record; amends: Record | null; amendedBy: Record | null }`
 
 ### POST `/records` — escritura
 Cuerpo: `{ type: RecordType; data: <entrada del tipo>; staffId?: uuid | null }` → `201 { record: Record }` (o `200` si es una repetición con la misma `Idempotency-Key`, §1.7).
-`staffId` (opcional desde la web) indica qué miembro del personal firma; debe ser del local y estar activo. El usuario autenticado siempre queda registrado en `user`.
+`staffId` (opcional desde la web) indica qué miembro del personal hizo el registro; debe ser del local y estar activo. **No se pide su PIN**: por eso el usuario autenticado queda siempre como autor (`user`) y la firma es «Empleado (anotado por Usuario)» en la app, el PDF y el CSV. El PIN solo se exige en el kiosko.
 Errores: 400 `VALIDATION_ERROR` (paths con prefijo `data.`), 404 si `equipmentId`/`cleaningPlanId`/`supplierId`/`traineeStaffId`/`staffId` no son del local, 402 `READ_ONLY`, 409 (clave de idempotencia con otro cuerpo), 429 (más de 120 altas por minuto del mismo usuario en el local).
 
 ### POST `/records/{recordId}/amendments` — escritura
 Cuerpo: `{ reason: string (1–1000); data: <entrada COMPLETA del tipo del original>; staffId?: uuid | null }` → `201 { record: Record }` (con `amendsRecordId`, `amendmentReason` y `effectiveAt` = el del original; `200` en una repetición con la misma `Idempotency-Key`).
+**Firmante (CAMBIO, fase 1):** sin `staffId` se **conserva** el empleado del original (aunque esté desactivado): corregir un dato no cambia quién hizo el hecho. Con otro `staffId` (activo) se cambia el firmante; `null` lo quita (firma el usuario). El motivo sigue siendo obligatorio. El autor de la corrección (`correctedBy`) es siempre el usuario con sesión. Antes, omitir `staffId` dejaba la enmienda sin empleado.
 Errores: 400, 404, 409 `CONFLICT` si el registro ya tiene enmienda (o clave de idempotencia con otro cuerpo), 429 (comparte el límite de 120/min con las altas).
 
 ---
@@ -543,14 +557,16 @@ Errores: 400, 404, 409 `CONFLICT` si el registro ya tiene enmienda (o clave de i
 ## 11. Proveedores — `/api/orgs/{orgId}/suppliers`
 
 ```ts
-type Supplier = { id: string; name: string; contactName: string | null; phone: string | null; email: string | null; products: string[]; notes: string | null; createdAt: string };
+type Supplier = { id: string; name: string; contactName: string | null; phone: string | null; email: string | null; products: string[]; notes: string | null;
+  defaultCategory: 'refrigerado' | 'congelado' | 'ambiente' | 'caliente' | null; // NUEVO (fase 1): se preselecciona en la recepción
+  createdAt: string };
 ```
 
 | Método | Ruta | Cuerpo | Respuesta |
 |---|---|---|---|
 | GET | `/suppliers?q=&limit&cursor` | – (`q` busca en el nombre) | `200 Page<Supplier>` |
 | GET | `/suppliers/{supplierId}` | – | `200 { supplier }` |
-| POST | `/suppliers` (escritura) | `{ name (1–150); contactName?; phone?; email? (válido o ""); products?: string[] (≤200); notes? }` | `201 { supplier }` |
+| POST | `/suppliers` (escritura) | `{ name (1–150); contactName?; phone?; email? (válido o ""); products?: string[] (≤200); notes?; defaultCategory?: categoría \| null }` | `201 { supplier }` |
 | PATCH | `/suppliers/{supplierId}` (escritura) | subconjunto | `200 { supplier }` |
 | DELETE | `/suppliers/{supplierId}` (escritura) | – | `204` (los registros conservan el nombre) |
 
@@ -637,6 +653,8 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
     status: 'done' | 'pending';
     countsToday: boolean;    // NUEVO: false si el equipo se dio de alta o se reactivó HOY: se muestra (y lo registrado figura como hecho) pero no es exigible ni cuenta en `summary`
     correctedLater: number;  // NUEVO (I-1): lecturas de `done` que solo cuentan por correcciones de un día posterior
+    withAlert: boolean;      // NUEVO (fase 1): alguna lectura vigente de hoy está fuera de rango → «Hecho con alerta» si status = 'done'
+    remeasure: boolean;      // NUEVO (fase 1): la ÚLTIMA lectura vigente de hoy está fuera de rango → tarea «Volver a medir»; desaparece con una lectura posterior dentro de rango (o al corregir la lectura)
     lastReading: { value: number; outOfRange: boolean; at: string } | null;   // `at` = effectiveAt
   }[];                       // equipos activos con checksPerDay > 0
   cleaning: {
@@ -648,13 +666,17 @@ El slug son 22 caracteres aleatorios (128 bits). Para el QR, la SPA debe tener u
     partial: { done: number; total: number; at: string; recordId: string } | null; // NUEVO: última limpieza parcial del periodo si aún no hay una completa
   }[];                       // planes activos que tocan hoy
   summary: { total: number; done: number; pending: number; percent: number;   // solo elementos con countsToday
-             correctedLater: number };   // NUEVO (I-1): de `done`, cuántas tareas cuentan solo gracias a una CORRECCIÓN registrada en un día posterior al del hecho (informativo; no cambia el cálculo)
+             correctedLater: number;     // NUEVO (I-1): de `done`, cuántas tareas cuentan solo gracias a una CORRECCIÓN registrada en un día posterior al del hecho (informativo; no cambia el cálculo)
+             doneWithAlert: number;      // NUEVO (fase 1): equipos hechos con alguna lectura fuera de rango (cuentan en `done`)
+             remeasure: number };        // NUEVO (fase 1): equipos con «Volver a medir» pendiente (informativo; no cambia `pending` ni `percent`)
   alerts: {
     kind: 'temperatura_fuera_de_rango' | 'aceite_fuera_de_limite' | 'recepcion_rechazada' | 'recepcion_con_incidencia' /* NUEVO: aceptada caducada o por encima de la máxima */ | 'plagas_con_indicios' | 'incidencia_abierta';
     recordId: string; message: string; createdAt: string;
   }[];                       // alertas de hoy + incidencias abiertas de cualquier fecha (máx. 50 + 50)
 }
 ```
+**«Hecho con alerta» (fase 1).** Una lectura fuera de rango **cuenta como registro hecho** en `done`, `percent` y en el cumplimiento: el control se hizo y quedó documentado con su acción correctora; quitarlo del porcentaje castigaría precisamente al local que mide y anota la incidencia. La alerta y la remedición se informan aparte (`withAlert`, `remeasure`, `summary.doneWithAlert`, `summary.remeasure` y la lista `alerts`) para que no se confundan con «todo correcto». `remeasure` se deriva de los registros (no hay estado nuevo).
+
 Los mensajes de las alertas usan formato es-ES («3,5 °C», «−18 °C», «al 27 %»). Reglas: un plan semanal toca el `weekday` indicado; uno mensual, el `monthDay`. Se considera hecho si hay un registro de limpieza **completo** del plan (por `effectiveAt`) desde el inicio de su periodo (lunes de la semana / día 1 del mes / hoy) hasta hoy. Las lecturas sustituidas por una enmienda no cuentan; la enmienda cuenta en el día del original. Las alertas «de hoy» son las de registros cuyo hecho es de hoy; `createdAt` de cada alerta = `effectiveAt`.
 
 ### GET `/tasks/compliance?from=AAAA-MM-DD&to=AAAA-MM-DD`
@@ -676,10 +698,12 @@ Lo esperado de cada día sale de la **configuración vigente ese día** (histori
 Query común: `from`, `to` (`AAAA-MM-DD`, inclusive, máx. 366 días) y `types` opcional (lista separada por comas de `RecordType`; vacío = todos). Disponibles para owner y manager, también en solo lectura. Quedan auditados.
 
 ### GET `/reports/pdf`
+**Fase 1:** columna «Firma» con `signature` («Ana Martín (anotado por Laura Gil)»); en las enmiendas, «CORRECCIÓN de un registro anterior. Firmó: X · Corrigió: Y el … · Motivo: …» (y «Firmante anterior: Z» si cambió el firmante); en el original, «Corregido el … por Y (ver la corrección a continuación)» con Y = quien corrigió; orden original → corrección; recepción con «6 °C (Refrigerado, máx. 4 °C)» y «Aceptada con alerta: supera el límite de temperatura». La nota de la cabecera dice con exactitud: «La aplicación no permite modificar ni borrar registros: cada corrección se guarda como un registro nuevo, a continuación del original, con su autor, fecha y motivo. Si el establecimiento elimina el local en la aplicación, sus registros se conservan 30 días (durante los que puede restaurarlo) y después se borran definitivamente; su titular también puede pedir la eliminación inmediata.»
+
 `200 application/pdf` con `Content-Disposition: attachment; filename="registros-{local}-{from}-a-{to}.pdf"`. A4 apaisado: cabecera con local, tipo, zona horaria con nombre legible («Hora peninsular y de Baleares», `timezoneLabel`), periodo y tipos; formatos es-ES (coma decimal, signo «−», «máx./mín.» en vez de «<=/>=»); limpiezas como «Completa (5 de 5)» o «Parcial (2 de 5)»; en el original corregido, «Corregido el … por …» (sin ids internos); una tabla por tipo (ordenada por fecha del hecho); «Fecha y hora» = fecha del **hecho** (`effectiveAt`); filas fuera de rango en rojo; enmiendas destacadas con su motivo, referencia cruzada y **cuándo y por quién** se enmendó; pie con fecha de generación y número de página. Fuente Unicode embebida: los textos salen completos (sin «…»; las celdas largas continúan en la página siguiente) y con cualquier letra latina, griega o cirílica; los caracteres sin glifo (muchos emojis, CJK) salen como `□`. Respuesta con `Content-Length` (el PDF se genera entero antes de enviarse). **Máximo 5000 registros**: si el periodo/tipos superan esa cifra → 400 `REPORT_TOO_LARGE` (mensaje: acota fechas o tipos, o usa el CSV), antes de empezar a generar. **NUEVO (I-1):** si en el periodo hay días con tareas cumplidas mediante una corrección hecha en un día posterior, el PDF incluye tras la cabecera el apartado «Cumplimiento completado con correcciones posteriores», con una nota por día («3 de noviembre de 2026: 1 tarea(s) cumplida(s) mediante una corrección hecha en un día posterior (cumplimiento del día: X de Y)»). Se genera en un `worker_thread` y se envía completo. Límites (B-2, ver 1.6): 10 / 10 min por local y por usuario; **1 PDF a la vez por local y por usuario** (429 propio); 180 s de generación por local y hora (429); y como mucho 2 PDF a la vez en el servidor, con **cola de espera de hasta 20 s** por orden de llegada antes del 429. La petición puede tardar, por tanto, hasta ~20 s más de lo habitual en responder: el frontend debe mostrar «Generando…» sin un timeout corto.
 
 ### GET `/reports/csv`
-`200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora (fecha del HECHO), firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas, fecha_registro, enmendado_por, estado_limpieza, temperatura_maxima_c, caducada` (las cinco últimas añadidas al final, por compatibilidad: hora real de inserción; en enmiendas, quién enmendó; «completa» o «parcial (2 de 5)»; temperatura máxima admisible de la recepción; «sí/no» si la mercancía estaba caducada). En el CSV los números negativos usan el guion ASCII («-18,5») para que Excel los reconozca como números. Orden por fecha del hecho. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
+`200 text/csv; charset=utf-8` (con BOM UTF-8, separador `;`, decimales con coma, todas las celdas entre comillas; pensado para Excel en español). Columnas: `id, tipo, fecha_hora (fecha del HECHO), firmado_por_personal, firmado_por_usuario, dispositivo_cocina, alerta, enmienda_de, motivo_enmienda, corregido_por, equipo, valor_c, minimo_c, maximo_c, accion_correctora, plan_limpieza, items_realizados, items_no_realizados, observaciones, proveedor, producto, lote, temperatura_c, caducidad, resultado, motivo_rechazo, accion_aceite, compuestos_polares_pct, descripcion, accion, estado, persona_formada, curso, fecha_formacion, formador, horas, fecha_registro, enmendado_por, estado_limpieza, temperatura_maxima_c, caducada, firma, corregido_por_nombre, firmante_anterior, categoria_producto, temperatura_minima_c` (NUEVAS en la fase 1, al final: `firma` = `signature`; `corregido_por_nombre` = en el original, quién lo corrigió; `firmante_anterior` = en una enmienda que cambia el firmante, el anterior; `categoria_producto` y `temperatura_minima_c` de la recepción. **Corregido:** `enmendado_por` es ahora quien hizo la enmienda —el usuario en la web, el empleado en la tablet—; antes salía el firmante. Las cinco anteriores a estas, añadidas al final, por compatibilidad: hora real de inserción; en enmiendas, quién enmendó; «completa» o «parcial (2 de 5)»; temperatura máxima admisible de la recepción; «sí/no» si la mercancía estaba caducada). En el CSV los números negativos usan el guion ASCII («-18,5») para que Excel los reconozca como números. Orden por fecha del hecho. Las celdas que empiezan por `= + - @` (salvo números) llevan el prefijo `'` para evitar inyección de fórmulas.
 
 Límite CSV: 20 / 10 min por local y por usuario. Máximo 500 000 filas: si se superarían → 400 `REPORT_TOO_LARGE` **antes** de empezar (antes se cortaba en silencio).
 
@@ -734,9 +758,10 @@ Flujo recomendado:
   staff: { id: string; name: string; hasPin: boolean }[];                     // solo activos
   equipment: { id; name; type; minTemp; maxTemp; checksPerDay }[];            // solo activos
   cleaningPlans: { id; name; frequency; weekday; monthDay; items: CleaningItem[] }[]; // solo activos
-  suppliers: { id: string; name: string; products: string[] }[];
+  suppliers: { id: string; name: string; products: string[]; defaultCategory: 'refrigerado' | 'congelado' | 'ambiente' | 'caliente' | null }[]; // defaultCategory: NUEVO
 }
 ```
+La tablet vuelve a pedir el contexto al mostrar «¿Quién eres?» (y al recuperar el foco o la conexión), así que una persona recién dada de alta aparece sin esperar.
 
 ### GET `/api/kiosk/tasks/today`
 Misma respuesta que `GET /api/orgs/{orgId}/tasks/today`.
@@ -749,7 +774,19 @@ Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tip
 - Si el miembro tiene PIN: sin `pin` → 401 `PIN_REQUIRED`; incorrecto → 401 `INVALID_PIN`; al 5.º fallo consecutivo → 429 `PIN_LOCKED` durante 15 min (`Retry-After`). El límite es estricto incluso con peticiones simultáneas (nunca se comprueban más de 5 PIN erróneos por ventana). Un encargado puede desbloquear con `POST /staff/{id}/unlock` o cambiando el PIN.
 - Por dispositivo: más de 20 PIN erróneos en 15 min (sumando todas las personas) → 429 `RATE_LIMITED` también para PIN correctos hasta que pase la ventana; más de 120 registros/min → 429 `RATE_LIMITED`.
 - 404 si `staffId` (u otros ids del `data`) no son del local; 400 si está desactivado o los datos no son válidos; 402 `READ_ONLY` si la suscripción no está activa.
-- Las enmiendas no están disponibles desde el kiosko (se hacen desde la web).
+- Las enmiendas generales se hacen desde la web; desde la tablet solo se puede corregir el registro recién hecho (abajo).
+
+### POST `/api/kiosk/records/{recordId}/amendments` (NUEVO, fase 1)
+Corrige desde la tablet el registro **recién hecho**: crea una **enmienda** (nunca borra) con la misma persona o la persona correcta.
+Cuerpo: `{ staffId: uuid; pin?: string; reason: 'wrong_value' | 'wrong_person' | 'other'; reasonText?: string (≤500); data?: <entrada completa del tipo>; newStaffId?: uuid; newStaffPin?: string }` → `201 { record }` (o `200` con la misma `Idempotency-Key`; el PIN no cuenta para la comparación).
+- `staffId`/`pin`: la persona que hizo el registro, con su PIN si lo tiene (mismos contadores y bloqueos que el alta).
+- `wrong_value`: `data` obligatoria. `other`: `reasonText` obligatorio (y `data`). `wrong_person`: `newStaffId` obligatorio (distinto de `staffId`, activo) y su PIN en `newStaffPin` si lo tiene; `data` opcional (sin ella se reutilizan los datos del original).
+- Motivo guardado: «Me equivoqué de número», «Me equivoqué de persona (figuraba Luis Pérez)» o el texto de «otro» (`kioskAmendmentReason`). La enmienda queda con `user: null`, el `deviceId` de la tablet y, como firmante, la persona (o la nueva persona); `correctedBy` es esa persona.
+- Comprobaciones del servidor: registro del mismo local (si no, 404); hecho **por este dispositivo**, por **esta persona**, que no sea una enmienda ni un registro web y creado hace como mucho **2 minutos** (`KIOSK_CORRECTION_MINUTES`) más 30 s de margen → si no, 403 `CORRECTION_NOT_ALLOWED`; ya corregido → 409. Errores de PIN como en el alta (401 `PIN_REQUIRED`/`INVALID_PIN`, 429 `PIN_LOCKED`); si el que falla es el de la persona correcta, `details[0].path = "newStaffPin"`. 402 en solo lectura. Límite: 20 correcciones / 10 min por dispositivo.
+
+### POST `/api/kiosk/exit` y POST `/api/kiosk/unpair` (NUEVO, fase 1)
+Salir del modo cocina y desvincular la tablet exigen el **email y la contraseña de un propietario o encargado de ese local**, comprobados en el servidor (nunca un secreto guardado en la tablet).
+Cuerpo: `{ email: string; password: string }` → `200 { ok: true, by: { name: string } }`. `unpair` además **revoca el dispositivo** (el token deja de valer: 401 en adelante). Errores: 401 `INVALID_CREDENTIALS` (mismo mensaje si el email no existe, la contraseña no coincide o la cuenta no es propietaria ni encargada del local; mismo coste de cálculo), 429 `RATE_LIMITED` (10 intentos / 15 min por dispositivo y techo de login por cuenta), 400 si faltan datos. Auditoría: `device.kiosk_exit`, `device.revoked` (`fromKiosk: true`) y `device.kiosk_auth_failed`. Se permiten en solo lectura. «Salir» no desvincula: la tablet muestra una pantalla neutra («Volver al modo cocina» / «Entrar como encargado»), nunca la portada comercial.
 
 ---
 
@@ -783,7 +820,7 @@ Cuerpo: `{ staffId: uuid; pin?: string; type: RecordType; data: <entrada del tip
 | GET | `/api/orgs/{orgId}/reports/pdf` · `/reports/csv` | miembro |
 | GET · POST | `/api/orgs/{orgId}/billing` · `/billing/checkout`, `/billing/portal` | miembro · owner |
 | POST | `/api/billing/webhook` | firma Stripe |
-| GET · POST | `/api/kiosk/context`, `/api/kiosk/tasks/today` · `/api/kiosk/records`, `/api/kiosk/verify-pin` | Bearer de dispositivo |
+| GET · POST | `/api/kiosk/context`, `/api/kiosk/tasks/today` · `/api/kiosk/records`, `/api/kiosk/verify-pin`, `/api/kiosk/records/{id}/amendments`, `/api/kiosk/exit`, `/api/kiosk/unpair` | Bearer de dispositivo (exit/unpair: además contraseña de propietario o encargado) |
 | GET | `/api/public/menu/{slug}` | – |
 
 "miembro" = owner o manager. Las rutas que crean o modifican datos exigen además que la suscripción permita escritura (§5).
@@ -820,4 +857,20 @@ Todos aditivos salvo donde se indica (reglas de validación más estrictas).
 9. **PDF/CSV**: textos sin ids internos, zona horaria legible, formatos es-ES, columnas CSV nuevas al final (§14).
 10. **`INVALID_TOKEN`**: un único mensaje completo y bien puntuado (§1.1).
 11. **Auditoría**: `AUDIT_EVENT_LABELS` con la etiqueta de todos los eventos (§5).
+
+---
+
+## 20. Cambios de la fase 1 (integridad de registros y seguridad alimentaria)
+
+Todos aditivos salvo donde se indica.
+
+1. **Firma legible** `Record.signature` («Ana Martín (anotado por Laura Gil)») y `Record.correctedBy` en las enmiendas (§10). El PDF y el CSV usan el mismo texto (`firma`, nueva columna CSV).
+2. **Autor de la corrección** = quien la hizo, nunca el firmante del original, en la app, el PDF («Firmó: X · Corrigió: Y el … · Motivo: …») y el CSV (`enmendado_por` corregido; `corregido_por_nombre` y `firmante_anterior` nuevas) (§10, §14).
+3. **Orden estable** original → corrección (también con la misma hora y en cadenas) en historial, PDF, CSV y «Hoy» (columna `records.seq`, migración `0006_record_integrity.sql`, aditiva) (§10).
+4. **Enmiendas web (cambio de comportamiento):** sin `staffId` se conserva el firmante del original; con otro `staffId` se cambia (motivo obligatorio) (§10).
+5. **Recepción:** `category` (refrigerado/congelado/ambiente/caliente) con límite por defecto coherente con las plantillas, `minTemperature`, `categoryAssumed`; validación en el servidor de la acción correctora fuera de límite; regla segura para clientes antiguos (§10). `Supplier.defaultCategory` (columna `suppliers.default_category`, migración `0006`) (§11), también en el contexto del kiosko (§16).
+6. **Hoy:** `withAlert`, `remeasure`, `summary.doneWithAlert`, `summary.remeasure` (§13). El cumplimiento no cambia: «Hecho con alerta» cuenta como hecho.
+7. **Kiosko:** `POST /api/kiosk/records/{id}/amendments` (corregir en 2 minutos), `POST /api/kiosk/exit` y `POST /api/kiosk/unpair` (contraseña de responsable); error `CORRECTION_NOT_ALLOWED`; eventos de auditoría `device.kiosk_exit` y `device.kiosk_auth_failed` (§1.1, §1.6, §16).
+8. **PDF:** la nota de conservación describe con exactitud lo que hace la aplicación (§14).
+9. **Base de datos:** los despliegues de ejemplo separan por defecto el rol propietario (migraciones) del rol de ejecución de la app, que no puede modificar ni borrar registros (docs/OPERACIONES.md, apartado 13).
 

@@ -55,7 +55,7 @@ test('registro → verificación por email → login → alta guiada del local',
   await page.getByRole('button', { name: 'Añadir persona' }).click();
   const dlg = page.getByRole('dialog');
   await dlg.getByLabel('Nombre').fill('Pepa Ruiz');
-  await dlg.getByLabel(/PIN/).fill('4321');
+  await dlg.getByLabel('PIN', { exact: true }).fill('4321');
   await dlg.getByRole('button', { name: 'Guardar' }).click();
   await expect(page.getByText('Pepa Ruiz', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Terminar' }).click();
@@ -114,7 +114,8 @@ test('temperatura normal y fuera de rango con acción correctora → Hoy → His
   await expect(page.getByText(/Motivo: Se leyó mal el termómetro/)).toBeVisible();
   // Tras guardar, el formulario queda cerrado y se ve el detalle.
   await expect(page.getByRole('button', { name: 'Guardar corrección' })).toHaveCount(0);
-  await expect(page.getByText(/Corregido el .+ por Prueba E2E/).first()).toBeVisible();
+  // 1.2: el autor de la corrección es quien la hizo (formato «Firmó: … · Corrigió: … el …»).
+  await expect(page.getByText(/Corrigió: Prueba E2E el /).first()).toBeVisible();
   await page.getByRole('link', { name: 'Ver el original' }).click();
   await expect(page.getByText('Este registro fue corregido')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Corregir' })).toHaveCount(0);

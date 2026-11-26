@@ -76,10 +76,10 @@ export function seedDemo(nowMs = Date.now()): DemoState {
   db.staff.push(...staff);
 
   const suppliers = [
-    { name: 'Frutas y Verduras Huerta Sol', contactName: 'Rosa', phone: '600 111 222', products: ['Tomate', 'Lechuga', 'Patata', 'Cebolla'] },
-    { name: 'Carnes Hermanos López', contactName: 'Javier', phone: '600 333 444', products: ['Ternera', 'Pollo', 'Cerdo ibérico'] },
-    { name: 'Pescados del Puerto', contactName: 'Carmen', phone: '600 555 666', products: ['Merluza', 'Gambas', 'Mejillones'] },
-    { name: 'Lácteos La Vaca', contactName: null, phone: null, products: ['Leche', 'Nata', 'Queso manchego'] },
+    { name: 'Frutas y Verduras Huerta Sol', contactName: 'Rosa', phone: '600 111 222', products: ['Tomate', 'Lechuga', 'Patata', 'Cebolla'], defaultCategory: 'ambiente' as const },
+    { name: 'Carnes Hermanos López', contactName: 'Javier', phone: '600 333 444', products: ['Ternera', 'Pollo', 'Cerdo ibérico'], defaultCategory: 'refrigerado' as const },
+    { name: 'Pescados del Puerto', contactName: 'Carmen', phone: '600 555 666', products: ['Merluza', 'Gambas', 'Mejillones'], defaultCategory: 'refrigerado' as const },
+    { name: 'Lácteos La Vaca', contactName: null, phone: null, products: ['Leche', 'Nata', 'Queso manchego'], defaultCategory: 'refrigerado' as const },
   ].map((s) => ({ id: uuid(), orgId: org.id, email: null, notes: null, createdAt: startTs, ...s }));
   db.suppliers.push(...suppliers);
 
@@ -178,6 +178,7 @@ export function seedDemo(nowMs = Date.now()): DemoState {
       const s = pick(suppliers);
       const product = pick(s.products);
       const accepted = rand() > 0.05;
+      const chilled = s.defaultCategory === 'refrigerado';
       push(
         date,
         10,
@@ -187,8 +188,11 @@ export function seedDemo(nowMs = Date.now()): DemoState {
           supplierName: s.name,
           product,
           lot: `L${Math.floor(rand() * 90000 + 10000)}`,
-          temperature: round1(1 + rand() * 3),
-          maxTemperature: null,
+          temperature: chilled ? round1(1 + rand() * 3) : null,
+          category: s.defaultCategory,
+          categoryAssumed: false,
+          maxTemperature: chilled ? 4 : null,
+          minTemperature: null,
           temperatureOutOfRange: false,
           expiryDate: addDays(date, 3 + Math.floor(rand() * 10)),
           expired: false,

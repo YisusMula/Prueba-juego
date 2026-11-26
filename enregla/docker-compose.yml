@@ -1,7 +1,28 @@
 # Uso (desde enregla/):
 #   cp server/.env.example server/.env   # y edítalo (NODE_ENV=production, APP_URL https, SMTP, etc.)
 #   docker compose --env-file server/.env up -d --build
-# La app aplica las migraciones al arrancar. Datos de PostgreSQL en el volumen `pgdata`.
+# Las migraciones las aplica el servicio `migrate` (rol propietario) antes de arrancar la app, que
+# usa un rol sin permisos para modificar ni borrar registros. Datos de PostgreSQL en el volumen `pgdata`.
+# server/.env necesita POSTGRES_PASSWORD, DB_OWNER_PASSWORD y DB_APP_PASSWORD (largas y distintas).
+x-app-build: &app-build
+  context: .
+  # Datos de la web (VITE_*): el build falla si faltan los legales obligatorios (web/.env.example).
+  args:
+    VITE_APP_NAME: ${VITE_APP_NAME:-}
+    VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-}
+    VITE_SUPPORT_EMAIL: ${VITE_SUPPORT_EMAIL:-}
+    VITE_LEGAL_OWNER_NAME: ${VITE_LEGAL_OWNER_NAME:-}
+    VITE_LEGAL_TAX_ID: ${VITE_LEGAL_TAX_ID:-}
+    VITE_LEGAL_ADDRESS: ${VITE_LEGAL_ADDRESS:-}
+    VITE_LEGAL_CONTACT_EMAIL: ${VITE_LEGAL_CONTACT_EMAIL:-}
+    VITE_LEGAL_HOSTING_PROVIDER: ${VITE_LEGAL_HOSTING_PROVIDER:-}
+    VITE_LEGAL_LAST_UPDATED: ${VITE_LEGAL_LAST_UPDATED:-}
+    VITE_LEGAL_REGISTRY_DATA: ${VITE_LEGAL_REGISTRY_DATA:-}
+    VITE_LEGAL_HOSTING_LOCATION: ${VITE_LEGAL_HOSTING_LOCATION:-}
+    VITE_LEGAL_EMAIL_PROVIDER: ${VITE_LEGAL_EMAIL_PROVIDER:-}
+    VITE_LEGAL_JURISDICTION: ${VITE_LEGAL_JURISDICTION:-}
+    VITE_ALLOW_PLACEHOLDER_LEGAL: ${VITE_ALLOW_PLACEHOLDER_LEGAL:-}
+
 services:
   db:
     image: postgres:16-alpine
@@ -10,8 +31,13 @@ services:
       POSTGRES_DB: enregla
       POSTGRES_USER: enregla
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en server/.env}
+      # Separación de roles (1.8): el script de inicio crea enregla_owner (migraciones) y
+      # enregla_app (ejecución, sin permisos para modificar ni borrar registros).
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?Define DB_OWNER_PASSWORD en server/.env}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?Define DB_APP_PASSWORD en server/.env}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U enregla -d enregla"]
       interval: 5s
@@ -19,25 +45,34 @@ services:
       retries: 10
     # Sin puertos publicados: solo accesible desde la red interna de compose.
 
+  # Migraciones con el rol PROPIETARIO del esquema, en un paso aparte que termina antes de que
+  # arranque la app. Al acabar fija los permisos del rol de la app (APP_DB_ROLE): en `records`
+  # solo SELECT e INSERT, así que ni la app ni quien robe sus credenciales pueden reescribir,
+  # borrar ni desactivar el trigger de inmutabilidad del historial.
+  migrate:
+    build: *app-build
+    image: enregla-app:local
+    restart: "no"
+    command: ["node", "dist/db/migrate-cli.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ""
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: enregla_owner
+      PGPASSWORD: ${DB_OWNER_PASSWORD:?Define DB_OWNER_PASSWORD en server/.env}
+      PGDATABASE: enregla
+      APP_DB_ROLE: enregla_app
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
   app:
-    build:
-      context: .
-      # Datos de la web (VITE_*): el build falla si faltan los legales obligatorios (web/.env.example).
-      args:
-        VITE_APP_NAME: ${VITE_APP_NAME:-}
-        VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-}
-        VITE_SUPPORT_EMAIL: ${VITE_SUPPORT_EMAIL:-}
-        VITE_LEGAL_OWNER_NAME: ${VITE_LEGAL_OWNER_NAME:-}
-        VITE_LEGAL_TAX_ID: ${VITE_LEGAL_TAX_ID:-}
-        VITE_LEGAL_ADDRESS: ${VITE_LEGAL_ADDRESS:-}
-        VITE_LEGAL_CONTACT_EMAIL: ${VITE_LEGAL_CONTACT_EMAIL:-}
-        VITE_LEGAL_HOSTING_PROVIDER: ${VITE_LEGAL_HOSTING_PROVIDER:-}
-        VITE_LEGAL_LAST_UPDATED: ${VITE_LEGAL_LAST_UPDATED:-}
-        VITE_LEGAL_REGISTRY_DATA: ${VITE_LEGAL_REGISTRY_DATA:-}
-        VITE_LEGAL_HOSTING_LOCATION: ${VITE_LEGAL_HOSTING_LOCATION:-}
-        VITE_LEGAL_EMAIL_PROVIDER: ${VITE_LEGAL_EMAIL_PROVIDER:-}
-        VITE_LEGAL_JURISDICTION: ${VITE_LEGAL_JURISDICTION:-}
-        VITE_ALLOW_PLACEHOLDER_LEGAL: ${VITE_ALLOW_PLACEHOLDER_LEGAL:-}
+    build: *app-build
+    image: enregla-app:local
     restart: unless-stopped
     env_file: server/.env
     environment:
@@ -48,14 +83,19 @@ services:
       DATABASE_URL: ""
       PGHOST: db
       PGPORT: "5432"
-      PGUSER: enregla
-      PGPASSWORD: ${POSTGRES_PASSWORD}
+      # Rol de EJECUCIÓN: sin DDL, sin ser propietario de nada y, en `records`, solo SELECT e
+      # INSERT. Las migraciones las aplica el servicio `migrate` con el rol propietario.
+      PGUSER: enregla_app
+      PGPASSWORD: ${DB_APP_PASSWORD:?Define DB_APP_PASSWORD en server/.env}
       PGDATABASE: enregla
+      MIGRATE_ON_START: "false"
       HOST: 0.0.0.0
       PORT: 3000
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     # Solo en la interfaz local: el acceso público debe pasar por un proxy inverso con TLS
     # (ver docker-compose.prod.yml con Caddy). Publicarlo en todas las interfaces permitiría
     # saltarse el proxy y falsificar la IP con X-Forwarded-For.

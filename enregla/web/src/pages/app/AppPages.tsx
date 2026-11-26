@@ -113,14 +113,16 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const { path } = useOrgContext();
   // Lo dado de alta (o reactivado) hoy se muestra aparte: no es exigible hasta mañana ni cuenta en el progreso.
   const counted = { temps: data.temperatures.filter((t) => t.countsToday !== false), clean: data.cleaning.filter((c) => c.countsToday !== false) };
-  const pendingTemps = counted.temps.filter((t) => t.status === 'pending');
+  // 1.12: un equipo cuya última lectura de hoy está fuera de rango vuelve a «Pendiente» como «Volver a medir».
+  const pendingTemps = data.temperatures.filter((t) => (t.countsToday !== false && t.status === 'pending') || t.remeasure);
   const doneTemps = counted.temps.filter((t) => t.status === 'done');
+  const remeasureCount = data.temperatures.filter((t) => t.remeasure).length;
   const pendingClean = counted.clean.filter((c) => c.status === 'pending');
   const doneClean = counted.clean.filter((c) => c.status === 'done');
   const notYetTemps = data.temperatures.filter((t) => t.countsToday === false);
   const notYetClean = data.cleaning.filter((c) => c.countsToday === false);
   const { summary } = data;
-  const allDone = summary.total > 0 && summary.pending === 0;
+  const allDone = summary.total > 0 && summary.pending === 0 && remeasureCount === 0;
   const subCard = useSubscriptionNotice();
 
   return (
@@ -142,14 +144,16 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                   : 'Sin tareas programadas'
                 : allDone
                   ? '¡Todo hecho por hoy!'
-                  : `Quedan ${summary.pending} de ${summary.total}`}
+                  : summary.pending === 0
+                    ? `Falta volver a medir ${remeasureCount === 1 ? '1 equipo' : `${remeasureCount} equipos`}`
+                    : `Quedan ${summary.pending} de ${summary.total}`}
             </h2>
             <p className="mt-1 text-ink-muted">
               {summary.total === 0
                 ? notYetTemps.length + notYetClean.length > 0
                   ? 'Lo dado de alta hoy empieza a contar mañana. Puedes ir registrándolo.'
                   : 'No hay controles de temperatura ni limpiezas previstos para hoy.'
-                : `${summary.done} ${summary.done === 1 ? 'tarea hecha' : 'tareas hechas'} · ${data.alerts.length === 0 ? 'sin alertas' : `${data.alerts.length} ${data.alerts.length === 1 ? 'alerta' : 'alertas'}`}`}
+                : `${summary.done} ${summary.done === 1 ? 'tarea hecha' : 'tareas hechas'}${(summary.doneWithAlert ?? 0) > 0 ? ` (${summary.doneWithAlert} con alerta)` : ''} · ${data.alerts.length === 0 ? 'sin alertas' : `${data.alerts.length} ${data.alerts.length === 1 ? 'alerta' : 'alertas'}`}`}
             </p>
             {(summary.correctedLater ?? 0) > 0 ? (
               <p className="mt-0.5 text-sm text-ink-muted" data-testid="corrected-later-summary">
@@ -227,10 +231,17 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     key={t.equipmentId}
                     to={path(`registrar/temperatura?equipo=${t.equipmentId}`)}
                     type="temperatura"
-                    title={t.name}
+                    title={t.remeasure ? `Volver a medir: ${t.name}` : t.name}
                     detail={`${t.done} de ${t.required} ${t.required === 1 ? 'control' : 'controles'} · ${formatRange(t.minTemp, t.maxTemp)}`}
-                    extra={t.lastReading ? `Última: ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}` : undefined}
+                    extra={
+                      t.lastReading
+                        ? t.remeasure
+                          ? `Última: ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}, fuera de rango. Mide otra vez para comprobar que se ha corregido.`
+                          : `Última: ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}`
+                        : undefined
+                    }
                     warn={t.lastReading?.outOfRange}
+                    badge={t.remeasure ? 'Volver a medir' : 'Pendiente'}
                   />
                 ))}
                 {pendingClean.map((c) => (
@@ -252,8 +263,8 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
               <SectionTitle id="hechas">Hecho</SectionTitle>
               <ul className="divide-y divide-line rounded-2xl border border-line bg-surface">
                 {doneTemps.map((t) => (
-                  <li key={t.equipmentId} className="flex items-center gap-3 px-4 py-3">
-                    <Icon name="check" className="shrink-0 text-ok" strokeWidth={2.5} />
+                  <li key={t.equipmentId} className="flex items-center gap-3 px-4 py-3" data-testid={t.withAlert ? 'done-with-alert' : undefined}>
+                    {t.withAlert ? <Icon name="alert" className="shrink-0 text-bad" /> : <Icon name="check" className="shrink-0 text-ok" strokeWidth={2.5} />}
                     <span className="min-w-0 flex-1">
                       <span className="block font-semibold">{t.name}</span>
                       <span className="block text-sm text-ink-muted">
@@ -262,7 +273,15 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                         {(t.correctedLater ?? 0) > 0 ? ` · ${t.correctedLater === 1 ? '1 con una corrección posterior' : `${t.correctedLater} con una corrección posterior`}` : ''}
                       </span>
                     </span>
-                    {t.lastReading?.outOfRange ? <Badge tone="bad" icon="alert">Fuera de rango</Badge> : <Badge tone="ok" icon="check">Hecho</Badge>}
+                    {t.withAlert || t.lastReading?.outOfRange ? (
+                      <Badge tone="bad" icon="alert">
+                        Hecho con alerta
+                      </Badge>
+                    ) : (
+                      <Badge tone="ok" icon="check">
+                        Hecho
+                      </Badge>
+                    )}
                   </li>
                 ))}
                 {doneClean.map((c) => (
@@ -306,7 +325,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   );
 }
 
-function TaskCard({ to, type, title, detail, extra, warn, badge = 'Pendiente' }: { to: string; type: RecordType; title: string; detail: string; extra?: string; warn?: boolean; badge?: string }) {
+function TaskCard({ to, type, title, detail, extra, warn, badge = 'Pendiente' }: { to: string; type: RecordType; title: string; detail: string; extra?: string; warn?: boolean; badge?: 'Pendiente' | 'Volver a medir' | 'Opcional hoy' }) {
   const { readOnly } = useOrgContext();
   return (
     <li>
@@ -323,7 +342,15 @@ function TaskCard({ to, type, title, detail, extra, warn, badge = 'Pendiente' }:
           <span className="block text-sm text-ink-muted">{detail}</span>
           {extra ? <span className={cn('mt-0.5 block text-sm', warn ? 'font-semibold text-bad' : 'text-ink-muted')}>{extra}</span> : null}
         </span>
-        <span className={cn('hidden shrink-0 rounded-full px-2.5 py-0.5 text-sm font-bold min-[420px]:inline', badge === 'Pendiente' ? 'bg-warn-soft text-warn' : 'bg-surface-2 text-ink-muted')}>{badge}</span>
+        <span
+          className={cn(
+            'hidden shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-sm font-bold min-[420px]:inline-flex',
+            badge === 'Pendiente' ? 'bg-warn-soft text-warn' : badge === 'Volver a medir' ? 'bg-bad-soft text-bad' : 'bg-surface-2 text-ink-muted',
+          )}
+        >
+          {badge === 'Volver a medir' ? <Icon name="refresh" size={14} /> : null}
+          {badge}
+        </span>
         <Icon name="chevronRight" className="shrink-0 text-ink-muted transition-transform group-hover:translate-x-0.5" />
       </Link>
     </li>
