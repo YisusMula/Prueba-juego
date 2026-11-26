@@ -163,7 +163,7 @@ function CsvPreview({ url, fallbackName }: { url: string; fallbackName: string }
               <tr key={i} className="border-t border-line">
                 <td className="px-2 py-1.5 whitespace-nowrap tabular">{col(r, 'fecha_hora')}</td>
                 <td className="px-2 py-1.5">{col(r, 'tipo')}</td>
-                <td className="px-2 py-1.5">{first(r, ['firmado_por_personal', 'firmado_por_usuario'])}</td>
+                <td className="px-2 py-1.5">{first(r, ['firma', 'firmado_por_personal', 'firmado_por_usuario'])}</td>
                 <td className="px-2 py-1.5">{first(r, ['equipo', 'plan_limpieza', 'producto', 'descripcion', 'curso'])}</td>
                 <td className="px-2 py-1.5 tabular">
                   {(() => {

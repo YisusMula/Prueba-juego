@@ -254,10 +254,10 @@ function renderKiosk() {
 }
 
 async function saveTemperature(user: ReturnType<typeof userEvent.setup>, who: RegExp, digits: string) {
-  await user.click(await screen.findByRole('button', { name: 'Temperatura', exact: true }));
+  await user.click(await screen.findByRole('button', { name: 'Temperatura' }));
   await user.click(await screen.findByRole('button', { name: who }));
   await user.click(await screen.findByRole('button', { name: /Cámara de carnes/ }));
-  for (const d of digits) await user.click(screen.getByRole('button', { name: d, exact: true }));
+  for (const d of digits) await user.click(screen.getByRole('button', { name: d }));
   await user.click(screen.getByRole('button', { name: 'Guardar' }));
   return screen.findByTestId('kiosk-result');
 }
@@ -275,9 +275,9 @@ describe('modo cocina', () => {
     expect(screen.getByTestId('kiosk-signing-as')).toHaveTextContent('Registrando como Luis Pérez');
     expect(screen.getByRole('button', { name: '¿No eres Luis Pérez?' })).toBeInTheDocument();
     // Otro registro y, esta vez, nadie toca nada: a los 15 s se olvida a la persona.
-    await user.click(screen.getByRole('button', { name: 'Temperatura', exact: true }));
+    await user.click(screen.getByRole('button', { name: 'Temperatura' }));
     await user.click(await screen.findByRole('button', { name: /Cámara de carnes/ }));
-    await user.click(screen.getByRole('button', { name: '3', exact: true }));
+    await user.click(screen.getByRole('button', { name: '3' }));
     await user.click(screen.getByRole('button', { name: 'Guardar' }));
     await screen.findByTestId('kiosk-result');
     await act(async () => {
@@ -294,7 +294,7 @@ describe('modo cocina', () => {
     const original = db.records[db.records.length - 1]!;
     await user.click(screen.getByRole('button', { name: 'Corregir este registro' }));
     await user.click(screen.getByRole('button', { name: 'Me equivoqué de número' }));
-    await user.click(screen.getByRole('button', { name: '3', exact: true }));
+    await user.click(screen.getByRole('button', { name: '3' }));
     await user.click(screen.getByRole('button', { name: 'Guardar corrección' }));
     const res = await screen.findByTestId('kiosk-result');
     expect(res).toHaveTextContent('Corrección guardada');
@@ -311,10 +311,10 @@ describe('modo cocina', () => {
     await user.click(screen.getByRole('button', { name: 'Corregir este registro' }));
     await user.click(screen.getByRole('button', { name: 'Me equivoqué de persona' }));
     await user.click(await screen.findByRole('button', { name: /Marta Gil/ }));
-    for (const d of '0000') await user.click(screen.getByRole('button', { name: d, exact: true }));
+    for (const d of '0000') await user.click(screen.getByRole('button', { name: d }));
     await user.click(screen.getByRole('button', { name: 'Guardar corrección' }));
     expect(await screen.findByText('PIN incorrecto. Prueba otra vez.')).toBeInTheDocument();
-    for (const d of '5678') await user.click(screen.getByRole('button', { name: d, exact: true }));
+    for (const d of '5678') await user.click(screen.getByRole('button', { name: d }));
     await user.click(screen.getByRole('button', { name: 'Guardar corrección' }));
     expect(await screen.findByTestId('kiosk-result')).toHaveTextContent('Firma: Marta Gil');
     expect(db.records[db.records.length - 1]!).toMatchObject({ staffName: 'Marta Gil', amendmentReason: 'Me equivoqué de persona (figuraba Luis Pérez)' });

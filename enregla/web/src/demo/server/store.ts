@@ -43,6 +43,13 @@ export function getDb(): DemoState {
   return db;
 }
 
+// Una recarga justo después de guardar no debe perder el último cambio (escritura agrupada pendiente).
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => {
+    if (saveTimer !== undefined) writeNow();
+  });
+}
+
 /** Guarda (agrupando escrituras seguidas). */
 export function persist(): void {
   window.clearTimeout(saveTimer);

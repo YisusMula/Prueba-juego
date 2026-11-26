@@ -137,7 +137,7 @@ Todas están documentadas en [`server/.env.example`](server/.env.example) y se v
 cd enregla
 cp server/.env.example server/.env
 # Edita server/.env: NODE_ENV=production, APP_URL=https://…, SMTP_*, MAIL_FROM,
-# POSTGRES_PASSWORD (larga), TRUST_PROXY=1 si hay proxy, Stripe si procede.
+# POSTGRES_PASSWORD, DB_OWNER_PASSWORD y DB_APP_PASSWORD (largas y distintas), TRUST_PROXY=1 si hay proxy, Stripe si procede.
 docker compose --env-file server/.env up -d --build
 ```
 
@@ -151,7 +151,8 @@ docker compose -f docker-compose.prod.yml --env-file server/.env up -d --build
 - `Dockerfile` multi-etapa: compila el servidor, compila `web/` si existe (si no, imagen solo API) y ejecuta como usuario `node` (no root) con `HEALTHCHECK` sobre `/healthz`.
 - Los compose fuerzan `NODE_ENV=production` (aunque `server/.env` diga otra cosa) y pasan la conexión como `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`: `POSTGRES_PASSWORD` puede llevar cualquier carácter sin codificarlo.
 - `docker-compose.prod.yml` incluye un servicio `backup` con copia diaria `pg_dump` en `./backups` (ver `docs/OPERACIONES.md`, que explica también cómo sacarla del servidor y cómo restaurarla).
-- `docker-compose.yml`: `app` + `db` (PostgreSQL 16, volumen `pgdata`, sin puerto publicado). La app publica el 3000 **solo en `127.0.0.1`**: el acceso público debe pasar por un proxy inverso con TLS. La app aplica las migraciones al arrancar.
+- `docker-compose.yml`: `db` (PostgreSQL 16, volumen `pgdata`, sin puerto publicado) + `migrate` + `app`. La app publica el 3000 **solo en `127.0.0.1`**: el acceso público debe pasar por un proxy inverso con TLS.
+- **Roles de base de datos separados por defecto** (los dos compose): `deploy/postgres-init/10-enregla-roles.sh` crea `enregla_owner` (propietario, solo para el servicio `migrate`) y `enregla_app` (rol de ejecución: en `records` solo `SELECT`/`INSERT`, sin DDL ni propiedad de nada, así que no puede modificar ni borrar registros ni desactivar su trigger). `migrate` aplica las migraciones y los permisos (`APP_DB_ROLE`) y termina antes de que arranque la app (`MIGRATE_ON_START=false`). `server/.env` necesita `POSTGRES_PASSWORD`, `DB_OWNER_PASSWORD` y `DB_APP_PASSWORD`. Para un despliegue anterior: `docs/OPERACIONES.md`, apartado 13.
 - La cookie de sesión es `__Host-` + `Secure`, así que la app debe servirse por https.
 
 ### Detrás de un proxy (TRUST_PROXY)
@@ -185,7 +186,8 @@ Ejemplos:
 - **Contraseñas**: argon2id (m=19 MiB, t=2, p=1, parámetros OWASP), 10–128 caracteres, lista embebida de contraseñas comunes, sin revelar si un email existe (respuestas idénticas y hash ficticio en el login para igualar tiempos; los emails se envían sin bloquear la respuesta).
 - **Tokens de un solo uso** (verificación, reset, cambio de email, invitación): 256 bits aleatorios, hasheados, con caducidad, consumo atómico. Viajan en el fragmento `#token=` de la URL para no aparecer en logs ni en `Referer`.
 - **Multi-tenant**: todas las consultas filtran por `organization_id` y la pertenencia se verifica en cada petición; cualquier id ajeno (en ruta, cuerpo o cursor) responde 404.
-- **Registros inmutables**: no hay rutas de edición/borrado y un trigger de PostgreSQL rechaza `UPDATE`/`DELETE` en `records`, salvo el borrado en cascada al eliminar la organización. Las correcciones son enmiendas encadenadas.
+- **Registros inmutables**: no hay rutas de edición/borrado y un trigger de PostgreSQL rechaza `UPDATE`/`DELETE` en `records`, salvo el borrado en cascada al eliminar la organización. Las correcciones son enmiendas encadenadas, siempre a continuación del original (columna `seq`). En los despliegues de ejemplo la app conecta con un rol sin permisos para modificar `records` ni desactivar el trigger (y avisa en el log al arrancar si su rol podría hacerlo).
+- **Firma**: en la web el autor es siempre el usuario con sesión; si indica un empleado, «Ana Martín (anotado por Laura Gil)» en la app, el PDF y el CSV. En el kiosko firma el empleado (con su PIN si lo tiene). El autor de una corrección es quien la hizo.
 - **Kiosko**: token de dispositivo de 256 bits (hash SHA-256), revocable, que solo da acceso a `/api/kiosk/*`. PIN del personal con argon2id y bloqueo de 15 min tras 5 fallos.
 - **Rate limiting** en PostgreSQL (tabla `rate_limits`, ventana fija, actualización atómica): funciona con varias instancias sin Redis. La interfaz `RateLimiter` permite sustituirlo. El login se limita por (cuenta + IP) con el umbral normal y por cuenta con un techo alto (100/h), para que nadie bloquee a otro desde su IP. Hay límites para informes, exportación, altas de registros e invitaciones (detalle en `docs/API.md` §1.6).
 - **Informes PDF**: máx. 5000 filas (por encima, error que sugiere acotar o usar CSV), máx. 2 PDF **generándose** a la vez por proceso (429 inmediato, sin cola) y la generación cede el event loop cada 20 filas. El PDF se genera completo en memoria (tope defensivo de 64 MiB) y el hueco se libera al terminar la generación; después se envía con `Content-Length`, así que un cliente lento no puede retener los huecos. Fuente Unicode embebida (DejaVu Sans, `server/assets/fonts`, licencia incluida): latín extendido, griego y cirílico; lo que la fuente no cubre (p. ej. muchos emojis) sale como `□`. Los textos nunca se recortan: las celdas crecen y continúan en la página siguiente.
@@ -222,8 +224,9 @@ Ejemplos:
 - Los textos de los emails, PDF y errores están en español de España; identificadores en inglés. Los mensajes de validación (zod) salen de un mapa de errores en español compartido por servidor y web (`server/src/schemas/es.ts`).
 - **Alérgenos**: un plato nace sin revisar y no se publica hasta confirmar sus 14 alérgenos (o marcar «no contiene ninguno»). La carta pública nunca afirma «sin alérgenos»: dice «No se han declarado alérgenos en este plato» y muestra siempre el aviso de consultar al personal y de posibles trazas.
 - **Limpieza parcial**: exige al menos una zona; si faltan zonas se pide confirmación y se guarda como «Parcial (2 de 5)», que no cuenta como tarea hecha.
-- **Recepción**: temperatura máxima admisible opcional (atajos 4 °C / −18 °C); aceptar mercancía caducada o demasiado caliente exige motivo y genera alerta.
-- **Kiosko**: el PIN se verifica al identificarse (`/api/kiosk/verify-pin`) y otra vez en cada alta; el PIN solo vive en memoria.
+- **Recepción**: el tipo de producto (refrigerado ≤ 4 °C, congelado ≤ −18 °C, ambiente, caliente ≥ 63 °C; los mismos valores que las plantillas) es obligatorio en la interfaz y fija el límite, editable; el proveedor puede tener uno por defecto. Aceptar mercancía caducada o fuera de límite exige motivo (validado en el servidor) y genera alerta. Una petición antigua sin tipo y con temperatura se trata como refrigerado y queda con alerta si supera 4 °C.
+- **Lecturas fuera de rango**: cuentan como hechas en el porcentaje («Hecho con alerta»), y si la última lectura del día de un equipo está fuera de rango aparece «Volver a medir» hasta una lectura correcta posterior.
+- **Kiosko**: el PIN se verifica al identificarse (`/api/kiosk/verify-pin`) y otra vez en cada alta; el PIN solo vive en memoria. Tras cada registro, «Seguir como Ana» durante 15 s; si no se pulsa, vuelve a «¿Quién eres?». «Corregir» el registro recién hecho durante 2 minutos (misma tablet y persona, crea una corrección). Salir del modo cocina o desvincular la tablet piden la contraseña de un propietario o encargado (en el servidor).
 
 ## Retención de datos
 
@@ -250,14 +253,14 @@ La inmutabilidad de `records` la garantiza un trigger, pero el rol con el que se
 - **Rol de migraciones** (dueño del esquema): solo se usa para `npm run migrate:prod` / `MIGRATE_ON_START` en un paso de despliegue.
 - **Rol de ejecución** de la app: sin `DDL`, sin ser dueño de nada, con `SELECT`/`INSERT`/`UPDATE`/`DELETE` en las tablas normales pero **solo `SELECT` e `INSERT` en `records`** (el borrado en cascada al eliminar un local lo hace el dueño de la FK, no hace falta `DELETE`).
 
-Script de ejemplo: [`docs/db-roles-hardening.sql`](docs/db-roles-hardening.sql). Con este esquema la app arranca con `MIGRATE_ON_START=false` y `DATABASE_URL` del rol de ejecución. No se aplica por defecto (el compose de ejemplo usa un único rol por simplicidad).
+**Se aplica por defecto** en `docker-compose.yml` y `docker-compose.prod.yml` (`deploy/postgres-init/10-enregla-roles.sh` + servicio `migrate` con `APP_DB_ROLE`; ver `docs/OPERACIONES.md`, apartado 13, también para migrar un despliegue existente). [`docs/db-roles-hardening.sql`](docs/db-roles-hardening.sql) queda como referencia en SQL para despliegues sin Docker.
 
 ## Estructura
 
 ```
 enregla/
 ├── Dockerfile · docker-compose.yml · docker-compose.prod.yml (Caddy) · .dockerignore · README.md
-├── deploy/Caddyfile · deploy/backup.sh (pg_dump con retención)
+├── deploy/Caddyfile · deploy/backup.sh (pg_dump con retención) · deploy/postgres-init/10-enregla-roles.sh (roles de la BD)
 ├── docs/API.md · docs/OPERACIONES.md · docs/db-roles-hardening.sql
 └── server/
     ├── migrations/0001_init.sql        esquema, índices y trigger de inmutabilidad
@@ -265,6 +268,7 @@ enregla/
     ├── migrations/0003_reliability.sql     effective_at, historial de configuración, idempotencia,
     │                                       bandeja de emails, borrado diferido, avisos de prueba (aditiva)
     ├── migrations/0004_allergen_review.sql revisión explícita de alérgenos por plato (aditiva)
+    ├── migrations/0006_record_integrity.sql orden de inserción de registros (seq) y categoría por defecto del proveedor (aditiva)
     ├── assets/fonts/                       DejaVu Sans (regular y negrita) + licencia, para los PDF
     ├── src/
     │   ├── server.ts · app.ts · config.ts · deps.ts

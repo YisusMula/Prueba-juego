@@ -324,7 +324,7 @@ async function walkthrough(label, opts) {
     await expect(f.getByRole('button', { name: 'Informe PDF' })).toHaveCount(0);
     await f.getByRole('button', { name: 'Ver vista previa del CSV' }).click();
     await expect(f.getByTestId('csv-preview')).toContainText('temperatura');
-    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 41 columnas/);
+    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 46 columnas/);
     await f.getByRole('button', { name: 'Ver el PDF de ejemplo' }).click();
     await expect(f.getByText(/PDF de ejemplo con los datos iniciales de la demo/).filter({ visible: true }).first()).toBeVisible();
     const img = f.getByTestId('pdf-preview').getByRole('img');
@@ -346,7 +346,7 @@ async function walkthrough(label, opts) {
     await f.getByRole('button', { name: 'Añadir persona' }).click();
     dlg = f.getByRole('dialog');
     await dlg.getByLabel('Nombre').fill(`Rocío ${stamp}`);
-    await dlg.getByLabel(/PIN/).fill('2468');
+    await dlg.getByLabel('PIN', { exact: true }).fill('2468');
     await dlg.getByRole('button', { name: 'Guardar' }).click();
     await expect(f.locator('li').filter({ hasText: `Rocío ${stamp}` })).toContainText('Con PIN');
     await settings(s, 'Encargados e invitaciones');

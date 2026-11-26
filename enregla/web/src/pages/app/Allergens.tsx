@@ -477,8 +477,8 @@ export function AllergensPrintPage() {
           <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-base" data-testid="print-legend">
             <span className="inline-flex items-center gap-2"><PrintMark kind="contains" decorative /> Contiene</span>
             <span className="inline-flex items-center gap-2"><PrintMark kind="traces" decorative /> Puede contener trazas</span>
-            <span className="inline-flex items-center gap-2">
-              <span className="inline-block size-4 border border-line-strong" aria-hidden="true" /> Casilla en blanco: el local indica que el plato no lo contiene
+            <span className="inline-flex items-start gap-2">
+              <span className="mt-1 inline-block size-4 shrink-0 border border-line-strong" aria-hidden="true" /> Casilla en blanco: el local indica que el plato no lo contiene
             </span>
           </p>
           <p className="text-sm text-ink-muted">Actualizado el {formatDateTime(new Date().toISOString(), tz)}.</p>

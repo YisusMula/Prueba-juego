@@ -5,7 +5,7 @@
  * corrección en el PDF.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,9 +14,21 @@ import type { Browser, Page } from '@playwright/test';
 
 test.describe.configure({ mode: 'serial' });
 
-const STATE = path.join(path.dirname(fileURLToPath(import.meta.url)), '.runtime', 'demo-state-07.json');
+// Se reutiliza la sesión del demo de 06 si sigue valiendo: el servidor limita los inicios de sesión
+// por cuenta e IP (10 / 15 min) y toda la suite comparte la cuenta demo.
+const RUNTIME = path.join(path.dirname(fileURLToPath(import.meta.url)), '.runtime');
+const SHARED = path.join(RUNTIME, 'demo-state.json');
+const STATE = path.join(RUNTIME, 'demo-state-07.json');
 test.beforeAll(async ({ browser }) => {
-  const ctx = await browser.newContext({ baseURL: `http://localhost:${process.env.E2E_PORT ?? '3100'}`, locale: 'es-ES', storageState: { cookies: [], origins: [] } });
+  const baseURL = `http://localhost:${process.env.E2E_PORT ?? '3100'}`;
+  if (existsSync(SHARED)) {
+    const ctx = await browser.newContext({ baseURL, storageState: SHARED });
+    const ok = (await ctx.request.get('/api/account')).status() === 200;
+    if (ok) await ctx.storageState({ path: STATE });
+    await ctx.close();
+    if (ok) return;
+  }
+  const ctx = await browser.newContext({ baseURL, locale: 'es-ES', storageState: { cookies: [], origins: [] } });
   await login(await ctx.newPage(), DEMO.email, DEMO.password);
   await ctx.storageState({ path: STATE });
   await ctx.close();
@@ -125,7 +137,7 @@ test('tablet: salir del modo cocina pide la contraseña de un responsable y no l
   await k.getByLabel(/Email del propietario o encargado/).fill(DEMO.email);
   await k.getByLabel('Contraseña').fill(DEMO.password);
   await k.getByRole('button', { name: 'Desvincular' }).click();
-  await expect(k.getByRole('heading', { name: 'Vincular esta tablet' })).toBeVisible();
+  await expect(k.getByRole('heading', { name: 'Vincular esta tablet', exact: true })).toBeVisible();
   const devices = (await (await page.request.get(`/api/orgs/${id}/devices`)).json()) as { items: { name: string; active: boolean }[] };
   expect(devices.items.find((d) => d.name === 'Tablet salida')!.active).toBe(false);
   await tablet.close();

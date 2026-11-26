@@ -341,15 +341,15 @@ function TaskCard({ to, type, title, detail, extra, warn, badge = 'Pendiente' }:
           <span className="block font-bold [overflow-wrap:anywhere]">{title}</span>
           <span className="block text-sm text-ink-muted">{detail}</span>
           {extra ? <span className={cn('mt-0.5 block text-sm', warn ? 'font-semibold text-bad' : 'text-ink-muted')}>{extra}</span> : null}
-        </span>
-        <span
-          className={cn(
-            'hidden shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-sm font-bold min-[420px]:inline-flex',
-            badge === 'Pendiente' ? 'bg-warn-soft text-warn' : badge === 'Volver a medir' ? 'bg-bad-soft text-bad' : 'bg-surface-2 text-ink-muted',
-          )}
-        >
-          {badge === 'Volver a medir' ? <Icon name="refresh" size={14} /> : null}
-          {badge}
+          <span
+            className={cn(
+              'mt-1 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-sm font-bold',
+              badge === 'Pendiente' ? 'bg-warn-soft text-warn' : badge === 'Volver a medir' ? 'bg-bad-soft text-bad' : 'bg-surface-2 text-ink-muted',
+            )}
+          >
+            {badge === 'Volver a medir' ? <Icon name="refresh" size={14} /> : null}
+            {badge}
+          </span>
         </span>
         <Icon name="chevronRight" className="shrink-0 text-ink-muted transition-transform group-hover:translate-x-0.5" />
       </Link>
