@@ -67,6 +67,6 @@ export async function audit(db: DB, input: AuditInput): Promise<void> {
  * También se quita su email de eventos de terceros (p. ej. la invitación que recibió).
  */
 export async function pseudonymizeUserAudit(db: DB, userId: string, email: string): Promise<void> {
-  await sql`UPDATE audit_events SET ip = NULL, metadata = metadata - 'email' - 'from' - 'to' WHERE user_id = ${userId}`.execute(db);
-  await sql`UPDATE audit_events SET metadata = metadata - 'email' WHERE metadata->>'email' = ${email}`.execute(db);
+  // Función acotada del propietario (0007): el rol de la app no puede editar la auditoría directamente.
+  await sql`SELECT enregla_pseudonymize_audit(${userId}::uuid, ${email}::text)`.execute(db);
 }

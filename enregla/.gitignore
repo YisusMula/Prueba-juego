@@ -6,3 +6,4 @@ dist/
 *.log
 backups/
 dist-demo/
+deploy/secrets/*.env

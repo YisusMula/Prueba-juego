@@ -146,6 +146,8 @@ export interface Config {
     inviteUser: RateLimitRule;
     /** Salir del modo cocina / desvincular la tablet con la contraseña de un responsable: intentos por dispositivo. */
     kioskManagerAuthDevice: RateLimitRule;
+    /** Fallos por cuenta y dispositivo al salir/desvincular (no bloquea a otras cuentas). */
+    kioskManagerAuthAccountDevice: RateLimitRule;
     /** Correcciones desde la tablet (por dispositivo). */
     kioskCorrectionDevice: RateLimitRule;
   };
@@ -275,6 +277,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     if (WEAK_DB_PASSWORDS.has(dbPassword.toLowerCase()) || dbPassword.length < 12) {
       problems.push('La contraseña de DATABASE_URL es débil o falta (mínimo 12 caracteres, no valores por defecto)');
     }
+    // 1.8: la app no debe tener en su entorno credenciales de administración ni del rol propietario
+    // (con ellas se podría desactivar la protección de los registros). Van solo a db/migrate/backup.
+    const leaked = ['POSTGRES_PASSWORD', 'DB_OWNER_PASSWORD', 'DB_APP_PASSWORD'].filter((k) => (env[k] ?? '') !== '');
+    if (leaked.length > 0) {
+      problems.push(
+        `${leaked.join(', ')} no debe estar en el entorno de la app: esas claves solo las usan los servicios db, migrate y backup (deploy/secrets/, ver docs/OPERACIONES.md apartado 13)`,
+      );
+    }
     if (!e.MAIL_FROM) problems.push('MAIL_FROM es obligatorio en producción');
     if (e.SMTP_USER && e.SMTP_PASS && e.SMTP_PASS.length < 8) problems.push('SMTP_PASS es demasiado corta');
   }
@@ -339,7 +349,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
       inviteRecipient: { limit: 3, windowSeconds: 24 * 3600 },
       inviteOrg: { limit: 20, windowSeconds: 24 * 3600 },
       inviteUser: { limit: 30, windowSeconds: 24 * 3600 },
-      kioskManagerAuthDevice: { limit: 10, windowSeconds: 15 * 60 },
+      kioskManagerAuthDevice: { limit: 30, windowSeconds: 15 * 60 },
+      kioskManagerAuthAccountDevice: { limit: 10, windowSeconds: 15 * 60 },
       kioskCorrectionDevice: { limit: 20, windowSeconds: 10 * 60 },
     },
     pinMaxFailures: 5,

@@ -9,7 +9,8 @@ const url = resolveDatabaseUrl({
   PGHOST: process.env.PGHOST,
   PGPORT: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
   PGUSER: process.env.PGUSER,
-  PGPASSWORD: process.env.PGPASSWORD,
+  // En los compose, el servicio migrate recibe la clave del propietario como DB_OWNER_PASSWORD.
+  PGPASSWORD: process.env.PGPASSWORD || process.env.DB_OWNER_PASSWORD,
   PGDATABASE: process.env.PGDATABASE,
 });
 if (!url) {
@@ -18,6 +19,19 @@ if (!url) {
 }
 const appRole = process.env.APP_DB_ROLE?.trim();
 const pool = createPool(url, 1);
+// La base puede tardar en aceptar conexiones TCP en el primer arranque (scripts de inicio): reintentos.
+for (let i = 1; ; i++) {
+  try {
+    await pool.query('SELECT 1');
+    break;
+  } catch (err) {
+    if (i >= 30) {
+      console.error(`No se puede conectar con la base de datos: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
 try {
   const applied = await runMigrations(pool, (m) => console.log(m));
   console.log(applied.length === 0 ? 'La base de datos ya está al día.' : `${applied.length} migración(es) aplicada(s).`);

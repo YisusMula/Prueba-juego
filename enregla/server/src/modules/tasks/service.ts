@@ -1,7 +1,7 @@
 import { sql } from 'kysely';
 import type { DB } from '../../db/index.js';
 import type { CleaningPlan, Organization } from '../../db/types.js';
-import { esNumber } from '../../schemas/index.js';
+import { esNumber, REMEASURE_ACTION, REMEASURE_MINUTES } from '../../schemas/index.js';
 import { addDays, dayOfMonth, eachDay, isoWeekday, localDate, startOfIsoWeek, startOfMonth } from '../../lib/dates.js';
 
 /** Registros vigentes: los que no han sido sustituidos por una enmienda. */
@@ -171,6 +171,11 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
       withAlert: mine.some((r) => r.alert),
       /** 1.12: la ÚLTIMA lectura vigente de hoy está fuera de rango: hay que volver a medir (desaparece con una lectura posterior correcta). */
       remeasure: last?.alert === true,
+      /** Si la acción fue «Repetiré la medición en 30 min»: a partir de cuándo toca volver a medir (ISO). */
+      remeasureFrom:
+        last?.alert === true && String(last.data.correctiveAction ?? '').includes(REMEASURE_ACTION)
+          ? new Date(last.effective_at.getTime() + REMEASURE_MINUTES * 60_000).toISOString()
+          : null,
       lastReading: last
         ? { value: last.data.value as number, outOfRange: last.alert, at: last.effective_at.toISOString() }
         : null,

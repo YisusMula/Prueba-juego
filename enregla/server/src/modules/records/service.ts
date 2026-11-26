@@ -93,18 +93,21 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
     case 'recepcion': {
       const d = parseData(S.recepcionData, raw);
       let supplierName = d.supplierName;
+      let supplier: { defaultCategory: S.ReceptionCategory | null; receptionLimit: number | null } | null = null;
       if (d.supplierId) {
-        const s = await db.selectFrom('suppliers').select(['name']).where('id', '=', d.supplierId).where('organization_id', '=', orgId).executeTakeFirst();
+        const s = await db.selectFrom('suppliers').select(['name', 'default_category', 'reception_limit']).where('id', '=', d.supplierId).where('organization_id', '=', orgId).executeTakeFirst();
         if (!s) throw notFound('Proveedor');
         supplierName = s.name;
+        supplier = { defaultCategory: s.default_category as S.ReceptionCategory | null, receptionLimit: s.reception_limit };
       }
-      // Límites según la categoría del producto (o los indicados); sin categoría en una petición
-      // antigua con temperatura se aplica refrigerado (≤ 4 °C) y queda marcado (S.receptionLimits).
-      const limits = S.receptionLimits(d);
+      // Límite de la categoría (o el propio del proveedor); no se edita al recibir. Sin categoría en
+      // una petición antigua con temperatura se aplica refrigerado (≤ 4 °C) (S.receptionLimits).
+      const limits = S.receptionLimits(d, supplier);
       const temperatureOutOfRange = S.receptionOutOfLimits(d, limits);
       // Caducidad anterior a hoy (fecha local del local).
       const expired = d.expiryDate != null && d.expiryDate < today;
-      const needsReason = expired || (temperatureOutOfRange && !limits.assumed);
+      // Fuera de límite (también con la categoría presupuesta) o caducada: alerta y motivo obligatorio.
+      const needsReason = expired || temperatureOutOfRange;
       if (d.accepted && needsReason && !d.correctiveAction) {
         throw validationError(
           'data.correctiveAction',
@@ -120,6 +123,8 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
           temperature: d.temperature ?? null,
           category: limits.category,
           categoryAssumed: limits.assumed,
+          limitSource: limits.source,
+          limitDiffersFromReference: limits.differsFromReference,
           maxTemperature: limits.max,
           minTemperature: limits.min,
           temperatureOutOfRange,

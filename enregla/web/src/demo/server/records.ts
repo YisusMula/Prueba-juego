@@ -53,15 +53,18 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
     case 'recepcion': {
       const d = parse(S.recepcionData, raw, ['data']);
       let supplierName = d.supplierName;
+      let supplier: { defaultCategory: S.ReceptionCategory | null; receptionLimit: number | null } | null = null;
       if (d.supplierId) {
         const s = db.suppliers.find((x) => x.id === d.supplierId && x.orgId === orgId);
         if (!s) throw notFound('Proveedor');
         supplierName = s.name;
+        supplier = { defaultCategory: s.defaultCategory ?? null, receptionLimit: s.receptionLimit ?? null };
       }
-      const limits = S.receptionLimits(d);
+      // Como el servidor: límite de la categoría o el propio del proveedor; nunca el de la petición.
+      const limits = S.receptionLimits(d, supplier);
       const temperatureOutOfRange = S.receptionOutOfLimits(d, limits);
       const expired = d.expiryDate != null && d.expiryDate < today;
-      const needsReason = expired || (temperatureOutOfRange && !limits.assumed);
+      const needsReason = expired || temperatureOutOfRange;
       if (d.accepted && needsReason && !d.correctiveAction) {
         throw validationError('data.correctiveAction', expired ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas' : S.receptionLimitMessage(limits));
       }
@@ -74,6 +77,8 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
           temperature: d.temperature ?? null,
           category: limits.category,
           categoryAssumed: limits.assumed,
+          limitSource: limits.source,
+          limitDiffersFromReference: limits.differsFromReference,
           maxTemperature: limits.max,
           minTemperature: limits.min,
           temperatureOutOfRange,

@@ -117,6 +117,8 @@ export type Supplier = {
   notes: string | null;
   /** Categoría de producto que se preselecciona en la recepción. */
   defaultCategory?: ReceptionCategory | null;
+  /** Límite propio de recepción (máx. en refrigerado/congelado, mín. en caliente); null = el de referencia. */
+  receptionLimit?: number | null;
   createdAt: string;
 };
 
@@ -146,6 +148,8 @@ export type RecepcionStored = {
   /** Tipo de producto (registros nuevos); `categoryAssumed`: aplicado por defecto a una petición sin categoría. */
   category?: ReceptionCategory | null;
   categoryAssumed?: boolean;
+  limitSource?: 'referencia' | 'proveedor' | 'peticion' | 'presupuesta' | null;
+  limitDiffersFromReference?: boolean;
   maxTemperature?: number | null;
   minTemperature?: number | null;
   temperatureOutOfRange?: boolean;
@@ -264,6 +268,8 @@ export type TodayTasks = {
     withAlert?: boolean;
     /** La última lectura de hoy está fuera de rango: hay que volver a medir. */
     remeasure?: boolean;
+    /** Si se eligió «Repetiré la medición en 30 min»: a partir de cuándo toca volver a medir. */
+    remeasureFrom?: string | null;
     lastReading: { value: number; outOfRange: boolean; at: string } | null;
   }[];
   cleaning: {
@@ -305,5 +311,5 @@ export type KioskContext = {
   staff: { id: string; name: string; hasPin: boolean }[];
   equipment: { id: string; name: string; type: EquipmentType; minTemp: number | null; maxTemp: number | null; checksPerDay: number }[];
   cleaningPlans: { id: string; name: string; frequency: Frequency; weekday: number | null; monthDay: number | null; items: CleaningItem[] }[];
-  suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null }[];
+  suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null; receptionLimit?: number | null }[];
 };

@@ -64,6 +64,8 @@ export interface OrganizationsTable {
   /** Borrado diferido: cuándo se pidió y cuándo se purgará definitivamente. */
   deletion_requested_at: TimestampNullable;
   deletion_scheduled_at: TimestampNullable;
+  /** Eliminación inmediata pedida por el titular (migración 0007); la purga la hace enregla_purge_organization. */
+  purge_requested_at: Date | null;
   deletion_requested_by: string | null;
   /** Sesión de Checkout abierta (se expira al pedir el borrado del local). */
   stripe_checkout_session_id: string | null;
@@ -163,6 +165,8 @@ export interface SuppliersTable {
   notes: string | null;
   /** Categoría de producto por defecto en la recepción (migración 0006). */
   default_category: string | null;
+  /** Límite de temperatura de recepción propio del proveedor (migración 0008). */
+  reception_limit: number | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }

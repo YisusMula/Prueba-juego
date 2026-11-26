@@ -728,7 +728,9 @@ route('GET', `${ORG}/suppliers/:supplierId`, (db, req) => {
 route('POST', `${ORG}/suppliers`, (db, req) => {
   const c = requireWritable(orgCtx(db, req));
   const b = parse(S.supplierBody, req.body);
-  const s = { id: uuid(), orgId: c.org.id, name: b.name, contactName: b.contactName, phone: b.phone, email: b.email, products: b.products, notes: b.notes, defaultCategory: b.defaultCategory, createdAt: Date.now() };
+  const limitErr = S.supplierLimitError(b.defaultCategory, b.receptionLimit);
+  if (limitErr) throw validationError('receptionLimit', limitErr);
+  const s = { id: uuid(), orgId: c.org.id, name: b.name, contactName: b.contactName, phone: b.phone, email: b.email, products: b.products, notes: b.notes, defaultCategory: b.defaultCategory, receptionLimit: b.receptionLimit, createdAt: Date.now() };
   db.suppliers.push(s);
   return ok({ supplier: supplierView(s) }, 201);
 });
@@ -738,6 +740,13 @@ route('PATCH', `${ORG}/suppliers/:supplierId`, (db, req) => {
   const b = parse(S.updateSupplierBody, req.body);
   const s = db.suppliers.find((x) => x.id === id && x.orgId === c.org.id);
   if (!s) throw notFound('Proveedor');
+  if (b.defaultCategory !== undefined || b.receptionLimit !== undefined) {
+    const category = b.defaultCategory !== undefined ? b.defaultCategory : (s.defaultCategory ?? null);
+    const limit = b.receptionLimit !== undefined ? b.receptionLimit : b.defaultCategory !== undefined && b.defaultCategory !== s.defaultCategory ? null : (s.receptionLimit ?? null);
+    const limitErr = S.supplierLimitError(category, limit);
+    if (limitErr) throw validationError('receptionLimit', limitErr);
+    b.receptionLimit = limit;
+  }
   Object.assign(s, Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)));
   return ok({ supplier: supplierView(s) });
 });
@@ -949,7 +958,7 @@ route('GET', '/api/kiosk/context', (db, req) => {
     suppliers: db.suppliers
       .filter((s) => s.orgId === org.id)
       .sort(byName)
-      .map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.defaultCategory ?? null })),
+      .map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.defaultCategory ?? null, receptionLimit: s.receptionLimit ?? null })),
   });
 });
 route('GET', '/api/kiosk/tasks/today', (db, req) => ok(computeToday(db, deviceCtx(db, req).org)));
@@ -988,10 +997,6 @@ route('POST', '/api/kiosk/records/:recordId/amendments', (db, req) => {
   if (original.deviceId !== ctx.device.id || original.userId != null) throw notAllowed('Solo se puede corregir desde la tablet en la que se hizo el registro. Pide a un encargado que lo corrija desde la web.');
   if (original.amendsRecordId != null) throw notAllowed('Esta corrección ya no se puede cambiar desde la tablet. Pide a un encargado que la corrija desde la web.');
   if (original.staffId !== b.staffId) throw notAllowed('Solo puede corregirlo la persona que hizo el registro.');
-  if (Date.now() - original.createdAt > (S.KIOSK_CORRECTION_MINUTES * 60 + S.KIOSK_CORRECTION_GRACE_SECONDS) * 1000) {
-    throw notAllowed(`Solo se puede corregir en la tablet durante los ${S.KIOSK_CORRECTION_MINUTES} minutos siguientes a guardarlo. Pide a un encargado que lo corrija desde la web.`);
-  }
-  if (db.records.some((r) => r.amendsRecordId === original.id)) throw conflict('Este registro ya tiene una corrección.');
   // Con «Me equivoqué de persona» hay dos PIN: los errores del segundo se marcan con `newStaffPin` (como el servidor).
   const checkPin = (staffId: string, pin: string | null | undefined, own: boolean) => {
     const st = kioskStaff(db, ctx.org, staffId);
@@ -1013,12 +1018,17 @@ route('POST', '/api/kiosk/records/:recordId/amendments', (db, req) => {
   const signerId = b.reason === 'wrong_person' ? b.newStaffId! : b.staffId;
   if (b.reason === 'wrong_person') checkPin(signerId, b.newStaffPin, false);
   const { pin: _p, newStaffPin: _np, ...payload } = b;
-  return withIdempotency(db, req, ctx.org.id, `kiosk-amendment:${original.id}`, payload, () =>
-    createRecord(db, ctx.org, { userId: null, userName: null, staffId: signerId, deviceId: ctx.device.id }, null, b.data === undefined ? original.data : b.data, {
+  // Plazo y «ya corregido» dentro de la idempotencia (como el servidor): un reintento devuelve 200.
+  return withIdempotency(db, req, ctx.org.id, `kiosk-amendment:${original.id}`, payload, () => {
+    if (Date.now() - original.createdAt > (S.KIOSK_CORRECTION_MINUTES * 60 + S.KIOSK_CORRECTION_GRACE_SECONDS) * 1000) {
+      throw notAllowed(`Solo se puede corregir en la tablet durante los ${S.KIOSK_CORRECTION_MINUTES} minutos siguientes a guardarlo. Pide a un encargado que lo corrija desde la web.`);
+    }
+    if (db.records.some((r) => r.amendsRecordId === original.id)) throw conflict('Este registro ya tiene una corrección.');
+    return createRecord(db, ctx.org, { userId: null, userName: null, staffId: signerId, deviceId: ctx.device.id }, null, b.data === undefined ? original.data : b.data, {
       originalId: original.id,
       reason: S.kioskAmendmentReason(b, original.staffName),
-    }),
-  );
+    });
+  });
 });
 
 /** Salir / desvincular: email y contraseña de un propietario o encargado del local (como el servidor). */

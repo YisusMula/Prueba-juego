@@ -60,6 +60,8 @@ export type DSupplier = {
   notes: string | null;
   /** Categoría de producto por defecto en la recepción (servidor: suppliers.default_category). */
   defaultCategory?: 'refrigerado' | 'congelado' | 'ambiente' | 'caliente' | null;
+  /** Límite propio de recepción (servidor: suppliers.reception_limit). */
+  receptionLimit?: number | null;
   createdAt: number;
 };
 export type DDish = {

@@ -2,7 +2,7 @@
  * Tareas de hoy, alertas y cumplimiento: la misma lógica que `server/src/modules/tasks/service.ts`,
  * sobre las tablas en memoria de la demo.
  */
-import { esNumber } from '@shared/schemas';
+import { esNumber, REMEASURE_ACTION, REMEASURE_MINUTES } from '@shared/schemas';
 import type { AlertKind, Compliance, Frequency, TodayTasks } from '@/api/types';
 import type { DemoState, DOrg, DRecord, EquipmentState, PlanState } from './state';
 import { addDays, dayOfMonth, dayStart, eachDay, iso, isoWeekday, localDate, startOfIsoWeek, startOfMonth } from './time';
@@ -75,6 +75,10 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
       countsToday: stateAt(e.history, startToday)?.active === true,
       withAlert: mine.some((r) => r.alert),
       remeasure: last?.alert === true,
+      remeasureFrom:
+        last?.alert === true && String(last.data.correctiveAction ?? '').includes(REMEASURE_ACTION)
+          ? iso(last.effectiveAt + REMEASURE_MINUTES * 60_000)
+          : null,
       lastReading: last ? { value: Number(last.data.value), outOfRange: last.alert, at: iso(last.effectiveAt) } : null,
     };
   });

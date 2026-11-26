@@ -58,7 +58,7 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       db.selectFrom('staff').select(['id', 'name', 'pin_hash']).where('organization_id', '=', orgId).where('active', '=', true).orderBy('name').limit(500).execute(),
       db.selectFrom('equipment').selectAll().where('organization_id', '=', orgId).where('active', '=', true).orderBy('created_at').limit(500).execute(),
       db.selectFrom('cleaning_plans').selectAll().where('organization_id', '=', orgId).where('active', '=', true).orderBy('created_at').limit(500).execute(),
-      db.selectFrom('suppliers').select(['id', 'name', 'products', 'default_category']).where('organization_id', '=', orgId).orderBy('name').limit(500).execute(),
+      db.selectFrom('suppliers').select(['id', 'name', 'products', 'default_category', 'reception_limit']).where('organization_id', '=', orgId).orderBy('name').limit(500).execute(),
     ]);
     return {
       device: { id: ctx.deviceId, name: ctx.deviceName },
@@ -66,7 +66,7 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       staff: staff.map((s) => ({ id: s.id, name: s.name, hasPin: s.pin_hash != null })),
       equipment: equipment.map((e) => ({ id: e.id, name: e.name, type: e.type, minTemp: e.min_temp, maxTemp: e.max_temp, checksPerDay: e.checks_per_day })),
       cleaningPlans: plans.map((p) => ({ id: p.id, name: p.name, frequency: p.frequency, weekday: p.weekday, monthDay: p.month_day, items: p.items })),
-      suppliers: suppliers.map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.default_category ?? null })),
+      suppliers: suppliers.map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.default_category ?? null, receptionLimit: s.reception_limit ?? null })),
     };
   });
 
@@ -227,12 +227,6 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     if (original.device_id !== ctx.deviceId || original.user_id != null) throw notAllowed('Solo se puede corregir desde la tablet en la que se hizo el registro. Pide a un encargado que lo corrija desde la web.');
     if (original.amends_record_id != null) throw notAllowed('Esta corrección ya no se puede cambiar desde la tablet. Pide a un encargado que la corrija desde la web.');
     if (original.staff_id !== body.staffId) throw notAllowed('Solo puede corregirlo la persona que hizo el registro.');
-    const windowMs = (S.KIOSK_CORRECTION_MINUTES * 60 + S.KIOSK_CORRECTION_GRACE_SECONDS) * 1000;
-    if (app.deps.now().getTime() - original.created_at.getTime() > windowMs) {
-      throw notAllowed(`Solo se puede corregir en la tablet durante los ${S.KIOSK_CORRECTION_MINUTES} minutos siguientes a guardarlo. Pide a un encargado que lo corrija desde la web.`);
-    }
-    const already = await db.selectFrom('records').select('id').where('amends_record_id', '=', original.id).executeTakeFirst();
-    if (already) throw conflict('Este registro ya tiene una corrección.');
     // La persona que hizo el registro confirma con su PIN (si lo tiene) y, al cambiar de persona,
     // la persona correcta con el suyo.
     await checkStaffPin(ctx, body.staffId, body.pin, req.ip);
@@ -241,8 +235,16 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     await enforce(rateLimiter, `records:device:${ctx.deviceId}`, config.rateLimits.recordCreateDevice, 'Demasiados registros seguidos desde este dispositivo. Espera un minuto.');
     const reason = S.kioskAmendmentReason(body, original.staff_name);
     const { pin: _p, newStaffPin: _np, ...payload } = body;
-    const { record, replayed } = await withIdempotency(db, { orgId: ctx.org.id, key, scope: `kiosk-amendment:${id}`, payload }, (tx) =>
-      createRecord(
+    // El plazo y «ya corregido» se comprueban DENTRO de la idempotencia: un reintento de una corrección
+    // ya guardada (misma clave y cuerpo) devuelve 200 con ella aunque ya haya corrección o pasado el plazo.
+    const windowMs = (S.KIOSK_CORRECTION_MINUTES * 60 + S.KIOSK_CORRECTION_GRACE_SECONDS) * 1000;
+    const { record, replayed } = await withIdempotency(db, { orgId: ctx.org.id, key, scope: `kiosk-amendment:${id}`, payload }, async (tx) => {
+      if (app.deps.now().getTime() - original.created_at.getTime() > windowMs) {
+        throw notAllowed(`Solo se puede corregir en la tablet durante los ${S.KIOSK_CORRECTION_MINUTES} minutos siguientes a guardarlo. Pide a un encargado que lo corrija desde la web.`);
+      }
+      const already = await tx.selectFrom('records').select('id').where('amends_record_id', '=', original.id).executeTakeFirst();
+      if (already) throw conflict('Este registro ya tiene una corrección.');
+      return createRecord(
         tx,
         ctx.org,
         { userId: null, userName: null, staffId: signerId, deviceId: ctx.deviceId },
@@ -251,8 +253,8 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
         body.data === undefined ? original.data : body.data,
         { originalId: original.id, reason },
         { now: app.deps.now() },
-      ),
-    );
+      );
+    });
     if (replayed) reply.header('Idempotent-Replayed', 'true');
     return reply.status(replayed ? 200 : 201).send({ record: recordView(record) });
   });
@@ -264,9 +266,25 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
    */
   async function managerAuth(req: FastifyRequest) {
     const ctx = deviceCtx(req);
-    await enforce(rateLimiter, `kiosk-manager:device:${ctx.deviceId}`, config.rateLimits.kioskManagerAuthDevice, 'Demasiados intentos en esta tablet. Espera unos minutos.');
     const body = parse(S.kioskManagerAuthBody, req.body);
     const email = body.email.toLowerCase();
+    // Límites que cuentan solo FALLOS (un acierto devuelve su reserva): por cuenta y tablet (10 / 15 min),
+    // así que quien pruebe contraseñas con otros emails no bloquea al encargado; y por tablet, más alto
+    // (30 / 15 min), contra quien pruebe muchos emails. El techo de login por cuenta también se aplica.
+    const acctKey = `kiosk-manager:acct-device:${email}:${ctx.deviceId}`;
+    const devKey = `kiosk-manager:device:${ctx.deviceId}`;
+    const tooMany = (retry: number) => rateLimited(retry, 'Demasiados intentos fallidos en esta tablet. Espera unos minutos o hazlo desde la web (Ajustes → Dispositivos de cocina).');
+    const acct = await rateLimiter.hit(acctKey, config.rateLimits.kioskManagerAuthAccountDevice);
+    if (!acct.allowed) {
+      await rateLimiter.release(acctKey);
+      throw tooMany(acct.retryAfterSeconds);
+    }
+    const dev = await rateLimiter.hit(devKey, config.rateLimits.kioskManagerAuthDevice);
+    if (!dev.allowed) {
+      await rateLimiter.release(devKey);
+      await rateLimiter.release(acctKey);
+      throw tooMany(dev.retryAfterSeconds);
+    }
     await enforce(rateLimiter, `login:acct:${email}`, config.rateLimits.loginAccount);
     const user = await db
       .selectFrom('users as u')
@@ -280,6 +298,10 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       await audit(db, { event: 'device.kiosk_auth_failed', organizationId: ctx.org.id, userId: user?.id ?? null, ip: req.ip, metadata: { deviceId: ctx.deviceId, deviceName: ctx.deviceName } });
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Email o contraseña incorrectos, o esa cuenta no es propietaria ni encargada de este local.');
     }
+    // Acierto: no cuenta para los límites de fallos.
+    await rateLimiter.release(acctKey);
+    await rateLimiter.release(devKey);
+    await rateLimiter.release(`login:acct:${email}`);
     return { ctx, user };
   }
 

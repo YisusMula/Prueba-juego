@@ -42,6 +42,8 @@ const signerChanged = (r: ReportRecord): boolean => r.amends_record_id != null &
 
 export function notes(r: ReportRecord, tz = 'UTC'): string {
   const parts: string[] = [];
+  // 1.12: una lectura fuera de rango cuenta como control hecho, pero «con alerta» (también en el PDF).
+  if (r.type === 'temperatura' && r.alert && !r.amended_by) parts.push('Hecho con alerta: lectura fuera de rango');
   if (r.amends_record_id) {
     const changed = signerChanged(r) ? ` · Firmante anterior: ${r.amends_signer}` : '';
     parts.push(
@@ -131,7 +133,8 @@ function receptionLimitText(d: Record<string, unknown>): string {
   const lim = [typeof d.minTemperature === 'number' ? `mín. ${pdfNum(d.minTemperature)} °C` : null, typeof d.maxTemperature === 'number' ? `máx. ${pdfNum(d.maxTemperature)} °C` : null]
     .filter(Boolean)
     .join(', ');
-  const parts = [cat ? `${cat}${d.categoryAssumed ? ' por defecto' : ''}` : null, lim || (cat ? 'sin límite' : null)].filter(Boolean);
+  const own = d.limitDiffersFromReference === true ? 'límite del proveedor' : null;
+  const parts = [cat ? `${cat}${d.categoryAssumed ? ' por defecto' : ''}` : null, lim || (cat ? 'sin límite' : null), own].filter(Boolean);
   return parts.length ? ` (${parts.join(', ')})` : '';
 }
 
@@ -243,6 +246,8 @@ export const CSV_HEADERS = [
   'firmante_anterior',
   'categoria_producto',
   'temperatura_minima_c',
+  // Evaluación de la fase 1: la recepción usó el límite propio del proveedor (distinto del de referencia).
+  'limite_del_proveedor',
 ];
 
 export function csvRow(r: ReportRecord, tz: string): string[] {
@@ -260,6 +265,7 @@ export function csvRow(r: ReportRecord, tz: string): string[] {
     firmante_anterior: signerChanged(r) ? str(r.amends_signer) : '',
     categoria_producto: r.type === 'recepcion' ? str(d.category) : '',
     temperatura_minima_c: num(d.minTemperature),
+    limite_del_proveedor: r.type === 'recepcion' && d.limitDiffersFromReference === true ? 'sí' : '',
     firmado_por_personal: str(r.staff_name),
     firmado_por_usuario: str(r.user_name),
     dispositivo_cocina: r.device_id ? 'sí' : 'no',

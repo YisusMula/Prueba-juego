@@ -31,8 +31,16 @@ export async function applyAppRolePrivileges(pool: pg.Pool, role: string): Promi
     await q('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %ROLE%');
     await q('REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM %ROLE%');
     await q('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %ROLE%');
-    // Registros APPCC: solo leer y añadir.
+    // Registros APPCC: solo leer y añadir (la hora y el orden los fija un trigger, 0007).
     await q('REVOKE UPDATE, DELETE ON records FROM %ROLE%');
+    // Tablas desde las que un DELETE borraría registros en cascada: la app no las borra (desactiva).
+    // Los locales se purgan con enregla_purge_organization (solo si el plazo venció o el titular lo pidió).
+    await q('REVOKE DELETE ON organizations, devices, staff, equipment, cleaning_plans FROM %ROLE%');
+    // Auditoría: solo añadir y leer (purga y seudonimización por funciones acotadas del propietario).
+    await q('REVOKE UPDATE, DELETE ON audit_events FROM %ROLE%');
+    // Historial de configuración: lo escriben triggers del propietario; la app solo lo lee.
+    await q('REVOKE INSERT, UPDATE, DELETE ON equipment_config_history, cleaning_plan_config_history FROM %ROLE%');
+    await q('GRANT EXECUTE ON FUNCTION enregla_purge_organization(uuid), enregla_purge_audit_events(int), enregla_pseudonymize_audit(uuid, text) TO %ROLE%');
     // Control de migraciones: solo lectura.
     await q('REVOKE INSERT, UPDATE, DELETE ON schema_migrations FROM %ROLE%');
     await client.query('COMMIT');
@@ -48,6 +56,8 @@ export interface HardeningStatus {
   role: string;
   hardened: boolean;
   problems: string[];
+  /** Superusuario o propietario de `records`: puede desactivar el trigger de inmutabilidad. */
+  privileged: boolean;
 }
 
 /**
@@ -55,13 +65,14 @@ export interface HardeningStatus {
  * propietario de `records` o tiene UPDATE/DELETE/TRUNCATE sobre ella, no está endurecido.
  */
 export async function recordsHardeningStatus(pool: pg.Pool): Promise<HardeningStatus> {
-  const r = await pool.query<{ role: string; superuser: boolean; owner: boolean; upd: boolean; del: boolean; trunc: boolean }>(`
+  const r = await pool.query<{ role: string; superuser: boolean; owner: boolean; upd: boolean; del: boolean; trunc: boolean; orgdel: boolean }>(`
     SELECT current_user AS role,
       (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS superuser,
       (SELECT tableowner = current_user FROM pg_tables WHERE schemaname = 'public' AND tablename = 'records') AS owner,
       has_table_privilege(current_user, 'public.records', 'UPDATE') AS upd,
       has_table_privilege(current_user, 'public.records', 'DELETE') AS del,
-      has_table_privilege(current_user, 'public.records', 'TRUNCATE') AS trunc`);
+      has_table_privilege(current_user, 'public.records', 'TRUNCATE') AS trunc,
+      has_table_privilege(current_user, 'public.organizations', 'DELETE') AS orgdel`);
   const s = r.rows[0]!;
   const problems: string[] = [];
   if (s.superuser) problems.push('es superusuario');
@@ -69,5 +80,16 @@ export async function recordsHardeningStatus(pool: pg.Pool): Promise<HardeningSt
   if (s.upd) problems.push('puede hacer UPDATE en records');
   if (s.del) problems.push('puede hacer DELETE en records');
   if (s.trunc) problems.push('puede hacer TRUNCATE en records');
-  return { role: s.role, hardened: problems.length === 0, problems };
+  if (s.orgdel) problems.push('puede borrar locales (y sus registros en cascada) sin esperar al plazo de conservación');
+  return { role: s.role, hardened: problems.length === 0, problems, privileged: s.superuser || s.owner };
+}
+
+/**
+ * En producción la app no arranca si su rol es superusuario o propietario de `records` (podría
+ * desactivar el trigger de inmutabilidad), salvo que se acepte expresamente con
+ * ALLOW_PRIVILEGED_DB_ROLE=true (despliegues sin separación de roles, bajo responsabilidad del operador).
+ */
+export function refuseToStart(h: HardeningStatus, isProduction: boolean, allowPrivileged: boolean): string | null {
+  if (!isProduction || allowPrivileged || !h.privileged) return null;
+  return `El rol de base de datos de la app (${h.role}) ${h.problems.join(', ')}. En producción la app debe conectarse con el rol de ejecución (enregla_app): ver docs/OPERACIONES.md, apartado 13. Si de verdad quieres arrancar así, define ALLOW_PRIVILEGED_DB_ROLE=true.`;
 }

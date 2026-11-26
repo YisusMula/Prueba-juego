@@ -91,6 +91,7 @@ export const supplierView = (s: DSupplier): Supplier => ({
   products: s.products,
   notes: s.notes,
   defaultCategory: s.defaultCategory ?? null,
+  receptionLimit: s.receptionLimit ?? null,
   createdAt: iso(s.createdAt),
 });
 

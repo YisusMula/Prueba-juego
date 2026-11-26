@@ -110,10 +110,11 @@ describe('1.2 autoría de las correcciones', () => {
     const amend = json(am).record;
     expect(amend.staff).toMatchObject({ name: 'Luis Pérez' });
     expect(amend.correctedBy).toBe('Laura Gil');
-    expect(amend.signature).toBe('Luis Pérez');
+    // Evaluación de la fase 1 (#8): en una corrección web el empleado figura «anotado por» quien corrige.
+    expect(amend.signature).toBe('Luis Pérez (anotado por Laura Gil)');
 
     const pdf = pdfToText((await client.get(report(base, 'pdf', 'temperatura'))).rawPayload);
-    expect(pdf).toMatch(/Firmó: Luis Pérez · Corrigió: Laura Gil el \d/);
+    expect(pdf).toMatch(/Firmó: Luis Pérez \(anotado por Laura Gil\) · Corrigió: Laura Gil el \d/);
     expect(pdf).toContain('Motivo: Se tecleó 9 en vez de 0,9');
     expect(pdf).toMatch(/Corregido el .* por Laura Gil/);
     expect(pdf).not.toMatch(/por Luis Pérez/);
@@ -309,14 +310,16 @@ describe('1.6 recepción con categoría de producto', () => {
     expect(hot).toMatchObject({ alert: true, data: { minTemperature: 63, maxTemperature: null, temperatureOutOfRange: true } });
     const ambient = json(await client.post(`${base}/records`, rec({ category: 'ambiente', temperature: 25 }))).record;
     expect(ambient).toMatchObject({ alert: false, data: { category: 'ambiente', maxTemperature: null, minTemperature: null, temperatureOutOfRange: false } });
-    // Límite editado: refrigerado con máx. 7 °C → 6 °C correcto.
-    const edited = json(await client.post(`${base}/records`, rec({ category: 'refrigerado', temperature: 6, maxTemperature: 7 }))).record;
-    expect(edited).toMatchObject({ alert: false, data: { maxTemperature: 7 } });
+    // Evaluación #5: el límite ya no se edita al recibir: un máx. de 7 °C en la petición se ignora.
+    const edited = await client.post(`${base}/records`, rec({ category: 'refrigerado', temperature: 6, maxTemperature: 7 }));
+    expect(edited.statusCode).toBe(400);
   });
 
   it('cliente antiguo sin categoría ni máxima: se aplica refrigerado (≤ 4 °C) y una lectura de 6 °C queda con alerta', async () => {
     const { client, base } = await setupOwner(ctx);
-    const res = await client.post(`${base}/records`, rec({ temperature: 6 }));
+    // Evaluación #4: también exige la acción correctora.
+    expect((await client.post(`${base}/records`, rec({ temperature: 6 }))).statusCode).toBe(400);
+    const res = await client.post(`${base}/records`, rec({ temperature: 6, correctiveAction: 'Se usa de inmediato' }));
     expect(res.statusCode).toBe(201);
     expect(json(res).record).toMatchObject({ alert: true, data: { category: 'refrigerado', categoryAssumed: true, maxTemperature: 4, temperatureOutOfRange: true } });
     // Con máxima explícita (cliente antiguo con atajo) se respeta y exige motivo como antes.
@@ -451,7 +454,7 @@ describe('CSV: columnas nuevas al final', () => {
     const prev = ['estado_limpieza', 'temperatura_maxima_c', 'caducada'];
     const idx = CSV_HEADERS.indexOf('caducada');
     expect(CSV_HEADERS.slice(idx - 2, idx + 1)).toEqual(prev);
-    expect(CSV_HEADERS.slice(idx + 1)).toEqual(['firma', 'corregido_por_nombre', 'firmante_anterior', 'categoria_producto', 'temperatura_minima_c']);
+    expect(CSV_HEADERS.slice(idx + 1)).toEqual(['firma', 'corregido_por_nombre', 'firmante_anterior', 'categoria_producto', 'temperatura_minima_c', 'limite_del_proveedor']);
   });
 });
 

@@ -21,6 +21,8 @@ export function supplierView(s: Selectable<SuppliersTable>) {
     notes: s.notes,
     /** Categoría de producto que se preselecciona en la recepción (NUEVO, puede ser null). */
     defaultCategory: (s.default_category ?? null) as S.ReceptionCategory | null,
+    /** Límite propio de recepción (NUEVO): máx. en refrigerado/congelado, mín. en caliente; null = el de referencia. */
+    receptionLimit: s.reception_limit ?? null,
     createdAt: s.created_at.toISOString(),
   };
 }
@@ -51,6 +53,8 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   app.post('/', async (req, reply) => {
     const ctx = requireWritable(req);
     const body = parse(S.supplierBody, req.body);
+    const limitErr = S.supplierLimitError(body.defaultCategory, body.receptionLimit);
+    if (limitErr) throw new AppError(400, 'VALIDATION_ERROR', limitErr, [{ path: 'receptionLimit', message: limitErr }]);
     const count = await db.selectFrom('suppliers').select(sql<number>`count(*)::int`.as('n')).where('organization_id', '=', ctx.org.id).executeTakeFirstOrThrow();
     if (count.n >= 1000) throw new AppError(409, 'CONFLICT', 'Has alcanzado el máximo de proveedores');
     const row = await db
@@ -64,6 +68,7 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
         products: json(body.products),
         notes: body.notes,
         default_category: body.defaultCategory,
+        reception_limit: body.receptionLimit,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -74,6 +79,16 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
     const ctx = requireWritable(req);
     const id = idParam(req.params, 'supplierId', 'Proveedor');
     const body = parse(S.updateSupplierBody, req.body);
+    if (body.defaultCategory !== undefined || body.receptionLimit !== undefined) {
+      const cur = await db.selectFrom('suppliers').select(['default_category', 'reception_limit']).where('id', '=', idParam(req.params, 'supplierId', 'Proveedor')).where('organization_id', '=', ctx.org.id).executeTakeFirst();
+      if (!cur) throw notFound('Proveedor');
+      const category = body.defaultCategory !== undefined ? body.defaultCategory : (cur.default_category as S.ReceptionCategory | null);
+      // Si cambia la categoría sin indicar límite, el límite propio anterior deja de valer.
+      const limit = body.receptionLimit !== undefined ? body.receptionLimit : body.defaultCategory !== undefined && body.defaultCategory !== cur.default_category ? null : cur.reception_limit;
+      const limitErr = S.supplierLimitError(category, limit);
+      if (limitErr) throw new AppError(400, 'VALIDATION_ERROR', limitErr, [{ path: 'receptionLimit', message: limitErr }]);
+      body.receptionLimit = limit;
+    }
     const row = await db
       .updateTable('suppliers')
       .set({
@@ -84,6 +99,7 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
         ...(body.products !== undefined ? { products: json(body.products) } : {}),
         ...(body.notes !== undefined ? { notes: body.notes } : {}),
         ...(body.defaultCategory !== undefined ? { default_category: body.defaultCategory } : {}),
+        ...(body.receptionLimit !== undefined ? { reception_limit: body.receptionLimit } : {}),
         updated_at: sql<Date>`now()`,
       })
       .where('id', '=', id)

@@ -209,7 +209,8 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?:
     if (!opts.force && last && Date.now() - last.last_run_at.getTime() < 24 * 3600 * 1000) return none;
 
     const n = (r: { numDeletedRows: bigint }[] | { numDeletedRows: bigint }) => Number((Array.isArray(r) ? r[0]! : r).numDeletedRows);
-    const auditEvents = n(await trx.deleteFrom('audit_events').where('created_at', '<', sql<Date>`now() - make_interval(months => ${auditMonths})`).execute());
+    // Por una función acotada del propietario (0007): el rol de la app no puede borrar ni editar la auditoría.
+    const auditEvents = Number((await sql<{ n: string }>`SELECT enregla_purge_audit_events(${auditMonths}::int) AS n`.execute(trx)).rows[0]?.n ?? 0);
     const unverifiedUsers = n(
       await trx
         .deleteFrom('users')
@@ -277,8 +278,10 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?:
         opts.log?.error({ err: (err as Error).message, organizationId: o.id }, 'Purga de local aplazada: no se pudo cancelar su facturación en Stripe (se reintentará mañana)');
         continue;
       }
-      const del = await trx.deleteFrom('organizations').where('id', '=', o.id).where('deletion_scheduled_at', 'is not', null).executeTakeFirst();
-      if (Number(del.numDeletedRows) === 0) continue;
+      // Función del propietario (0007): solo borra si el plazo venció, se pidió la eliminación inmediata
+      // o el local se quedó sin miembros. El rol de la app no tiene DELETE sobre organizations.
+      const del = await sql<{ ok: boolean }>`SELECT enregla_purge_organization(${o.id}::uuid) AS ok`.execute(trx);
+      if (!del.rows[0]?.ok) continue;
       purged.push(o);
       await audit(trx, { event: 'org.deleted', organizationId: o.id, metadata: { name: o.name, reason: 'scheduled_deletion' } });
     }

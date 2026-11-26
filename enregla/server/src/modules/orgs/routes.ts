@@ -194,6 +194,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
         .set({
           deletion_requested_at: sql<Date>`now()`,
           deletion_scheduled_at: sql<Date>`now() + make_interval(days => ${graceDays})`,
+          purge_requested_at: null,
           deletion_requested_by: ctx.userId,
           // La cancelación ya está hecha en Stripe; el webhook lo confirmará.
           ...(hasLiveStripeSubscription(org) ? { subscription_status: 'canceled', cancel_at_period_end: false } : {}),
@@ -250,7 +251,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     // Solo se restaura lo que de verdad sigue pendiente; nunca un 500.
     const org = await db
       .updateTable('organizations')
-      .set({ deletion_requested_at: null, deletion_scheduled_at: null, deletion_requested_by: null, updated_at: sql<Date>`now()` })
+      .set({ deletion_requested_at: null, deletion_scheduled_at: null, deletion_requested_by: null, purge_requested_at: null, updated_at: sql<Date>`now()` })
       .where('id', '=', ctx.org.id)
       .where('deletion_scheduled_at', 'is not', null)
       .returningAll()
@@ -293,8 +294,11 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       }
       throw new AppError(502, 'BILLING_ERROR', 'No se ha podido cancelar la suscripción en Stripe, así que el local NO se ha eliminado. Inténtalo de nuevo en unos minutos.');
     }
-    const del = await db.deleteFrom('organizations').where('id', '=', ctx.org.id).where('deletion_scheduled_at', 'is not', null).executeTakeFirst();
-    if (Number(del.numDeletedRows) === 0) {
+    // Se registra la petición del titular y la purga la hace la función del propietario (0007), que
+    // solo borra locales pendientes de eliminación. El rol de la app no tiene DELETE sobre organizations.
+    await db.updateTable('organizations').set({ purge_requested_at: sql<Date>`now()` }).where('id', '=', ctx.org.id).where('deletion_scheduled_at', 'is not', null).execute();
+    const del = await sql<{ ok: boolean }>`SELECT enregla_purge_organization(${ctx.org.id}::uuid) AS ok`.execute(db);
+    if (!del.rows[0]?.ok) {
       const still = await db.selectFrom('organizations').select('id').where('id', '=', ctx.org.id).executeTakeFirst();
       if (still) throw conflict('Este local ya no está pendiente de eliminación.');
       throw notFound('Local');

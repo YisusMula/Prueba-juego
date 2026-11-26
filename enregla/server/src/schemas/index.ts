@@ -4,7 +4,7 @@
  * o, como paquete, `enregla-server/schemas`.
  */
 import { z } from 'zod';
-import { esErrorMap } from './es.js';
+import { esErrorMap, esNumber } from './es.js';
 
 // Mensajes de validación en español (servidor y frontend comparten este módulo).
 z.config({ customError: esErrorMap });
@@ -234,6 +234,8 @@ export const supplierBody = z.object({
   name: text(LIMITS.supplierName),
   /** Categoría de producto que se preselecciona en la recepción (opcional). */
   defaultCategory: z.lazy(() => receptionCategory).optional().nullable().transform((v) => v ?? null),
+  /** Límite propio del proveedor (máx. en refrigerado/congelado, mín. en caliente), dentro de SUPPLIER_LIMIT_RANGES. */
+  receptionLimit: z.number().min(-60).max(100).optional().nullable().transform((v) => v ?? null),
   contactName: optionalText(150),
   phone: optionalText(40),
   email: z
@@ -250,6 +252,7 @@ export const updateSupplierBody = z
     phone: optionalText(40),
     email: z.union([email, z.literal(''), z.null()]).transform((v) => (v ? v : null)),
     defaultCategory: z.lazy(() => receptionCategory).nullable(),
+    receptionLimit: z.number().min(-60).max(100).nullable(),
     products: z.array(text(100)).max(200),
     notes: optionalText(1000),
   })
@@ -315,41 +318,84 @@ export const RECEPTION_CATEGORY_LIMITS: Record<ReceptionCategory, { min: number 
   caliente: { min: REFERENCE_TEMPS.hotMin, max: null },
 };
 
+/**
+ * Margen admitido para el límite propio de un proveedor (Ajustes → Proveedores): el límite de
+ * referencia se puede ajustar dentro de estos valores, nunca al recibir la mercancía.
+ */
+export const SUPPLIER_LIMIT_RANGES: Record<Exclude<ReceptionCategory, 'ambiente'>, { min: number; max: number; kind: 'max' | 'min' }> = {
+  refrigerado: { min: 0, max: 8, kind: 'max' },
+  congelado: { min: -25, max: -15, kind: 'max' },
+  caliente: { min: 63, max: 90, kind: 'min' },
+};
+
+/** Mensaje si el límite propio de un proveedor no es válido para su categoría (null si es válido). */
+export function supplierLimitError(category: ReceptionCategory | null | undefined, limit: number | null | undefined): string | null {
+  if (limit == null) return null;
+  if (!category || category === 'ambiente') return 'Para fijar un límite propio, elige antes el tipo de producto (refrigerado, congelado o caliente)';
+  const r = SUPPLIER_LIMIT_RANGES[category];
+  if (limit < r.min || limit > r.max) {
+    return `El límite para ${RECEPTION_CATEGORY_LABELS[category].toLowerCase()} debe estar entre ${esNumber(r.min)} y ${esNumber(r.max)} °C`;
+  }
+  return null;
+}
+
 export interface ReceptionLimits {
   category: ReceptionCategory | null;
   min: number | null;
   max: number | null;
   /**
    * Categoría presupuesta: petición de un cliente antiguo con temperatura pero sin categoría ni
-   * límites. Se aplica la regla de refrigerado (la más estricta para el producto que se recibe con
-   * control de temperatura) y, si se supera, el registro queda con alerta.
+   * límites. Se aplica la regla de refrigerado (máx. 4 °C): si se supera, alerta y acción correctora.
    */
   assumed: boolean;
+  /** De dónde sale el límite: referencia de la categoría, límite propio del proveedor, petición antigua o presupuesto. */
+  source: 'referencia' | 'proveedor' | 'peticion' | 'presupuesta' | null;
+  /** El límite aplicado no es el de referencia de la categoría (límite propio del proveedor). */
+  differsFromReference: boolean;
 }
 
 /**
- * Límites que se aplican a una recepción:
- * - con categoría: los indicados (editables) o, si faltan, los de la categoría;
- * - sin categoría pero con límites explícitos (clientes antiguos): esos límites;
+ * Límites que se aplican a una recepción (los calcula el servidor; el límite NO se edita al recibir):
+ * - con categoría: el de referencia o, si el proveedor tiene esa categoría con un límite propio
+ *   (dentro de SUPPLIER_LIMIT_RANGES), ese. `maxTemperature`/`minTemperature` de la petición se ignoran;
+ * - sin categoría pero con límites explícitos (clientes antiguos con atajo): esos límites, sin pasar
+ *   nunca de la máxima de refrigerado (4 °C);
  * - sin categoría ni límites y con temperatura: refrigerado (≤ 4 °C), marcado como presupuesto;
  * - sin temperatura: ninguno.
  */
-export function receptionLimits(d: { category?: ReceptionCategory | null; temperature?: number | null; maxTemperature?: number | null; minTemperature?: number | null }): ReceptionLimits {
+export function receptionLimits(
+  d: { category?: ReceptionCategory | null; temperature?: number | null; maxTemperature?: number | null; minTemperature?: number | null },
+  supplier?: { defaultCategory?: ReceptionCategory | null; receptionLimit?: number | null } | null,
+): ReceptionLimits {
   if (d.category) {
     const def = RECEPTION_CATEGORY_LIMITS[d.category];
-    return { category: d.category, min: d.minTemperature ?? def.min, max: d.maxTemperature ?? def.max, assumed: false };
+    const own = d.category !== 'ambiente' && supplier?.defaultCategory === d.category && supplier.receptionLimit != null && supplierLimitError(d.category, supplier.receptionLimit) == null
+      ? supplier.receptionLimit
+      : null;
+    if (own != null) {
+      const kind = SUPPLIER_LIMIT_RANGES[d.category as Exclude<ReceptionCategory, 'ambiente'>].kind;
+      const min = kind === 'min' ? own : def.min;
+      const max = kind === 'max' ? own : def.max;
+      return { category: d.category, min, max, assumed: false, source: 'proveedor', differsFromReference: min !== def.min || max !== def.max };
+    }
+    return { category: d.category, min: def.min, max: def.max, assumed: false, source: 'referencia', differsFromReference: false };
   }
   if (d.maxTemperature != null || d.minTemperature != null) {
-    return { category: null, min: d.minTemperature ?? null, max: d.maxTemperature ?? null, assumed: false };
+    const chilled = REFERENCE_TEMPS.chilledMax;
+    const max = d.maxTemperature == null ? chilled : Math.min(d.maxTemperature, chilled);
+    return { category: null, min: d.minTemperature ?? null, max, assumed: false, source: 'peticion', differsFromReference: false };
   }
-  if (d.temperature != null) return { category: 'refrigerado', ...RECEPTION_CATEGORY_LIMITS.refrigerado, assumed: true };
-  return { category: null, min: null, max: null, assumed: false };
+  if (d.temperature != null) return { category: 'refrigerado', ...RECEPTION_CATEGORY_LIMITS.refrigerado, assumed: true, source: 'presupuesta', differsFromReference: false };
+  return { category: null, min: null, max: null, assumed: false, source: null, differsFromReference: false };
 }
 
 /** La temperatura medida incumple los límites (por encima de la máxima o por debajo de la mínima). */
 export function receptionOutOfLimits(d: { temperature?: number | null }, l: { min: number | null; max: number | null }): boolean {
   return d.temperature != null && ((l.max != null && d.temperature > l.max) || (l.min != null && d.temperature < l.min));
 }
+
+/** Categorías que exigen anotar la temperatura al aceptar la mercancía. */
+export const RECEPTION_TEMPERATURE_REQUIRED: readonly ReceptionCategory[] = ['refrigerado', 'congelado', 'caliente'];
 
 export const recepcionData = z
   .object({
@@ -364,9 +410,12 @@ export const recepcionData = z
      * por compatibilidad (ver `receptionLimits`).
      */
     category: receptionCategory.optional().nullable(),
-    /** Temperatura máxima admisible (editable; por defecto, la de la categoría). */
+    /**
+     * Compatibilidad con clientes antiguos (atajos 4 °C / −18 °C sin categoría). Con `category` se
+     * ignoran: el límite es el de referencia o el propio del proveedor (no se edita al recibir).
+     */
     maxTemperature: temperature(RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX, RECEPTION_TEMP_MESSAGE).optional().nullable(),
-    /** Temperatura mínima admisible (NUEVO; productos calientes: por defecto 63 °C). */
+    /** Compatibilidad (ver `maxTemperature`). */
     minTemperature: temperature(RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX, RECEPTION_TEMP_MESSAGE).optional().nullable(),
     expiryDate: isoDate.optional().nullable(),
     accepted: z.boolean({ error: 'Indica si aceptas o rechazas la mercancía' }),
@@ -380,11 +429,11 @@ export const recepcionData = z
     if (d.minTemperature != null && d.maxTemperature != null && d.minTemperature > d.maxTemperature) {
       ctx.addIssue({ code: 'custom', path: ['minTemperature'], message: 'La temperatura mínima no puede ser mayor que la máxima' });
     }
-    const limits = receptionLimits(d);
-    // Con categoría presupuesta (cliente antiguo) no se exige: queda con alerta (ver receptionLimits).
-    if (d.accepted && !limits.assumed && receptionOutOfLimits(d, limits) && !d.correctiveAction) {
-      ctx.addIssue({ code: 'custom', path: ['correctiveAction'], message: receptionLimitMessage(limits) });
+    // Refrigerado, congelado o caliente: hay que medir la temperatura para aceptarlo.
+    if (d.accepted && d.category && RECEPTION_TEMPERATURE_REQUIRED.includes(d.category) && d.temperature == null) {
+      ctx.addIssue({ code: 'custom', path: ['temperature'], message: 'Anota la temperatura al recibirlo: es obligatoria para producto refrigerado, congelado o caliente' });
     }
+    // La acción correctora fuera de límite la exige el servidor (el límite puede ser el del proveedor).
   });
 
 /** Mensaje cuando se acepta mercancía fuera del límite de temperatura sin indicar la acción. */
@@ -677,6 +726,10 @@ export const kioskVerifyPinBody = z.object({
   pin: z.string().max(12),
 });
 
+/** Acción rápida que pide volver a medir más tarde (tarea «Volver a medir» a partir de esa hora). */
+export const REMEASURE_ACTION = 'Repetiré la medición en 30 min';
+export const REMEASURE_MINUTES = 30;
+
 /** Minutos durante los que la tablet ofrece «Corregir» tras guardar (el servidor da un margen de 30 s). */
 export const KIOSK_CORRECTION_MINUTES = 2;
 export const KIOSK_CORRECTION_GRACE_SECONDS = 30;
@@ -736,11 +789,12 @@ export interface SignatureInput {
 
 /**
  * Quién firma un registro. En la web el autor es siempre el usuario con sesión: si indica un
- * empleado, «Ana Martín (anotado por Laura Gil)». Desde la tablet, el empleado. En una corrección,
- * la persona que figura como autora del hecho (quién la corrigió va aparte, `recordCorrector`).
+ * empleado, «Ana Martín (anotado por Laura Gil)», también en las correcciones hechas en la web. Desde
+ * la tablet, el empleado (con su PIN). Quién corrigió va aparte (`recordCorrector`).
  */
 export function recordSignature(r: SignatureInput): string {
-  if (r.staffName && r.userName && !r.isAmendment) return `${r.staffName} (anotado por ${r.userName})`;
+  // También en las correcciones web: el empleado no confirmó nada con su PIN, lo anotó el usuario.
+  if (r.staffName && r.userName) return `${r.staffName} (anotado por ${r.userName})`;
   if (r.staffName) return r.staffName;
   if (r.userName) return r.userName;
   return r.deviceId ? 'Tablet de cocina' : '—';

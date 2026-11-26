@@ -12,6 +12,8 @@ import {
   TEMP_RANGE_MESSAGE,
   receptionLimits,
   receptionOutOfLimits,
+  RECEPTION_TEMPERATURE_REQUIRED,
+  REMEASURE_ACTION,
   type ReceptionCategory,
   aceiteData,
   formacionData,
@@ -38,7 +40,7 @@ import { formatLocalDate, formatRange, formatTemp, frequencyLabel, isOutOfRange,
 export type FormContext = {
   equipment: { id: string; name: string; type: EquipmentType; minTemp: number | null; maxTemp: number | null; active?: boolean }[];
   cleaningPlans: { id: string; name: string; frequency: Frequency; weekday: number | null; monthDay: number | null; items: CleaningItem[]; active?: boolean }[];
-  suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null }[];
+  suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null; receptionLimit?: number | null }[];
   staff: { id: string; name: string; active?: boolean }[];
   timezone: string;
 };
@@ -71,7 +73,7 @@ export const TEMP_ACTIONS = [
   'Producto trasladado a otra cámara',
   'Producto desechado',
   'Avisado el servicio técnico',
-  'Repetiré la medición en 30 min',
+  REMEASURE_ACTION,
 ];
 /** Motivos coherentes con ACEPTAR mercancía caducada o caliente (devolver o desechar solo tiene sentido al rechazarla). */
 export const ACCEPT_EXPIRED_ACTIONS = ['Error en la etiqueta: confirmado con el proveedor', 'Fecha revisada: producto en buen estado', 'Se consume hoy bajo control del responsable'];
@@ -423,9 +425,9 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   const [product, setProduct] = useState(i?.product ?? '');
   const [lot, setLot] = useState(i?.lot ?? '');
   const [temperature, setTemperature] = useState(numText(i?.temperature));
-  // Tipo de producto (obligatorio en la interfaz): fija el límite por defecto, que se puede editar.
+  // Tipo de producto (obligatorio en la interfaz): fija el límite. El límite NO se edita al recibir: es el
+  // de referencia o el propio del proveedor (Ajustes → Proveedores), igual que en el servidor.
   const [category, setCategory] = useState<ReceptionCategory | null>(i ? (i.category ?? null) : (p.ctx.suppliers.find((x) => x.id === supplierId)?.defaultCategory ?? null));
-  const [limit, setLimit] = useState(numText(i ? (i.category === 'caliente' ? i.minTemperature : i.maxTemperature) : null));
   const [expiry, setExpiry] = useState(i?.expiryDate ?? '');
   const [accepted, setAccepted] = useState<'si' | 'no' | null>(i ? (i.accepted ? 'si' : 'no') : null);
   const [reason, setReason] = useState(i?.rejectionReason ?? '');
@@ -435,21 +437,15 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   const supplier = p.ctx.suppliers.find((s) => s.id === supplierId);
   const listId = 'products-list';
 
-  const chooseCategory = (c: ReceptionCategory) => {
-    setCategory(c);
-    const def = RECEPTION_CATEGORY_LIMITS[c];
-    setLimit(numText(c === 'caliente' ? def.min : def.max));
-  };
-  const limitKind: 'max' | 'min' | null = category === 'caliente' ? 'min' : category === 'ambiente' || category == null ? null : 'max';
-  // Si se ha borrado el límite de una categoría que lo tiene, se usa el de la categoría (como el servidor).
-  const lText = limitKind ? limit : '';
+  const chooseCategory = (c: ReceptionCategory) => setCategory(c);
   const t = temperature.trim() ? parseDecimal(temperature) : null;
-  const l = lText.trim() ? parseDecimal(lText) : null;
   const tError = temperature.trim() && (t == null || !physicallyValidTemp(t, RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX)) ? RECEPTION_TEMP_MESSAGE : null;
-  const lError = lText.trim() && (l == null || !physicallyValidTemp(l, RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX)) ? RECEPTION_TEMP_MESSAGE : null;
-  const input = { category, temperature: t, maxTemperature: limitKind === 'max' ? l : null, minTemperature: limitKind === 'min' ? l : null };
-  const limits = category ? receptionLimits(input) : null;
-  const outOfLimits = !tError && !lError && limits != null && receptionOutOfLimits(input, limits);
+  const lError = null;
+  const input = { category, temperature: t };
+  const limits = category ? receptionLimits(input, supplier ? { defaultCategory: supplier.defaultCategory ?? null, receptionLimit: supplier.receptionLimit ?? null } : null) : null;
+  const outOfLimits = !tError && limits != null && receptionOutOfLimits(input, limits);
+  // Refrigerado, congelado o caliente: hay que medir la temperatura para aceptarlo (también lo exige el servidor).
+  const tempRequired = category != null && RECEPTION_TEMPERATURE_REQUIRED.includes(category);
   const expired = !!expiry && expiry < today;
   const issue = outOfLimits || expired;
   const needsReason = accepted === 'si' && issue;
@@ -465,6 +461,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
         if (tError || lError) return;
         const extra: Record<string, string> = {};
         if (!category) extra.category = 'Elige el tipo de producto: fija la temperatura límite';
+        if (tempRequired && accepted === 'si' && t == null) extra.temperature = 'Anota la temperatura al recibirlo: es obligatoria para producto refrigerado, congelado o caliente';
         if (accepted == null) extra.accepted = expired ? 'La mercancía está caducada: decide si la rechazas o la aceptas con un motivo' : 'Indica si aceptas o rechazas la mercancía';
         if (needsReason && !corrective.trim()) {
           extra.correctiveAction = expired ? 'Está caducada: indica por qué la aceptas o recházala' : 'Está fuera del límite de temperatura: indica qué has hecho o por qué la aceptas';
@@ -477,8 +474,6 @@ export function RecepcionForm(p: Props<'recepcion'>) {
             lot: lot.trim() || null,
             temperature: t,
             category,
-            maxTemperature: input.maxTemperature,
-            minTemperature: input.minTemperature,
             expiryDate: expiry || null,
             accepted: accepted === 'si',
             rejectionReason: reason.trim() || null,
@@ -544,19 +539,21 @@ export function RecepcionForm(p: Props<'recepcion'>) {
         })}
       />
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Temperatura al recibir (°C)" optional live={!!tError} error={tError || errors.temperature || server.temperature}>
+        <Field
+          label="Temperatura al recibir (°C)"
+          optional={!tempRequired}
+          hint={
+            limits && (limits.max != null || limits.min != null)
+              ? `Límite: ${limits.max != null ? `máx. ${formatTemp(limits.max)}` : `mín. ${formatTemp(limits.min)}`}${limits.differsFromReference ? ' (límite propio de este proveedor)' : ' (referencia orientativa)'}. Se cambia en Ajustes → Proveedores.`
+              : category === 'ambiente'
+                ? 'Producto a temperatura ambiente: sin límite.'
+                : undefined
+          }
+          live={!!tError}
+          error={tError || errors.temperature || server.temperature}
+        >
           <TemperatureInput value={temperature} onChange={setTemperature} placeholder="Ej.: 2,5" large={p.large} />
         </Field>
-        {limitKind ? (
-          <Field
-            label={limitKind === 'min' ? 'Temperatura mínima admisible (°C)' : 'Temperatura máxima admisible (°C)'}
-            hint="Valor orientativo de la categoría: cámbialo si tu plan dice otro."
-            live={!!lError}
-            error={lError || errors.maxTemperature || errors.minTemperature || server.maxTemperature || server.minTemperature}
-          >
-            <TemperatureInput value={limit} onChange={setLimit} placeholder={numText(limitKind === 'min' ? RECEPTION_CATEGORY_LIMITS.caliente.min : RECEPTION_CATEGORY_LIMITS[category!].max)} large={p.large} />
-          </Field>
-        ) : null}
         <Field label="Fecha de caducidad" optional error={errors.expiryDate || server.expiryDate}>
           <Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
         </Field>
