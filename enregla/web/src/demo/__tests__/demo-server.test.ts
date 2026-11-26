@@ -111,7 +111,9 @@ describe('API de la demo', () => {
   it('fase 1: recepción con categoría (6 °C refrigerado exige acción; cliente antiguo queda con alerta)', () => {
     const base = { supplierName: 'P', product: 'Merluza', accepted: true };
     expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'refrigerado', temperature: 6 } }).status).toBe(400);
-    const old = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6 } }).json.record;
+    // Evaluación #4: sin categoría también se exige la acción correctora.
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6 } }).status).toBe(400);
+    const old = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6, correctiveAction: 'Se usa ya' } }).json.record;
     expect(old.alert).toBe(true);
     expect(old.data).toMatchObject({ category: 'refrigerado', categoryAssumed: true, maxTemperature: 4 });
   });
@@ -142,5 +144,27 @@ describe('API de la demo', () => {
     expect(send('POST', '/api/kiosk/exit', { email: DEMO_EMAIL, password: DEMO_PASSWORD }, auth).status).toBe(200);
     expect(send('POST', '/api/kiosk/unpair', { email: DEMO_EMAIL, password: DEMO_PASSWORD }, auth).status).toBe(200);
     expect(get('/api/kiosk/context', auth).status).toBe(401);
+  });
+
+  it('evaluación: límite del proveedor, temperatura obligatoria, «volver a medir» con hora y reintento idempotente de la corrección', () => {
+    const sup = send<{ supplier: { id: string; receptionLimit: number | null } }>('POST', `/api/orgs/${orgId}/suppliers`, { name: 'Lácteos 2', defaultCategory: 'refrigerado', receptionLimit: 6 }).json.supplier;
+    expect(sup.receptionLimit).toBe(6);
+    expect(send('POST', `/api/orgs/${orgId}/suppliers`, { name: 'Laxo', defaultCategory: 'refrigerado', receptionLimit: 50 }).status).toBe(400);
+    const r = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { supplierId: sup.id, product: 'Nata', accepted: true, category: 'refrigerado', temperature: 5 } }).json.record;
+    expect(r.alert).toBe(false);
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { supplierName: 'P', product: 'X', accepted: true, category: 'refrigerado', maxTemperature: 50, temperature: 15 } }).status).toBe(400);
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { supplierName: 'P', product: 'X', accepted: true, category: 'congelado' } }).status).toBe(400);
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'congelador')!;
+    send('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: -5, correctiveAction: 'Repetiré la medición en 30 min' } });
+    const t = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.temperatures.find((x) => x.equipmentId === eq.id)!;
+    expect(t.remeasureFrom).toBeTruthy();
+    const token = send<{ token: string }>('POST', `/api/orgs/${orgId}/devices`, { name: 'T2' }).json.token;
+    const auth = { Authorization: `Bearer ${token}`, 'Idempotency-Key': '0b6c3c1e-7d9b-4c1e-9f6a-2a1b3c4d5e6f' };
+    const luis = get<Page<Staff>>(`/api/orgs/${orgId}/staff`).json.items.find((s) => s.name === 'Luis Pérez')!;
+    const cam = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    const orig = send<{ record: AppRecord }>('POST', '/api/kiosk/records', { staffId: luis.id, type: 'temperatura', data: { equipmentId: cam.id, value: 2 } }, { Authorization: `Bearer ${token}` }).json.record;
+    const body = { staffId: luis.id, reason: 'wrong_value', data: { equipmentId: cam.id, value: 3 } };
+    expect(send('POST', `/api/kiosk/records/${orig.id}/amendments`, body, auth).status).toBe(201);
+    expect(send('POST', `/api/kiosk/records/${orig.id}/amendments`, body, auth).status).toBe(200);
   });
 });

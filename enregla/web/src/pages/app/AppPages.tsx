@@ -236,7 +236,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     extra={
                       t.lastReading
                         ? t.remeasure
-                          ? `Última: ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}, fuera de rango. Mide otra vez para comprobar que se ha corregido.`
+                          ? `Última: ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}, fuera de rango. ${t.remeasureFrom ? `Vuelve a medir a partir de las ${formatTime(t.remeasureFrom, tz)}.` : 'Mide otra vez para comprobar que se ha corregido.'}`
                           : `Última: ${formatTemp(t.lastReading.value)} a las ${formatTime(t.lastReading.at, tz)}`
                         : undefined
                     }

@@ -222,6 +222,7 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
               {formatTemp(r.data.temperature)}
               {r.data.maxTemperature != null ? <span className="font-normal text-ink-muted"> (máx. {formatTemp(r.data.maxTemperature)})</span> : null}
               {r.data.minTemperature != null ? <span className="font-normal text-ink-muted"> (mín. {formatTemp(r.data.minTemperature)})</span> : null}
+              {r.data.limitDiffersFromReference ? <span className="font-normal text-ink-muted"> · límite propio del proveedor</span> : null}
               {r.data.temperatureOutOfRange ? <Badge tone="bad" icon="alert" className="ml-2">Fuera del límite</Badge> : null}
             </>
           ),

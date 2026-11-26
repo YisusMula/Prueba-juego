@@ -874,3 +874,16 @@ Todos aditivos salvo donde se indica.
 8. **PDF:** la nota de conservación describe con exactitud lo que hace la aplicación (§14).
 9. **Base de datos:** los despliegues de ejemplo separan por defecto el rol propietario (migraciones) del rol de ejecución de la app, que no puede modificar ni borrar registros (docs/OPERACIONES.md, apartado 13).
 
+---
+
+## 21. Cambios tras la evaluación de la fase 1
+
+1. **Recepción (más estricta):** sin `category` y con temperatura por encima de 4 °C (refrigerado presupuesto) se exige `correctiveAction` (400 `data.correctiveAction`) y queda con alerta. Con `category`, `maxTemperature`/`minTemperature` de la petición **se ignoran**: el límite es el de referencia o el propio del proveedor. Sin `category`, una máxima explícita nunca pasa de 4 °C. Al **aceptar** refrigerado, congelado o caliente, `temperature` es obligatoria (400 `data.temperature`). Nuevos campos almacenados: `limitSource` (`referencia` | `proveedor` | `peticion` | `presupuesta`) y `limitDiffersFromReference`. Nueva columna CSV al final: `limite_del_proveedor`. El PDF marca «límite del proveedor».
+2. **Proveedores:** `receptionLimit: number | null` (máx. en refrigerado/congelado, mín. en caliente), solo dentro de `SUPPLIER_LIMIT_RANGES` (refrigerado 0–8 °C, congelado −25 a −15 °C, caliente 63–90 °C); fuera → 400 `receptionLimit`. Al cambiar la categoría sin indicar límite, el propio anterior se borra. También en el contexto del kiosko.
+3. **Firma:** en una corrección **web** con empleado, `signature` es «Marta Gil (anotado por Laura Gil)» (antes «Marta Gil»). Desde la tablet sigue sin «anotado por».
+4. **Kiosko:** `POST /api/kiosk/records/{id}/amendments` comprueba el plazo y «ya corregido» **dentro** de la idempotencia: un reintento con la misma `Idempotency-Key` devuelve 200 con la misma corrección. `POST /api/kiosk/exit` y `/unpair`: los límites cuentan solo fallos, por cuenta y tablet (10 / 15 min) y por tablet (30 / 15 min); un acierto no cuenta.
+5. **Hoy:** `temperatures[].remeasureFrom` (ISO o null): si la acción incluye «Repetiré la medición en 30 min» (`REMEASURE_ACTION`), desde cuándo toca volver a medir.
+6. **PDF:** las lecturas fuera de rango vigentes llevan «Hecho con alerta» en Notas; la nota de conservación dice que el titular puede eliminar el local de forma inmediata desde la aplicación tras marcarlo para eliminación.
+7. **Base de datos (migraciones 0007 y 0008, aditivas):** `created_at` y `seq` de los registros los pone PostgreSQL cuando inserta un rol que no es el propietario; `organizations.purge_requested_at`; funciones `enregla_purge_organization`, `enregla_purge_audit_events` y `enregla_pseudonymize_audit` (SECURITY DEFINER, `search_path` fijo); `suppliers.reception_limit`. La eliminación inmediata (`DELETE /orgs/{id}/permanent`) registra `purge_requested_at` y purga con la función; restaurar o volver a programar la eliminación lo borra.
+8. **Producción:** la app no arranca si ve `POSTGRES_PASSWORD`, `DB_OWNER_PASSWORD` o `DB_APP_PASSWORD` en su entorno, ni si su rol es superusuario o propietario de `records` (salvo `ALLOW_PRIVILEGED_DB_ROLE=true`).
+

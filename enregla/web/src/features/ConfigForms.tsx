@@ -14,6 +14,8 @@ import {
   RECEPTION_CATEGORY_LABELS,
   RECEPTION_CATEGORY_LIMITS,
   type ReceptionCategory,
+  SUPPLIER_LIMIT_RANGES,
+  supplierLimitError,
 } from '@shared/schemas';
 import { api, isApiError, errorMessage } from '@/api/client';
 import type { CleaningPlan, Equipment, EquipmentType, Frequency, Staff, Supplier } from '@/api/types';
@@ -377,6 +379,10 @@ export function SupplierDialog({ orgId, open, onClose, initial, onSaved }: Dialo
   const [products, setProducts] = useState(initial?.products.join(', ') ?? '');
   const [notes, setNotes] = useState(initial?.notes ?? '');
   const [category, setCategory] = useState<string>(initial?.defaultCategory ?? '');
+  const [limit, setLimit] = useState(initial?.receptionLimit != null ? String(initial.receptionLimit).replace('.', ',').replace('-', '−') : '');
+  const limitRange = category && category !== 'ambiente' ? SUPPLIER_LIMIT_RANGES[category as Exclude<ReceptionCategory, 'ambiente'>] : null;
+  const limitNum = limit.trim() ? parseDecimal(limit) : null;
+  const limitError = limitRange && limit.trim() ? (limitNum == null ? 'Escribe la temperatura con números' : supplierLimitError(category as ReceptionCategory, limitNum)) : null;
   const s = useSave();
 
   const onSubmit = async (e: FormEvent) => {
@@ -384,6 +390,8 @@ export function SupplierDialog({ orgId, open, onClose, initial, onSaved }: Dialo
     const body = {
       name: name.trim(),
       defaultCategory: (category || null) as ReceptionCategory | null,
+      // Límite propio (opcional): solo para refrigerado, congelado o caliente y dentro del margen.
+      receptionLimit: limitRange ? limitNum : null,
       contactName: contactName.trim() || null,
       phone: phone.trim() || null,
       email: email.trim(),
@@ -393,6 +401,7 @@ export function SupplierDialog({ orgId, open, onClose, initial, onSaved }: Dialo
         .filter(Boolean),
       notes: notes.trim() || null,
     };
+    if (limitError) return s.setErrors({ receptionLimit: limitError });
     const parsed = supplierBody.safeParse(body);
     if (!parsed.success) return s.setErrors(zodToFieldErrors(parsed.error.issues));
     s.setErrors({});
@@ -432,6 +441,17 @@ export function SupplierDialog({ orgId, open, onClose, initial, onSaved }: Dialo
             ))}
           </Select>
         </Field>
+        {limitRange ? (
+          <Field
+            label={limitRange.kind === 'min' ? 'Temperatura mínima propia de este proveedor (°C)' : 'Temperatura máxima propia de este proveedor (°C)'}
+            optional
+            live={!!limitError}
+            hint={`Vacío: se usa la de referencia (${limitRange.kind === 'min' ? `mín. ${formatTemp(RECEPTION_CATEGORY_LIMITS[category as ReceptionCategory].min)}` : `máx. ${formatTemp(RECEPTION_CATEGORY_LIMITS[category as ReceptionCategory].max)}`}). Margen admitido: de ${formatTemp(limitRange.min)} a ${formatTemp(limitRange.max)}. Al recibir la mercancía no se puede cambiar, y el informe lo señala.`}
+            error={limitError || s.errors.receptionLimit}
+          >
+            <TemperatureInput value={limit} onChange={setLimit} placeholder="—" className="max-w-60" />
+          </Field>
+        ) : null}
         <Field label="Productos habituales" optional hint="Separados por comas. Se sugieren al registrar una recepción." error={s.errors.products}>
           <Input value={products} onChange={(e) => setProducts(e.target.value)} placeholder="Pollo, ternera, huevos" />
         </Field>

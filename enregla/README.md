@@ -137,7 +137,8 @@ Todas están documentadas en [`server/.env.example`](server/.env.example) y se v
 cd enregla
 cp server/.env.example server/.env
 # Edita server/.env: NODE_ENV=production, APP_URL=https://…, SMTP_*, MAIL_FROM,
-# POSTGRES_PASSWORD, DB_OWNER_PASSWORD y DB_APP_PASSWORD (largas y distintas), TRUST_PROXY=1 si hay proxy, Stripe si procede.
+# TRUST_PROXY=1 si hay proxy, Stripe si procede. Las claves de la base de datos van aparte:
+sh deploy/generate-db-secrets.sh   # deploy/secrets/db.env (db, migrate, backup) y app-db.env (solo la app)
 docker compose --env-file server/.env up -d --build
 ```
 
@@ -149,10 +150,10 @@ docker compose -f docker-compose.prod.yml --env-file server/.env up -d --build
 ```
 
 - `Dockerfile` multi-etapa: compila el servidor, compila `web/` si existe (si no, imagen solo API) y ejecuta como usuario `node` (no root) con `HEALTHCHECK` sobre `/healthz`.
-- Los compose fuerzan `NODE_ENV=production` (aunque `server/.env` diga otra cosa) y pasan la conexión como `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`: `POSTGRES_PASSWORD` puede llevar cualquier carácter sin codificarlo.
+- Los compose fuerzan `NODE_ENV=production` (aunque `server/.env` diga otra cosa) y pasan la conexión como `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`: las claves pueden llevar cualquier carácter sin codificarlas.
 - `docker-compose.prod.yml` incluye un servicio `backup` con copia diaria `pg_dump` en `./backups` (ver `docs/OPERACIONES.md`, que explica también cómo sacarla del servidor y cómo restaurarla).
 - `docker-compose.yml`: `db` (PostgreSQL 16, volumen `pgdata`, sin puerto publicado) + `migrate` + `app`. La app publica el 3000 **solo en `127.0.0.1`**: el acceso público debe pasar por un proxy inverso con TLS.
-- **Roles de base de datos separados por defecto** (los dos compose): `deploy/postgres-init/10-enregla-roles.sh` crea `enregla_owner` (propietario, solo para el servicio `migrate`) y `enregla_app` (rol de ejecución: en `records` solo `SELECT`/`INSERT`, sin DDL ni propiedad de nada, así que no puede modificar ni borrar registros ni desactivar su trigger). `migrate` aplica las migraciones y los permisos (`APP_DB_ROLE`) y termina antes de que arranque la app (`MIGRATE_ON_START=false`). `server/.env` necesita `POSTGRES_PASSWORD`, `DB_OWNER_PASSWORD` y `DB_APP_PASSWORD`. Para un despliegue anterior: `docs/OPERACIONES.md`, apartado 13.
+- **Roles de base de datos separados por defecto** (los dos compose): `deploy/postgres-init/10-enregla-roles.sh` crea `enregla_owner` (propietario, solo para el servicio `migrate`) y `enregla_app` (rol de ejecución: en `records` solo `SELECT`/`INSERT`, sin DDL ni propiedad de nada, así que no puede modificar ni borrar registros ni desactivar su trigger). `migrate` aplica las migraciones y los permisos (`APP_DB_ROLE`) y termina antes de que arranque la app (`MIGRATE_ON_START=false`). Las claves de la base de datos están separadas por servicio (`deploy/secrets/`): la app no recibe la del administrador ni la del propietario, y en producción no arranca si las encuentra o si su rol es superusuario o propietario. El rol de ejecución tampoco puede borrar locales (la purga a los 30 días o la eliminación inmediata del titular va por una función del propietario), ni fijar la hora o el orden de un registro, ni editar la auditoría. Para un despliegue anterior: `docs/OPERACIONES.md`, apartado 13.
 - La cookie de sesión es `__Host-` + `Secure`, así que la app debe servirse por https.
 
 ### Detrás de un proxy (TRUST_PROXY)
@@ -269,6 +270,8 @@ enregla/
     │                                       bandeja de emails, borrado diferido, avisos de prueba (aditiva)
     ├── migrations/0004_allergen_review.sql revisión explícita de alérgenos por plato (aditiva)
     ├── migrations/0006_record_integrity.sql orden de inserción de registros (seq) y categoría por defecto del proveedor (aditiva)
+    ├── migrations/0007_db_hardening.sql    hora/orden de registros por la BD, purga de locales y auditoría por funciones del propietario (aditiva)
+    ├── migrations/0008_supplier_reception_limit.sql límite de recepción propio del proveedor (aditiva)
     ├── assets/fonts/                       DejaVu Sans (regular y negrita) + licencia, para los PDF
     ├── src/
     │   ├── server.ts · app.ts · config.ts · deps.ts

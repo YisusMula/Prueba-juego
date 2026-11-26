@@ -440,7 +440,6 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   const chooseCategory = (c: ReceptionCategory) => setCategory(c);
   const t = temperature.trim() ? parseDecimal(temperature) : null;
   const tError = temperature.trim() && (t == null || !physicallyValidTemp(t, RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX)) ? RECEPTION_TEMP_MESSAGE : null;
-  const lError = null;
   const input = { category, temperature: t };
   const limits = category ? receptionLimits(input, supplier ? { defaultCategory: supplier.defaultCategory ?? null, receptionLimit: supplier.receptionLimit ?? null } : null) : null;
   const outOfLimits = !tError && limits != null && receptionOutOfLimits(input, limits);
@@ -455,10 +454,10 @@ export function RecepcionForm(p: Props<'recepcion'>) {
     <FormShell
       {...p}
       danger={accepted === 'no' || needsReason}
-      disabled={!!tError || !!lError}
+      disabled={!!tError}
       onSubmit={(e) => {
         e.preventDefault();
-        if (tError || lError) return;
+        if (tError) return;
         const extra: Record<string, string> = {};
         if (!category) extra.category = 'Elige el tipo de producto: fija la temperatura límite';
         if (tempRequired && accepted === 'si' && t == null) extra.temperature = 'Anota la temperatura al recibirlo: es obligatoria para producto refrigerado, congelado o caliente';

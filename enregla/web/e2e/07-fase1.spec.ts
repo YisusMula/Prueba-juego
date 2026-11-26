@@ -87,11 +87,15 @@ test('tablet: «Guardado por», varias acciones, «Hecho con alerta» / «Volver
   const result = k.getByTestId('kiosk-result');
   await expect(result).toContainText('Guardado con alerta');
   await expect(result.getByTestId('kiosk-saved-by')).toHaveText('Guardado por Luis Pérez');
-  await expect(result.getByRole('button', { name: /Seguir como Luis Pérez/ })).toBeVisible();
+  // Usabilidad: la franja «Registrando como» sigue visible y se vuelve sola a la lista de equipos.
+  await expect(k.getByTestId('kiosk-signing-as')).toContainText('Registrando como Luis Pérez');
+  await expect(k.getByRole('heading', { name: '¿Qué equipo?' })).toBeVisible({ timeout: 8_000 });
+  await expect(k.getByRole('button', { name: /Cámara de verduras/ })).toContainText('Volver a medir');
 
   // Inicio de la tablet: el equipo pide «Volver a medir» y en la web sale «Hecho con alerta» o pendiente.
-  await result.getByRole('button', { name: /Seguir como Luis Pérez/ }).click();
+  await k.getByRole('button', { name: 'Volver', exact: true }).click();
   await expect(k.getByRole('button', { name: /Volver a medir: Cámara de verduras/ })).toBeVisible();
+  await expect(k.getByRole('button', { name: /Volver a medir: Cámara de verduras/ })).toContainText(/Vuelve a medir desde las \d/);
   await page.goto(`${base}/hoy`);
   await expect(page.getByRole('link', { name: /Volver a medir: Cámara de verduras/ })).toBeVisible();
 
@@ -148,7 +152,9 @@ test('web: recepción a 6 °C de un proveedor refrigerado: aviso, acción obliga
   await page.goto(`${base}/registrar/recepcion`);
   await page.getByLabel('Proveedor').selectOption({ label: 'Pescados del Puerto' });
   await expect(page.getByRole('radio', { name: /Refrigerado/ })).toBeChecked();
-  await expect(page.getByLabel(/Temperatura máxima admisible/)).toHaveValue('4');
+  // El límite no se edita al recibir: se muestra (#5).
+  await expect(page.getByText(/Límite: máx\. 4 °C \(referencia orientativa\)/)).toBeVisible();
+  await expect(page.getByLabel(/admisible/)).toHaveCount(0);
   await page.getByLabel('Producto').fill('Merluza');
   await page.getByLabel(/Temperatura al recibir/).fill('6');
   await expect(page.getByText('6 °C está fuera del límite (máx. 4 °C)')).toBeVisible();
@@ -178,14 +184,20 @@ test('PDF: «Ana Martín (anotado por Usuario Demo)», «Firmó · Corrigió» y
   await page.getByLabel('Motivo de la corrección').fill('La medición la hizo Marta');
   await page.getByRole('button', { name: 'Guardar corrección' }).click();
   await expect(page.getByText('Corrección guardada')).toBeVisible();
-  await expect(page.getByText(/Firmó: Marta Gil · Corrigió: Usuario Demo/)).toBeVisible();
+  await expect(page.getByText(/Firmó: Marta Gil \(anotado por Usuario Demo\) · Corrigió: Usuario Demo/)).toBeVisible();
 
+  // Una lectura fuera de rango vigente: «Hecho con alerta» en el PDF (1.12 / #14).
+  const eqs = (await (await page.request.get(`/api/orgs/${id}/equipment`)).json()) as { items: { id: string; type: string }[] };
+  const freezer = eqs.items.find((e) => e.type === 'congelador')!;
+  expect((await page.request.post(`/api/orgs/${id}/records`, { data: { type: 'temperatura', data: { equipmentId: freezer.id, value: -5, correctiveAction: 'Puerta cerrada y revisada' } }, headers: apiHeaders(page) })).status()).toBe(201);
   const today = (await (await page.request.get(`/api/orgs/${id}/tasks/today`)).json()) as { date: string };
   const res = await page.request.get(`/api/orgs/${id}/reports/pdf?from=${today.date}&to=${today.date}`);
   expect(res.status()).toBe(200);
   const text = pdfText(await res.body());
   expect(text).toContain('Ana Martín (anotado por Usuario Demo)');
-  expect(text).toMatch(/Firmó: Marta Gil · Corrigió: Usuario Demo el \d/);
+  expect(text).toMatch(/Firmó: Marta Gil \(anotado por Usuario Demo\) · Corrigió: Usuario Demo el \d/);
+  expect(text).toContain('Hecho con alerta');
+  expect(text).toContain('tras marcarlo para eliminación');
   expect(text).toContain('Firmante anterior: Ana Martín');
   expect(text).toMatch(/Firmó: Luis Pérez · Corrigió: Luis Pérez el .* Motivo: Me equivoqué de número/);
   expect(text).toContain('6 °C (Refrigerado, máx. 4 °C)');

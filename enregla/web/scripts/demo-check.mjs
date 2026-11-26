@@ -254,6 +254,8 @@ async function walkthrough(label, opts) {
     await f.getByRole('link', { name: /Recepción/ }).filter({ visible: true }).first().click();
     await f.getByLabel('Proveedor').selectOption({ label: 'Lácteos La Vaca' });
     await f.getByLabel('Producto').fill('Nata');
+    // Refrigerado (categoría del proveedor): la temperatura es obligatoria al aceptarla.
+    await f.getByLabel(/Temperatura al recibir/).fill('3');
     await f.getByLabel(/Fecha de caducidad/).fill('2020-01-02');
     await expect(f.getByText('La fecha de caducidad ya ha pasado')).toBeVisible();
     await f.getByText('Sí, aceptarla con motivo').click();
@@ -324,7 +326,7 @@ async function walkthrough(label, opts) {
     await expect(f.getByRole('button', { name: 'Informe PDF' })).toHaveCount(0);
     await f.getByRole('button', { name: 'Ver vista previa del CSV' }).click();
     await expect(f.getByTestId('csv-preview')).toContainText('temperatura');
-    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 46 columnas/);
+    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 47 columnas/);
     await f.getByRole('button', { name: 'Ver el PDF de ejemplo' }).click();
     await expect(f.getByText(/PDF de ejemplo con los datos iniciales de la demo/).filter({ visible: true }).first()).toBeVisible();
     const img = f.getByTestId('pdf-preview').getByRole('img');

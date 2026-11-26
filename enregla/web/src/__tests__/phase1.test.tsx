@@ -15,7 +15,7 @@ import { EquipmentDialog, StaffDialog } from '@/features/ConfigForms';
 import { corrector, signer } from '@/features/recordMeta';
 import { toggleTemperatureSign } from '@/components/ui/TemperatureInput';
 import { PublicMenuPage } from '@/pages/public/PublicMenu';
-import { KioskPage, CONTINUE_SECONDS } from '@/pages/kiosk/Kiosk';
+import { KioskPage, IDLE_MS, RESULT_MS } from '@/pages/kiosk/Kiosk';
 import { storage } from '@/lib/storage';
 import { handle, toResponse } from '@/demo/server';
 import { getDb, resetDb } from '@/demo/server/store';
@@ -63,12 +63,12 @@ describe('1.9 temperaturas negativas sin tecla «−» (iPhone)', () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ equipmentId: FREEZER, value: -20 }));
   });
 
-  it('también en la recepción (temperatura y límite) y en los límites de los equipos', async () => {
+  it('también en la recepción (el límite ya no se edita allí) y en los límites de los equipos', async () => {
     const user = userEvent.setup();
     render(<RecepcionForm ctx={ctx} onSubmit={() => undefined} />);
     await user.click(screen.getByRole('radio', { name: /Congelado/ }));
     const signs = screen.getAllByRole('button', { name: /signo menos/ });
-    expect(signs).toHaveLength(2);
+    expect(signs).toHaveLength(1);
     await user.type(screen.getByLabelText(/Temperatura al recibir/), '15');
     await user.click(signs[0]!);
     expect(screen.getByLabelText(/Temperatura al recibir/)).toHaveValue('−15');
@@ -130,7 +130,9 @@ describe('1.6 recepción: tipo de producto obligatorio y límite por defecto', (
     render(<RecepcionForm ctx={ctx} onSubmit={onSubmit} />);
     await user.selectOptions(screen.getByLabelText('Proveedor'), 'Pescados del Puerto');
     expect(screen.getByRole('radio', { name: /Refrigerado/ })).toBeChecked();
-    expect(screen.getByLabelText(/Temperatura máxima admisible/)).toHaveValue('4');
+    // #5: el límite no es un campo editable: se muestra (referencia o propio del proveedor).
+    expect(screen.queryByLabelText(/admisible/)).toBeNull();
+    expect(screen.getByText(/Límite: máx\. 4 °C \(referencia orientativa\)/)).toBeInTheDocument();
     await user.type(screen.getByLabelText('Producto'), 'Merluza');
     await user.type(screen.getByLabelText(/Temperatura al recibir/), '6');
     expect(screen.getByText(/6 °C está fuera del límite \(máx\. 4 °C\)/)).toBeInTheDocument();
@@ -139,14 +141,32 @@ describe('1.6 recepción: tipo de producto obligatorio y límite por defecto', (
     expect(onSubmit).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Se usa de inmediato' }));
     await user.click(screen.getByRole('button', { name: 'Guardar registro' }));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ category: 'refrigerado', temperature: 6, maxTemperature: 4, correctiveAction: 'Se usa de inmediato' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ category: 'refrigerado', temperature: 6, correctiveAction: 'Se usa de inmediato' }));
+    expect(onSubmit.mock.calls[0]![0]).not.toHaveProperty('maxTemperature');
+  });
+
+  it('#5 el límite propio del proveedor se aplica y se indica; #6 sin temperatura no se acepta un refrigerado', async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(<RecepcionForm ctx={{ ...ctx, suppliers: [{ id: SUP, name: 'Lácteos', products: [], defaultCategory: 'refrigerado', receptionLimit: 6 }] }} onSubmit={onSubmit} />);
+    await user.selectOptions(screen.getByLabelText('Proveedor'), 'Lácteos');
+    expect(screen.getByText(/Límite: máx\. 6 °C \(límite propio de este proveedor\)/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Producto'), 'Nata');
+    await user.click(screen.getByText('Sí, aceptada'));
+    await user.click(screen.getByRole('button', { name: 'Guardar registro' }));
+    expect(screen.getByText(/Anota la temperatura al recibirlo/)).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText(/Temperatura al recibir/), '5');
+    expect(screen.queryByText(/fuera del límite/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Guardar registro' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ category: 'refrigerado', temperature: 5 }));
   });
 
   it('caliente: límite mínimo de 63 °C', async () => {
     const user = userEvent.setup();
     render(<RecepcionForm ctx={ctx} onSubmit={() => undefined} />);
     await user.click(screen.getByRole('radio', { name: /Caliente/ }));
-    expect(screen.getByLabelText(/Temperatura mínima admisible/)).toHaveValue('63');
+    expect(screen.getByText(/Límite: mín\. 63 °C/)).toBeInTheDocument();
     await user.type(screen.getByLabelText(/Temperatura al recibir/), '58');
     expect(screen.getByText(/58 °C está fuera del límite \(mín\. 63 °C\)/)).toBeInTheDocument();
   });
@@ -162,7 +182,8 @@ describe('1.1 / 1.2 firma y autor de la corrección en la app', () => {
   });
   it('en una corrección web, corrige el usuario aunque firme el empleado', () => {
     const am = { ...base, amendsRecordId: 'o', amendmentReason: 'x', staff: { id: 's', name: 'Luis' }, user: { id: 'u', name: 'Laura' }, deviceId: null } as AppRecord;
-    expect(signer(am)).toBe('Luis');
+    // Evaluación #8: también en las correcciones web el empleado figura «anotado por» quien corrige.
+    expect(signer(am)).toBe('Luis (anotado por Laura)');
     expect(corrector(am)).toBe('Laura');
   });
 });
@@ -263,28 +284,43 @@ async function saveTemperature(user: ReturnType<typeof userEvent.setup>, who: Re
 }
 
 describe('modo cocina', () => {
-  it('1.4: «Guardado por Luis», cabecera «Registrando como» y vuelta a «¿Quién eres?» si no se pulsa «Seguir como»', async () => {
+  it('1.4 / usabilidad: «Guardado por Luis», vuelta sola a la lista de equipos con la franja «Registrando como» y olvido a los 60 s sin tocar', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderKiosk();
+    const { db } = renderKiosk();
     const result = await saveTemperature(user, /Luis Pérez/, '2');
     expect(within(result).getByTestId('kiosk-saved-by')).toHaveTextContent('Guardado por Luis Pérez');
-    expect(within(result).getByRole('button', { name: /Seguir como Luis Pérez/ })).toBeInTheDocument();
-    // «Seguir como»: se mantiene la persona y la cabecera lo dice en grande.
-    await user.click(within(result).getByRole('button', { name: /Seguir como Luis Pérez/ }));
     expect(screen.getByTestId('kiosk-signing-as')).toHaveTextContent('Registrando como Luis Pérez');
-    expect(screen.getByRole('button', { name: '¿No eres Luis Pérez?' })).toBeInTheDocument();
-    // Otro registro y, esta vez, nadie toca nada: a los 15 s se olvida a la persona.
-    await user.click(screen.getByRole('button', { name: 'Temperatura' }));
-    await user.click(await screen.findByRole('button', { name: /Cámara de carnes/ }));
+    // Sin tocar nada vuelve sola a «¿Qué equipo?», con la persona elegida.
+    await act(async () => {
+      vi.advanceTimersByTime(RESULT_MS + 500);
+    });
+    expect(await screen.findByRole('heading', { name: '¿Qué equipo?' })).toBeInTheDocument();
+    expect(screen.getByTestId('kiosk-signing-as')).toHaveTextContent('Registrando como Luis Pérez');
+    expect(screen.getByRole('button', { name: 'Cambiar de persona' })).toBeInTheDocument();
+    // Segundo equipo con 30 s de por medio (ir a la cámara): sigue siendo Luis, sin pedir nada.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    await user.click(screen.getByRole('button', { name: /Cámara de verduras/ }));
     await user.click(screen.getByRole('button', { name: '3' }));
     await user.click(screen.getByRole('button', { name: 'Guardar' }));
     await screen.findByTestId('kiosk-result');
+    expect(db.records[db.records.length - 1]!.staffName).toBe('Luis Pérez');
+    // 60 s sin tocar la pantalla: se olvida a la persona.
     await act(async () => {
-      vi.advanceTimersByTime((CONTINUE_SECONDS + 1) * 1000);
+      vi.advanceTimersByTime(IDLE_MS + 1000);
     });
-    expect(await screen.findByRole('heading', { name: '¿Quién eres?' })).toBeInTheDocument();
     expect(screen.queryByTestId('kiosk-signing-as')).toBeNull();
+  });
+
+  it('#9: tocar el logo desde «Guardado por» olvida a la persona', async () => {
+    const user = userEvent.setup();
+    renderKiosk();
+    await saveTemperature(user, /Luis Pérez/, '2');
+    await user.click(screen.getByRole('button', { name: /Inicio del modo cocina/ }));
+    expect(screen.queryByTestId('kiosk-signing-as')).toBeNull();
+    expect(await screen.findByRole('button', { name: /¿Quién eres\?/ })).toBeInTheDocument();
   });
 
   it('1.5: corregir el número recién tecleado en la tablet', async () => {

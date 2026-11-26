@@ -48,9 +48,14 @@ type Screen =
 type Pending = { type: RecordType; data: unknown };
 
 /** Inactividad: se olvida a la persona (y su PIN) y se vuelve al inicio. */
-const IDLE_MS = 3 * 60_000;
-/** Tras guardar, «Seguir como Ana» se ofrece durante estos segundos; si no, se vuelve a «¿Quién eres?» (1.4). */
-export const CONTINUE_SECONDS = 15;
+export const IDLE_MS = 60_000;
+/**
+ * Tras guardar se muestra «Guardado por Ana» este tiempo (más si hay alerta) y se vuelve solo a la lista
+ * de equipos (temperaturas) o al inicio, con la persona elegida y la franja «Registrando como Ana»
+ * siempre visible. La persona se olvida tras IDLE_MS sin tocar la pantalla, al tocar el logo o al salir.
+ */
+export const RESULT_MS = 2_500;
+export const RESULT_ALERT_MS = 6_000;
 const CORRECTION_MS = KIOSK_CORRECTION_MINUTES * 60_000;
 
 export function KioskPage() {
@@ -226,7 +231,7 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
 
   const goTarget = (t: Target | null) => {
     if (!t) return setScreen({ name: 'home' });
-    if (t.kind === 'temp') setScreen({ name: 'temp', equipmentId: t.equipmentId });
+    if (t.kind === 'temp') setScreen(t.equipmentId ? { name: 'temp', equipmentId: t.equipmentId } : { name: 'pick-equipment' });
     else setScreen({ name: 'form', type: t.type, preset: t.preset });
   };
 
@@ -333,13 +338,21 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
   const formCtx: FormContext | null = ctx
     ? { equipment: ctx.equipment, cleaningPlans: ctx.cleaningPlans, suppliers: ctx.suppliers, staff: ctx.staff, timezone: ctx.organization.timezone }
     : null;
-  const showRecent = canCorrect && (screen.name === 'home' || screen.name === 'who');
+  const showRecent = canCorrect && (screen.name === 'home' || screen.name === 'who' || screen.name === 'pick-equipment');
 
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
       <header className="sticky top-[var(--app-top,0px)] z-20 border-b border-line bg-surface/95 backdrop-blur">
         <div className="flex items-center gap-3 px-4 py-2.5 sm:px-6">
-          <button type="button" onClick={() => setScreen({ name: 'home' })} className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl pr-3">
+          <button
+            type="button"
+            onClick={() => {
+              // Volver al inicio desde el logo olvida a la persona: nadie sigue firmando como ella sin querer.
+              setPerson(null);
+              setScreen({ name: 'home' });
+            }}
+            className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl pr-3"
+          >
             <span className="sr-only">Inicio del modo cocina: </span>
             <LogoMark size={40} className="shrink-0" />
             <span className="min-w-0 text-left">
@@ -380,13 +393,13 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
           </div>
         </div>
         {/* 1.4: mientras hay una persona elegida, se ve en grande quién firma y cómo cambiarlo. */}
-        {person && screen.name !== 'result' ? (
+        {person ? (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-brand/30 bg-brand-soft px-4 py-2 sm:px-6" data-testid="kiosk-signing-as">
             <p className="min-w-0 text-xl [overflow-wrap:anywhere]">
               Registrando como <strong className="font-extrabold">{person.name}</strong>
             </p>
             <button type="button" onClick={forgetPerson} className="min-h-12 rounded-xl px-2 text-lg font-bold underline underline-offset-4">
-              ¿No eres {person.name}?
+              Cambiar de persona
             </button>
           </div>
         ) : null}
@@ -472,7 +485,7 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
             onDone={(pin) => void verify(screen.person, pin, screen.then, screen.retry)}
           />
         ) : screen.name === 'pick-equipment' ? (
-          <PickEquipment ctx={ctx} onBack={() => setScreen({ name: 'home' })} onPick={(id) => setScreen({ name: 'temp', equipmentId: id })} />
+          <PickEquipment ctx={ctx} today={todayQ.data} onBack={() => setScreen({ name: 'home' })} onPick={(id) => setScreen({ name: 'temp', equipmentId: id })} />
         ) : screen.name === 'temp' ? (
           <TempScreen
             key={screen.equipmentId}
@@ -539,7 +552,8 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
             canCorrect={!screen.corrected && canCorrect && recent?.record.id === screen.record.id}
             onContinue={() => {
               setPerson(screen.corrected ? null : screen.person);
-              setScreen({ name: 'home' });
+              // De temperatura en temperatura: directamente a la lista de equipos, con la persona elegida.
+              setScreen(!screen.corrected && screen.record.type === 'temperatura' ? { name: 'pick-equipment' } : { name: 'home' });
             }}
             onSomeoneElse={forgetPerson}
             onCorrect={() => recent && setScreen({ name: 'correct', recent })}
@@ -659,7 +673,7 @@ function KioskHome({
                   subtitle={`${t.done} de ${t.required} · ${formatRange(t.minTemp, t.maxTemp)}`}
                   extra={
                     t.lastReading
-                      ? `Última: ${formatTemp(t.lastReading.value)} (${formatTime(t.lastReading.at, tz)})${t.remeasure ? ', fuera de rango' : ''}`
+                      ? `Última: ${formatTemp(t.lastReading.value)} (${formatTime(t.lastReading.at, tz)})${t.remeasure ? `, fuera de rango${t.remeasureFrom ? `. Vuelve a medir desde las ${formatTime(t.remeasureFrom, tz)}` : ''}` : ''}`
                       : undefined
                   }
                   alert={t.remeasure}
@@ -922,8 +936,9 @@ function PinScreen({
   );
 }
 
-function PickEquipment({ ctx, onPick, onBack }: { ctx: KioskContext; onPick: (id: string) => void; onBack: () => void }) {
+function PickEquipment({ ctx, today, onPick, onBack }: { ctx: KioskContext; today?: TodayTasks; onPick: (id: string) => void; onBack: () => void }) {
   const list = ctx.equipment.filter((e) => e.type !== 'freidora');
+  const tz = ctx.organization.timezone;
   return (
     <section aria-labelledby="kpick">
       <BackButton onClick={onBack} />
@@ -931,17 +946,34 @@ function PickEquipment({ ctx, onPick, onBack }: { ctx: KioskContext; onPick: (id
         ¿Qué equipo?
       </h1>
       <ul className="grid gap-3 sm:grid-cols-2">
-        {list.map((e) => (
-          <li key={e.id}>
-            <button type="button" onClick={() => onPick(e.id)} className="flex min-h-24 w-full items-center gap-4 rounded-3xl border-2 border-line bg-surface p-4 text-left shadow-card active:scale-[0.98]">
-              <Icon name="thermometer" size={32} className="text-brand" />
-              <span>
-                <span className="block text-xl font-bold">{e.name}</span>
-                <span className="block text-ink-muted">{formatRange(e.minTemp, e.maxTemp)}</span>
-              </span>
-            </button>
-          </li>
-        ))}
+        {list.map((e) => {
+          const t = today?.temperatures.find((x) => x.equipmentId === e.id);
+          const state = !t ? null : t.remeasure ? 'Volver a medir' : t.status === 'done' ? (t.withAlert ? 'Hecho con alerta' : 'Hecho') : `${t.done} de ${t.required}`;
+          return (
+            <li key={e.id}>
+              <button type="button" onClick={() => onPick(e.id)} className="flex min-h-24 w-full items-center gap-4 rounded-3xl border-2 border-line bg-surface p-4 text-left shadow-card active:scale-[0.98]">
+                <Icon name="thermometer" size={32} className="shrink-0 text-brand" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xl font-bold [overflow-wrap:anywhere]">{e.name}</span>
+                  <span className="block text-ink-muted">
+                    {formatRange(e.minTemp, e.maxTemp)}
+                    {t?.lastReading ? ` · última ${formatTemp(t.lastReading.value)} (${formatTime(t.lastReading.at, tz)})` : ''}
+                  </span>
+                </span>
+                {state ? (
+                  <span
+                    className={cn(
+                      'shrink-0 rounded-full px-3 py-1 text-sm font-bold',
+                      t?.remeasure || t?.withAlert ? 'bg-bad-soft text-bad' : t?.status === 'done' ? 'bg-ok-soft text-ok' : 'bg-warn-soft text-warn',
+                    )}
+                  >
+                    {state}
+                  </span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
@@ -1120,8 +1152,8 @@ function TempScreen({
 }
 
 /**
- * Resultado (1.4): «Guardado por Ana» y, durante 15 s, «Seguir como Ana». Si nadie lo pulsa, la
- * tablet olvida a la persona y vuelve a «¿Quién eres?». «Corregir» se ofrece durante 2 minutos.
+ * Resultado: «Guardado por Ana» un instante y vuelta sola a la lista de equipos (o al inicio), con la
+ * persona elegida y la franja «Registrando como Ana · Cambiar de persona». «Corregir» durante 2 minutos.
  */
 function ResultScreen({
   record,
@@ -1143,14 +1175,14 @@ function ResultScreen({
   onCorrect: () => void;
 }) {
   const s = recordSummary(record);
-  const [until] = useState(() => Date.now() + CONTINUE_SECONDS * 1000);
+  const [until] = useState(() => Date.now() + (record.alert || corrected ? RESULT_ALERT_MS : RESULT_MS));
   const left = useSecondsLeft(until);
-  const timeout = useRef(onSomeoneElse);
+  const done = useRef(onContinue);
   useEffect(() => {
-    timeout.current = onSomeoneElse;
+    done.current = onContinue;
   });
   useEffect(() => {
-    if (left <= 0) timeout.current();
+    if (left <= 0) done.current();
   }, [left]);
   const partial = record.type === 'limpieza' && !record.data.completed;
   return (
@@ -1173,25 +1205,20 @@ function ResultScreen({
         <p className="mt-1 text-lg text-ink-muted">El registro original se conserva enlazado. Motivo: {record.amendmentReason}</p>
       ) : null}
       <div className="mt-7 grid gap-3">
-        {!corrected ? (
-          <Button size="xl" icon="user" onClick={onContinue}>
-            Seguir como {person.name} ({left})
-          </Button>
-        ) : (
-          <Button size="xl" icon="home" onClick={onContinue}>
-            Volver al inicio
-          </Button>
-        )}
-        <Button size="xl" variant="secondary" onClick={onSomeoneElse}>
-          {corrected ? '¿Quién eres?' : `No soy ${person.name}`}
+        <Button size="xl" icon={record.type === 'temperatura' && !corrected ? 'thermometer' : 'home'} onClick={onContinue}>
+          {record.type === 'temperatura' && !corrected ? 'Siguiente equipo' : 'Seguir'}
         </Button>
         {canCorrect ? (
           <Button size="xl" variant="secondary" icon="pencil" onClick={onCorrect}>
             Corregir este registro
           </Button>
         ) : null}
+        {!corrected ? (
+          <Button size="xl" variant="secondary" onClick={onSomeoneElse}>
+            Cambiar de persona
+          </Button>
+        ) : null}
       </div>
-      {!corrected ? <p className="mt-3 text-lg text-ink-muted">Si no tocas nada, en {left} s se preguntará otra vez quién eres.</p> : null}
     </section>
   );
 }

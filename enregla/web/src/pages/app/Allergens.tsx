@@ -478,7 +478,7 @@ export function AllergensPrintPage() {
             <span className="inline-flex items-center gap-2"><PrintMark kind="contains" decorative /> Contiene</span>
             <span className="inline-flex items-center gap-2"><PrintMark kind="traces" decorative /> Puede contener trazas</span>
             <span className="inline-flex items-start gap-2">
-              <span className="mt-1 inline-block size-4 shrink-0 border border-line-strong" aria-hidden="true" /> Casilla en blanco: el local indica que el plato no lo contiene
+              <span className="mt-1 inline-block size-4 shrink-0 border border-line-strong" aria-hidden="true" /> Casilla en blanco: el local no ha declarado este alérgeno en el plato; confírmalo con el personal
             </span>
           </p>
           <p className="text-sm text-ink-muted">Actualizado el {formatDateTime(new Date().toISOString(), tz)}.</p>
@@ -528,7 +528,7 @@ export function AllergensPrintPage() {
                       ) : d.allergens[a] === 'traces' ? (
                         <PrintMark kind="traces" />
                       ) : (
-                        <span className="sr-only">No contiene</span>
+                        <span className="sr-only">No declarado: confírmalo con el personal</span>
                       )}
                     </td>
                   ))}

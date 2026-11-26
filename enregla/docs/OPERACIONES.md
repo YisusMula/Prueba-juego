@@ -19,6 +19,7 @@ Guía para quien despliega EnRegla por primera vez en un servidor propio (un VPS
 11. [Configuración de Stripe](#11-configuración-de-stripe)
 12. [Memoria del contenedor e informes PDF](#12-memoria-del-contenedor-e-informes-pdf)
 13. [Roles de la base de datos (registros no modificables)](#13-roles-de-la-base-de-datos-registros-no-modificables)
+14. [La tablet de cocina: modo de acceso guiado](#14-la-tablet-de-cocina-modo-de-acceso-guiado)
 
 ---
 
@@ -46,9 +47,7 @@ Edita `server/.env` (`nano server/.env`). Valores mínimos para producción:
 | `APP_URL` | `https://app.tudominio.es` (exactamente el origen público, sin barra final) |
 | `DOMAIN` | `app.tudominio.es` |
 | `ACME_EMAIL` | tu email (avisos de Let's Encrypt) |
-| `POSTGRES_PASSWORD` | clave larga y aleatoria (`openssl rand -base64 32`) del **administrador** de PostgreSQL (`enregla`): solo para administración y copias, la app no la usa |
-| `DB_OWNER_PASSWORD` | otra clave distinta: rol `enregla_owner`, propietario del esquema, que solo usa el servicio `migrate` |
-| `DB_APP_PASSWORD` | otra clave distinta: rol `enregla_app`, con el que corre la app (sin permisos para modificar ni borrar registros, apartado 13). Las tres pueden contener cualquier carácter: los compose las pasan como `PGPASSWORD`, **no** dentro de una URL |
+| Claves de la base de datos | **No van en `server/.env`.** Créalas con `sh deploy/generate-db-secrets.sh`: escribe `deploy/secrets/db.env` (`POSTGRES_PASSWORD` del administrador, `DB_OWNER_PASSWORD` del rol propietario y `DB_APP_PASSWORD` del rol de ejecución), que solo leen `db`, `migrate` y `backup`, y `deploy/secrets/app-db.env` (`PGPASSWORD` del rol de ejecución), que solo lee la app. Así la app nunca tiene la clave del administrador ni la del propietario (apartado 13). Guarda los dos ficheros en tu gestor de contraseñas; están en `.gitignore` y `.dockerignore` |
 | `DATABASE_URL` | déjala como esté: los compose la anulan y usan `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`. *Solo si despliegas sin compose* y usas `DATABASE_URL`, los caracteres especiales de la contraseña (`@ : / # ? %`…) deben ir codificados (`node -p 'encodeURIComponent(process.argv[1])' 'la-clave'`), o usa tú también las variables `PG*` |
 | `MAIL_TRANSPORT` | `smtp` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` | los de tu proveedor (`SMTP_SECURE=true` con el puerto 465; con 587, `false` y se exige STARTTLS) |
@@ -211,8 +210,8 @@ Tras cambiar cualquier valor de `server/.env`: `$C up -d app` (recrea el contene
 
 | Secreto | Cómo rotarlo |
 |---|---|
-| `POSTGRES_PASSWORD` | `$C exec db psql -U enregla -d enregla -c "ALTER ROLE enregla PASSWORD 'NUEVA'"`, cambia `POSTGRES_PASSWORD` en `server/.env` y `$C up -d backup` (la variable del contenedor `db` solo se usa al crear el volumen la primera vez) |
-| `DB_APP_PASSWORD` / `DB_OWNER_PASSWORD` | cambia el valor en `server/.env` y ejecuta `$C up -d db` y `$C exec -T db sh /docker-entrypoint-initdb.d/10-enregla-roles.sh` (fija las contraseñas nuevas); después `$C up -d migrate app` |
+| `POSTGRES_PASSWORD` | `$C exec db psql -U enregla -d enregla -c "ALTER ROLE enregla PASSWORD 'NUEVA'"`, cambia `POSTGRES_PASSWORD` en `deploy/secrets/db.env` y `$C up -d backup` (la variable del contenedor `db` solo se usa al crear el volumen la primera vez) |
+| `DB_APP_PASSWORD` / `DB_OWNER_PASSWORD` | cambia el valor en `deploy/secrets/db.env` (y, la de la app, también como `PGPASSWORD` en `deploy/secrets/app-db.env`), ejecuta `$C up -d db` y `$C exec -T db sh /docker-entrypoint-initdb.d/10-enregla-roles.sh` (fija las contraseñas nuevas); después `$C up -d migrate app` |
 | `SMTP_PASS` | genera una nueva credencial en el proveedor, cámbiala en `.env`, reinicia la app y revoca la antigua |
 | `STRIPE_SECRET_KEY` | en Stripe (Developers → API keys) usa «Roll key» con un periodo de solapamiento, cambia `.env`, reinicia y deja caducar la antigua. Mejor aún, usa una *restricted key* con los permisos mínimos (Checkout, portal, suscripciones) |
 | `STRIPE_WEBHOOK_SECRET` | en el endpoint de webhook, «Roll secret»; Stripe firma con ambos durante el periodo indicado; cambia `.env` y reinicia |
@@ -288,7 +287,11 @@ La aplicación no tiene ninguna forma de modificar ni borrar un registro (las co
 |---|---|---|
 | `enregla` (`POSTGRES_PASSWORD`) | administración y copias (`backup`) | todo (superusuario del contenedor) |
 | `enregla_owner` (`DB_OWNER_PASSWORD`) | servicio `migrate`: migraciones y permisos, en un paso aparte que termina antes de arrancar la app | propietario del esquema y de las tablas |
-| `enregla_app` (`DB_APP_PASSWORD`) | la app (`MIGRATE_ON_START=false`) | leer y escribir las tablas normales; en `records` **solo `SELECT` e `INSERT`**. Sin DDL (no puede crear, alterar ni borrar tablas), sin ser propietario de nada (no puede desactivar triggers) y sin `TRUNCATE` |
+| `enregla_app` (`DB_APP_PASSWORD`) | la app (`MIGRATE_ON_START=false`) | leer y escribir las tablas normales; en `records` **solo `SELECT` e `INSERT`**, y la hora (`created_at`) y el orden (`seq`) de cada registro los pone PostgreSQL (trigger, migración 0007), no la app. **Sin `DELETE`** en `organizations`, `devices`, `staff`, `equipment` y `cleaning_plans` (un borrado ahí arrastraría registros en cascada); los locales se purgan con la función `enregla_purge_organization`, del propietario, que solo borra un local pendiente de eliminación cuyo plazo venció, cuyo titular pidió la eliminación inmediata o que se quedó sin miembros. `audit_events`: solo `SELECT` e `INSERT` (purga por antigüedad y seudonimización por funciones acotadas del propietario). Historial de configuración: solo lectura (lo escriben triggers del propietario). Sin DDL, sin ser propietario de nada (no puede desactivar triggers) y sin `TRUNCATE` |
+
+Las claves están separadas por servicio (`deploy/secrets/db.env` para `db`, `migrate` y `backup`; `deploy/secrets/app-db.env` para la app). En producción **la app no arranca** si encuentra `POSTGRES_PASSWORD`, `DB_OWNER_PASSWORD` o `DB_APP_PASSWORD` en su entorno, ni si su rol es superusuario o propietario de `records` (salvo que se acepte expresamente con `ALLOW_PRIVILEGED_DB_ROLE=true`, bajo tu responsabilidad, en un despliegue sin separación de roles). `docker compose … config` muestra qué recibe cada servicio: `app` solo `PGPASSWORD` (la del rol de ejecución) y `SMTP_PASS`.
+
+**Lo que esto no impide**: con las credenciales del rol de ejecución se puede hacer lo mismo que la app permite a un propietario, por ejemplo programar la eliminación de un local y pedir su eliminación inmediata; queda en la auditoría, que ese rol no puede borrar ni editar.
 
 Los crea `deploy/postgres-init/10-enregla-roles.sh` (lo ejecuta PostgreSQL al crear el volumen) y los permisos los fija `migrate` tras cada migración (`APP_DB_ROLE=enregla_app` → `server/src/db/privileges.ts`), así que también cubren las tablas nuevas. Al eliminar un local, el borrado en cascada de sus registros lo hace PostgreSQL con los permisos del propietario de la tabla y el trigger solo lo permite cuando el local ya no existe.
 
@@ -309,11 +312,20 @@ $C exec -T db sh -c 'PGPASSWORD="$DB_APP_PASSWORD" psql -h 127.0.0.1 -U enregla_
 Antes la app se conectaba como `enregla`, el superusuario del contenedor. Para pasar a roles separados sin perder datos:
 
 1. Copia de seguridad: `$C exec backup sh /usr/local/bin/enregla-backup.sh` (o `pg_dump` a mano) y comprueba que el fichero existe.
-2. `git pull` y añade a `server/.env` dos claves nuevas y distintas: `DB_OWNER_PASSWORD` y `DB_APP_PASSWORD` (`openssl rand -base64 32`).
+2. `git pull`, crea las claves con `sh deploy/generate-db-secrets.sh`, pon en `deploy/secrets/db.env` como `POSTGRES_PASSWORD` la que tenías en `server/.env` y **quita** `POSTGRES_PASSWORD` de `server/.env` (la app ya no debe verla: en producción no arranca si la encuentra).
 3. Recrea `db` con el nuevo volumen de inicio y sus variables (los datos no se tocan): `$C up -d db`.
 4. Crea los roles y pasa la propiedad de todo a `enregla_owner` (idempotente): `$C exec -T db sh /docker-entrypoint-initdb.d/10-enregla-roles.sh`.
 5. Migraciones y permisos con el rol propietario: `$C run --rm migrate` (debe terminar con «Permisos del rol de la app (enregla_app) aplicados»).
 6. Arranca la app con el rol de ejecución: `$C up -d --build migrate app`. Comprueba `/readyz`, que el log **no** muestra el aviso de roles y las dos órdenes de comprobación de arriba.
 
 Volver atrás: el código anterior conectaba como `enregla` (superusuario), que sigue teniendo acceso a todo, así que basta con desplegar la versión anterior. Si despliegas sin Docker, aplica lo mismo a mano: crea los dos roles con el script (como superusuario y con `POSTGRES_DB`/`POSTGRES_USER` exportados), ejecuta `npm run migrate:prod` con el rol propietario y `APP_DB_ROLE=enregla_app`, y arranca la app con el rol de ejecución y `MIGRATE_ON_START=false`. `docs/db-roles-hardening.sql` queda como referencia del mismo esquema en SQL.
+
+## 14. La tablet de cocina: modo de acceso guiado
+
+«Salir del modo cocina» y «Desvincular esta tablet» piden la contraseña de un propietario o encargado, pero «Salir» solo cambia la pantalla: el navegador de la tablet puede seguir yendo a cualquier dirección. Para que en cocina solo se pueda usar EnRegla, fija la tablet con el modo de acceso guiado o quiosco del sistema:
+
+- **iPad**: Ajustes → Accesibilidad → Acceso guiado (activa un código). Abre EnRegla en el modo cocina y pulsa tres veces el botón lateral o de inicio para empezar la sesión guiada.
+- **Android**: Ajustes → Seguridad → Fijar aplicación (o «Fijar pantalla»). Abre EnRegla y fíjala desde la vista de aplicaciones recientes; para soltarla hace falta el patrón o PIN del dispositivo.
+
+Así una persona de la cocina no puede salir del modo cocina sin el código del dispositivo, aunque toque «Salir». La persona que firma se olvida tras 60 s sin tocar la pantalla, al tocar el logotipo o al cambiar de persona.
 
