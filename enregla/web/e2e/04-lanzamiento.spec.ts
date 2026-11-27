@@ -1,4 +1,4 @@
-import { test, expect, apiHeaders, createVerifiedAccount, expectNoSeriousA11yViolations, lastEmailLink, login, logout, seedInfo, DEMO } from './helpers';
+import { test, expect, apiHeaders, ownerSql, createVerifiedAccount, expectNoSeriousA11yViolations, lastEmailLink, login, logout, seedInfo, DEMO } from './helpers';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -50,8 +50,18 @@ test('borrado diferido de un local: aviso, solo lectura, restaurar y eliminar ya
   await perm.getByRole('button', { name: 'Eliminar definitivamente' }).click();
   await expect(perm.getByText('Escribe el nombre del local exactamente como aparece')).toBeVisible();
   await perm.getByLabel(/para confirmar/).fill(organization.name);
+  await expect(perm).toContainText('se eliminarán en la próxima hora');
   await perm.getByRole('button', { name: 'Eliminar definitivamente' }).click();
-  await expect(page).toHaveURL(/\/locales\/[0-9a-f-]+\/hoy/);
+  // N1: queda CONFIRMADA y la ejecuta el mantenimiento del servidor en su próxima pasada (cada hora).
+  await expect(page.getByTestId('purge-requested')).toHaveText('Eliminación confirmada: este local y todos sus registros se eliminarán en la próxima hora.');
+  await expect(page.getByText('Eliminación confirmada: el local y todos sus registros se borrarán definitivamente en la próxima hora.')).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Eliminar ya definitivamente' })).toHaveCount(0);
+  expect((await page.request.get(`/api/orgs/${organization.id}`)).status()).toBe(200);
+  // La pasada del mantenimiento (rol propietario) lo purga. La base e2e se reutiliza entre ejecuciones:
+  // se sube el tope diario de la salvaguarda para que no la bloqueen purgas de ejecuciones anteriores.
+  await ownerSql("UPDATE enregla_owner_settings SET value = '1000' WHERE key = 'max_purges_per_day'");
+  const pass = await ownerSql('SELECT public.enregla_purge_due_organizations() AS r');
+  expect(pass.rows[0].r).toMatchObject({ blocked: false });
   expect((await page.request.get(`/api/orgs/${organization.id}`)).status()).toBe(404);
 });
 

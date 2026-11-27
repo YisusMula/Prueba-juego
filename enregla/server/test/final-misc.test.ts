@@ -2,6 +2,7 @@
  * Auditoría de seguridad final — resto de hallazgos: B-1, B-2, B-3, B-5, B-6 (restaurar vs purga),
  * I-1, I-4, I-5, I-6 e I-7.
  */
+import { runMaintenance } from '../src/modules/maintenance/run.js';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -396,12 +397,16 @@ describe('I-5 contraseñas basadas en datos personales', () => {
 });
 
 describe('I-6 local pendiente cuyo único owner borra su cuenta', () => {
-  it('sin ningún miembro: la purga lo elimina en su siguiente pasada', async () => {
+  it('sin ningún miembro: N1, ya no se purga al instante; espera a su plazo y lo purga el mantenimiento', async () => {
     const { client, base, org } = await setupOwner(ctx);
     expect((await client.delete(base, { password: PASSWORD })).statusCode).toBe(204);
     expect((await client.delete('/api/account', { password: PASSWORD })).statusCode).toBe(204);
-    const r = await runRetention(ctx.deps, { force: true });
-    expect(r.organizations).toBe(1);
+    // Quedarse sin miembros ya no dispara la purga (era una vía para borrar un local al instante).
+    expect((await runRetention(ctx.deps, { force: true })).organizations).toBe(0);
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ due: 0, purged: 0 });
+    expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', org.id).executeTakeFirst()).toBeDefined();
+    await ctx.deps.db.updateTable('organizations').set({ deletion_scheduled_at: new Date(Date.now() - 1000) }).where('id', '=', org.id).execute();
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
     expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', org.id).executeTakeFirst()).toBeUndefined();
   });
 

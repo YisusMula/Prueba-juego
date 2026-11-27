@@ -1,3 +1,4 @@
+import { runMaintenance } from '../src/modules/maintenance/run.js';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
@@ -66,9 +67,12 @@ describe('H3 bloqueo de PIN con ráfagas concurrentes', () => {
       const blocked = await post(plagas(staff[3]!.id, '0000'));
       expect(blocked.statusCode).toBe(429);
       expect(json(blocked).error.code).toBe('RATE_LIMITED');
-      // La persona D no llegó a verificarse ni a acumular fallos.
+      // N5: ese fallo cuenta para el bloqueo de D (el límite real contra quien prueba PIN)...
       const d = await tight.deps.db.selectFrom('staff').select('pin_failed_count').where('id', '=', staff[3]!.id).executeTakeFirstOrThrow();
-      expect(d.pin_failed_count).toBe(0);
+      expect(d.pin_failed_count).toBe(1);
+      // ...pero quien acierta sigue registrando aunque la tablet haya superado el tope de fallos.
+      expect((await post(plagas(staff[3]!.id, '4321'))).statusCode).toBe(201);
+      expect((await post(plagas(staff[0]!.id, '4321'))).statusCode).toBe(201);
     } finally {
       await closeTestApp(tight);
     }
@@ -109,7 +113,11 @@ describe('H14 retención de datos', () => {
     await sql`INSERT INTO rate_limits (key, count, reset_at) VALUES ('viejo', 1, now() - interval '2 hours'), ('vivo', 1, now() + interval '1 hour')`.execute(db);
 
     const r = await runRetention(ctx.deps);
-    expect(r).toMatchObject({ ran: true, auditEvents: 1, unverifiedUsers: 1, sessions: 1, emailTokens: 1, rateLimits: 1 });
+    // N3: la auditoría antigua ya no la purga la app, sino el mantenimiento (rol propietario).
+    expect(r).toMatchObject({ ran: true, auditEvents: 0, unverifiedUsers: 1, sessions: 1, emailTokens: 1, rateLimits: 1 });
+    expect((await runMaintenance(db, { auditMonths: 12 })).auditEvents).toBe(1);
+    // Aunque se pida menos, la base de datos impone el mínimo de 12 meses (enregla_owner_settings).
+    expect((await runMaintenance(db, { auditMonths: 1 })).auditEvents).toBe(0);
     const emails = (await db.selectFrom('users').select('email').execute()).map((u) => u.email).sort();
     expect(emails).toEqual(['owner@example.com', 'reciente@example.com']);
     expect((await db.selectFrom('rate_limits').select('key').where('key', 'in', ['viejo', 'vivo']).execute()).map((x) => x.key)).toEqual(['vivo']);

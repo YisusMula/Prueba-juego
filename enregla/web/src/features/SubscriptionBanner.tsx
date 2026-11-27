@@ -152,7 +152,7 @@ function DeletionBanner() {
       toast.show('Local restaurado: ya no se eliminará');
     } catch (err) {
       if (isApiError(err) && err.status === 404) {
-        // La purga diaria (o una eliminación inmediata) ya lo ha borrado: no hay nada que restaurar.
+        // El mantenimiento ya lo ha purgado (plazo vencido o eliminación inmediata): no hay nada que restaurar.
         storage.setLastOrg(null);
         qc.removeQueries({ queryKey: keys.org(orgId) });
         await qc.invalidateQueries({ queryKey: keys.account });
@@ -231,7 +231,7 @@ function PermanentDeleteDialog({ onClose }: { onClose: () => void }) {
       onClose();
     } catch (err) {
       if (isApiError(err) && err.status === 404) {
-        // Ya estaba borrado (p. ej. por la purga diaria): el resultado buscado se ha cumplido.
+        // Ya estaba borrado (p. ej. por el mantenimiento): el resultado buscado se ha cumplido.
         storage.setLastOrg(null);
         qc.removeQueries({ queryKey: keys.org(orgId) });
         await qc.invalidateQueries({ queryKey: keys.account });

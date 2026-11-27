@@ -138,7 +138,7 @@ cd enregla
 cp server/.env.example server/.env
 # Edita server/.env: NODE_ENV=production, APP_URL=https://…, SMTP_*, MAIL_FROM,
 # TRUST_PROXY=1 si hay proxy, Stripe si procede. Las claves de la base de datos van aparte:
-sh deploy/generate-db-secrets.sh   # deploy/secrets/db.env (db, migrate, backup) y app-db.env (solo la app)
+sh deploy/generate-db-secrets.sh   # un fichero por servicio en deploy/secrets/: db.env, owner.env, backup.env, app-db.env
 docker compose --env-file server/.env up -d --build
 ```
 
@@ -151,9 +151,9 @@ docker compose -f docker-compose.prod.yml --env-file server/.env up -d --build
 
 - `Dockerfile` multi-etapa: compila el servidor, compila `web/` si existe (si no, imagen solo API) y ejecuta como usuario `node` (no root) con `HEALTHCHECK` sobre `/healthz`.
 - Los compose fuerzan `NODE_ENV=production` (aunque `server/.env` diga otra cosa) y pasan la conexión como `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`: las claves pueden llevar cualquier carácter sin codificarlas.
-- `docker-compose.prod.yml` incluye un servicio `backup` con copia diaria `pg_dump` en `./backups` (ver `docs/OPERACIONES.md`, que explica también cómo sacarla del servidor y cómo restaurarla).
-- `docker-compose.yml`: `db` (PostgreSQL 16, volumen `pgdata`, sin puerto publicado) + `migrate` + `app`. La app publica el 3000 **solo en `127.0.0.1`**: el acceso público debe pasar por un proxy inverso con TLS.
-- **Roles de base de datos separados por defecto** (los dos compose): `deploy/postgres-init/10-enregla-roles.sh` crea `enregla_owner` (propietario, solo para el servicio `migrate`) y `enregla_app` (rol de ejecución: en `records` solo `SELECT`/`INSERT`, sin DDL ni propiedad de nada, así que no puede modificar ni borrar registros ni desactivar su trigger). `migrate` aplica las migraciones y los permisos (`APP_DB_ROLE`) y termina antes de que arranque la app (`MIGRATE_ON_START=false`). Las claves de la base de datos están separadas por servicio (`deploy/secrets/`): la app no recibe la del administrador ni la del propietario, y en producción no arranca si las encuentra o si su rol es superusuario o propietario. El rol de ejecución tampoco puede borrar locales (la purga a los 30 días o la eliminación inmediata del titular va por una función del propietario), ni fijar la hora o el orden de un registro, ni editar la auditoría. Para un despliegue anterior: `docs/OPERACIONES.md`, apartado 13.
+- `docker-compose.prod.yml` incluye un servicio `backup` (rol `enregla_backup`, solo lectura) con copia diaria `pg_dump` en `./backups` (ver `docs/OPERACIONES.md`, que explica también cómo sacarla del servidor y cómo restaurarla).
+- `docker-compose.yml`: `db` (PostgreSQL 16, volumen `pgdata`, sin puerto publicado) + `migrate` + `maintenance` + `app`. `maintenance` (los dos compose) se ejecuta cada hora con el rol propietario: purga los locales vencidos o con eliminación inmediata pedida y la auditoría antigua; la app no puede hacerlo. La app publica el 3000 **solo en `127.0.0.1`**: el acceso público debe pasar por un proxy inverso con TLS.
+- **Roles de base de datos separados por defecto** (los dos compose): `deploy/postgres-init/10-enregla-roles.sh` crea `enregla_owner` (propietario, solo para el servicio `migrate`) y `enregla_app` (rol de ejecución: en `records` solo `SELECT`/`INSERT`, sin DDL ni propiedad de nada, así que no puede modificar ni borrar registros ni desactivar su trigger). `migrate` aplica las migraciones y los permisos (`APP_DB_ROLE`) y termina antes de que arranque la app (`MIGRATE_ON_START=false`). Las claves de la base de datos están en un fichero por servicio (`deploy/secrets/`, explicado en `docs/OPERACIONES.md`, apartado 13): la app no recibe la del administrador ni la del propietario, y en producción no arranca si las encuentra o si detecta cualquier problema en los permisos de su rol (también si es miembro del propietario). El rol de ejecución no puede borrar locales ni ejecutar su purga (la hace `maintenance`), ni adelantar el plazo de 30 días, ni fijar la hora o el orden de un registro o de la auditoría, ni editar la auditoría o el historial de configuración, ni crear tablas temporales. **Riesgo residual**: con las credenciales de la app se puede hacer lo que la app permite a un propietario (programar la eliminación de un local y pedir la inmediata); la base de datos lo registra y una salvaguarda frena más de 3 purgas en 24 horas (todo, en `docs/OPERACIONES.md`, apartado 13). Para un despliegue anterior: `docs/OPERACIONES.md`, apartado 13.
 - La cookie de sesión es `__Host-` + `Secure`, así que la app debe servirse por https.
 
 ### Detrás de un proxy (TRUST_PROXY)
@@ -219,7 +219,7 @@ Ejemplos:
 - **Fecha del hecho** (`records.effective_at`): un registro normal cuenta en su hora de alta; una **enmienda** cuenta en la fecha del registro original (raíz de la cadena), así que enmendar hoy un registro de ayer no cambia el cumplimiento de ningún día. `created_at` sigue siendo la hora real de inserción (en una enmienda, cuándo se enmendó). Tareas, cumplimiento, recordatorios, historial (orden, filtros y cursor) e informes usan `effective_at`; los informes muestran además cuándo y quién enmendó. La rellena un trigger (también para código antiguo).
 - **Vigencia histórica de la configuración**: cada alta/edición/desactivación de equipos y planes queda en `equipment_config_history` / `cleaning_plan_config_history` (triggers). Lo esperado de cada día sale de la configuración vigente ese día: se exige un equipo/plan si estaba activo al empezar el día y sigue activo al terminarlo (o ahora, si es hoy), con la frecuencia vigente al final del día. Por tanto el día de alta (o de reactivación, o de desactivación) no es exigible; lo registrado ese día sí figura como hecho en «Hoy» (`countsToday: false`, fuera del resumen).
 - Estado `past_due` (cobro fallido mientras Stripe reintenta) es **escribible** (periodo de gracia) y la API expone `subscription.paymentFailed` para avisar. Solo lectura: prueba caducada, `unpaid`, `canceled`, `incomplete_expired` y además `paused` (prueba de Stripe terminada sin método de pago: no se da servicio gratis indefinido). `incomplete` (primer pago en curso, máx. 23 h) es escribible. Se permite siempre: leer, exportar, informes, facturación, revocar dispositivos, salir/quitar miembros y eliminar el local.
-- **Borrado diferido de locales**: `DELETE /api/orgs/{id}` cancela antes la suscripción de Stripe (si falla, no hace nada) y deja el local **pendiente de eliminación** 30 días: solo lectura, sin carta pública, dispositivos de cocina revocados, sin recordatorios ni avisos; los miembros siguen viendo y exportando datos e informes, un owner puede restaurarlo (no reactiva la suscripción ni los dispositivos) y se envía un email a los owners con la fecha de eliminación definitiva. La tarea diaria lo purga al vencer. Derecho de supresión: un owner puede pedir la eliminación inmediata y definitiva de un local ya pendiente (`DELETE /api/orgs/{id}/permanent`, con contraseña). Un local pendiente no impide borrar la cuenta.
+- **Borrado diferido de locales**: `DELETE /api/orgs/{id}` cancela antes la suscripción de Stripe (si falla, no hace nada) y deja el local **pendiente de eliminación** 30 días: solo lectura, sin carta pública, dispositivos de cocina revocados, sin recordatorios ni avisos; los miembros siguen viendo y exportando datos e informes, un owner puede restaurarlo (no reactiva la suscripción ni los dispositivos) y se envía un email a los owners con la fecha de eliminación definitiva. El mantenimiento lo purga al vencer. Derecho de supresión: un owner puede pedir la eliminación inmediata y definitiva de un local ya pendiente (`DELETE /api/orgs/{id}/permanent`, con contraseña; responde 202 y el local se elimina en la próxima hora). Un local pendiente no impide borrar la cuenta.
 - En Checkout, si quedan ≥ 48 h de prueba local se traslada como `trial_end` a Stripe para no perder los días restantes.
 - Rango máximo: informes 1 año (366 días), cumplimiento 92 días. PDF máx. 5000 filas (error claro si se supera), CSV máx. 500 000. Fechas admitidas: años 2000–2100. Zonas horarias: solo nombres IANA (más `UTC`); `+01:00` y similares se rechazan porque PostgreSQL los interpreta con el signo invertido.
 - Los textos de los emails, PDF y errores están en español de España; identificadores en inglés. Los mensajes de validación (zod) salen de un mapa de errores en español compartido por servidor y web (`server/src/schemas/es.ts`).
@@ -231,21 +231,21 @@ Ejemplos:
 
 ## Retención de datos
 
-Una tarea diaria (la misma maquinaria que el recordatorio: advisory lock de PostgreSQL y marca en `job_runs`, así que se ejecuta una vez al día aunque haya varias instancias) purga:
+Una tarea diaria de la app (la misma maquinaria que el recordatorio: advisory lock de PostgreSQL y marca en `job_runs`, así que se ejecuta una vez al día aunque haya varias instancias) purga lo temporal; los **locales** y la **auditoría** los purga el servicio `maintenance` (cada hora, con el rol propietario: la app no tiene permiso para hacerlo):
 
 | Dato | Plazo |
 |---|---|
-| Eventos de auditoría | 12 meses (`AUDIT_RETENTION_MONTHS`) |
+| Eventos de auditoría (`maintenance`) | 12 meses (`AUDIT_RETENTION_MONTHS`; la base de datos impone un mínimo de 12 meses aunque se configure menos) |
 | Cuentas que nunca verificaron el email (sin locales) | 7 días (`UNVERIFIED_ACCOUNT_DAYS`) |
 | Sesiones caducadas o inactivas | al caducar |
 | Tokens de email caducados o usados | 7 días después |
 | Invitaciones caducadas o revocadas | 30 días después |
 | Filas de rate limit vencidas | 1 hora después |
-| Locales pendientes de eliminación | al vencer el plazo (30 días; `ORG_DELETION_GRACE_DAYS`), con todos sus datos |
+| Locales pendientes de eliminación (`maintenance`) | al vencer el plazo (30 días; `ORG_DELETION_GRACE_DAYS`, con un mínimo fijado en la base de datos) o, si el titular pidió la eliminación inmediata, en la próxima pasada (como mucho una hora); con todos sus datos. Salvaguarda: con más de 3 purgas en 24 h no purga ninguna y avisa |
 | Claves de idempotencia | 7 días |
 | Emails de la bandeja de salida | enviados: 6 horas; fallidos definitivos: 3 días |
 
-Al borrar una cuenta, sus eventos de auditoría se **seudonimizan**: se conserva el id aleatorio del usuario (ya no apunta a nadie), pero se quitan la IP y los emails (`email`, `from`, `to`), también su email en eventos de terceros (p. ej. la invitación que recibió). Los registros APPCC no se purgan (son del local y se borran solo al eliminarlo definitivamente).
+Al borrar una cuenta, sus eventos de auditoría se **seudonimizan** (la base de datos solo lo permite para cuentas ya borradas): se conserva el id aleatorio del usuario (ya no apunta a nadie), pero se quitan la IP y los emails (`email`, `from`, `to`), también su email en eventos de terceros (p. ej. la invitación que recibió). Los registros APPCC no se purgan (son del local y se borran solo al eliminarlo definitivamente).
 
 ## Endurecimiento recomendado de la base de datos
 
@@ -272,6 +272,8 @@ enregla/
     ├── migrations/0006_record_integrity.sql orden de inserción de registros (seq) y categoría por defecto del proveedor (aditiva)
     ├── migrations/0007_db_hardening.sql    hora/orden de registros por la BD, purga de locales y auditoría por funciones del propietario (aditiva)
     ├── migrations/0008_supplier_reception_limit.sql límite de recepción propio del proveedor (aditiva)
+    ├── migrations/0009_db_hardening_2.sql  purga solo por el mantenimiento, auditoría por la BD de la eliminación,
+    │                                       plazo mínimo, salvaguarda, search_path fijo, sin temporales (aditiva)
     ├── assets/fonts/                       DejaVu Sans (regular y negrita) + licencia, para los PDF
     ├── src/
     │   ├── server.ts · app.ts · config.ts · deps.ts

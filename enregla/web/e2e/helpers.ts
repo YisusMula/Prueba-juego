@@ -30,6 +30,17 @@ export function seedInfo() {
   return { kioskToken: txt.match(/kd_[A-Za-z0-9_-]{43}/)?.[0] ?? '', menuSlug: txt.match(/menu\/([A-Za-z0-9_-]+)/)?.[1] ?? '' };
 }
 
+/** SQL como el PROPIETARIO (lo que hace el mantenimiento): E2E_SEED_DATABASE_URL si la app usa su rol propio. */
+export async function ownerSql(query: string, params: unknown[] = []) {
+  const c = new pg.Client({ connectionString: process.env.E2E_SEED_DATABASE_URL ?? process.env.E2E_DATABASE_URL ?? 'postgres://enregla:enregla@localhost:5432/enregla_e2e' });
+  await c.connect();
+  try {
+    return await c.query(query, params);
+  } finally {
+    await c.end();
+  }
+}
+
 export async function sql(query: string, params: unknown[] = []) {
   const c = new pg.Client({ connectionString: process.env.E2E_DATABASE_URL ?? 'postgres://enregla:enregla@localhost:5432/enregla_e2e' });
   await c.connect();

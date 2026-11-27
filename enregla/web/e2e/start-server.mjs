@@ -42,7 +42,10 @@ const env = {
 };
 
 const tsx = path.join(serverDir, 'node_modules/.bin/tsx');
-const seed = spawnSync(tsx, ['src/scripts/seed-demo.ts'], { cwd: serverDir, env, encoding: 'utf8' });
+// Con el rol de ejecución de la app (E2E_DATABASE_URL), el seed (que fecha equipos y registros en el
+// pasado) se hace con el propietario: E2E_SEED_DATABASE_URL. La app nunca puede hacerlo (N7).
+const seedEnv = process.env.E2E_SEED_DATABASE_URL ? { ...env, DATABASE_URL: process.env.E2E_SEED_DATABASE_URL } : env;
+const seed = spawnSync(tsx, ['src/scripts/seed-demo.ts'], { cwd: serverDir, env: seedEnv, encoding: 'utf8' });
 if (seed.status !== 0) {
   console.error(seed.stdout, seed.stderr);
   process.exit(1);

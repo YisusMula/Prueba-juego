@@ -17,6 +17,7 @@ import { applyAppRolePrivileges, refuseToStart } from '../src/db/privileges.js';
 import { pdfIntegrityNote } from '../src/modules/reports/pdf.js';
 import { runRetention } from '../src/modules/reminders/scheduler.js';
 import { pseudonymizeUserAudit } from '../src/lib/audit.js';
+import { runMaintenance } from '../src/modules/maintenance/run.js';
 
 let ctx: TestCtx;
 let nowMs = FIXED_NOW.getTime();
@@ -90,22 +91,17 @@ describe.skipIf(!APP_URL)('#2 / #3 rol de ejecución de la app', () => {
   }
   const count = async (orgId: string) => Number((await sql<{ n: string }>`SELECT count(*) AS n FROM records WHERE organization_id = ${orgId}`.execute(ctx.deps.db)).rows[0]!.n);
 
-  it('#2 no puede borrar un local (ni sus registros en cascada); la función solo purga lo vencido o pedido por el titular', async () => {
+  it('#2 no puede borrar un local (ni sus registros en cascada) ni ejecutar la purga (N1: solo el mantenimiento)', async () => {
     const { org } = await orgWithRecords();
     await expect(app.query('DELETE FROM organizations WHERE id = $1', [org.id])).rejects.toThrow(/permission denied/);
     for (const t of ['devices', 'staff', 'equipment', 'cleaning_plans']) {
       await expect(app.query(`DELETE FROM ${t} WHERE organization_id = $1`, [org.id])).rejects.toThrow(/permission denied/);
     }
-    // No pendiente de eliminación → no se purga.
-    expect((await app.query('SELECT enregla_purge_organization($1) AS ok', [org.id])).rows[0].ok).toBe(false);
-    // Pendiente pero dentro del plazo y sin petición del titular → no se purga.
-    await app.query("UPDATE organizations SET deletion_scheduled_at = now() + interval '30 days' WHERE id = $1", [org.id]);
-    expect((await app.query('SELECT enregla_purge_organization($1) AS ok', [org.id])).rows[0].ok).toBe(false);
+    await expect(app.query('SELECT enregla_purge_organization($1) AS ok', [org.id])).rejects.toThrow(/permission denied/);
+    await expect(app.query('SELECT enregla_purge_due_organizations()')).rejects.toThrow(/permission denied/);
+    // Ni adelantar el plazo (N1 c).
+    await expect(app.query("UPDATE organizations SET deletion_requested_at = now(), deletion_scheduled_at = now() - interval '1 minute' WHERE id = $1", [org.id])).rejects.toThrow();
     expect(await count(org.id)).toBe(3);
-    // Plazo vencido → sí.
-    await app.query("UPDATE organizations SET deletion_scheduled_at = now() - interval '1 minute' WHERE id = $1", [org.id]);
-    expect((await app.query('SELECT enregla_purge_organization($1) AS ok', [org.id])).rows[0].ok).toBe(true);
-    expect(await count(org.id)).toBe(0);
   });
 
   it('#3 la hora y el orden de un registro los pone PostgreSQL; auditoría e historial no se reescriben', async () => {
@@ -135,8 +131,8 @@ describe.skipIf(!APP_URL)('#2 / #3 rol de ejecución de la app', () => {
     const hist = await sql<{ n: string }>`SELECT count(*) AS n FROM equipment_config_history WHERE equipment_id = ${fridge.id}`.execute(ctx.deps.db);
     expect(Number(hist.rows[0]!.n)).toBeGreaterThan(1);
     await app.query('SELECT enregla_pseudonymize_audit(gen_random_uuid(), $1)', ['nadie@example.com']);
-    await expect(app.query('SELECT enregla_purge_audit_events(0)')).rejects.toThrow(/al menos 1 mes/);
-    expect(Number((await app.query('SELECT enregla_purge_audit_events(12) AS n')).rows[0].n)).toBeGreaterThanOrEqual(0);
+    // N3: la purga de auditoría es del mantenimiento.
+    await expect(app.query('SELECT enregla_purge_audit_events(12) AS n')).rejects.toThrow(/permission denied/);
   });
 });
 
@@ -146,13 +142,17 @@ describe('#2 purga del local por la API: solo con el plazo vencido o la petició
     const fridge = await firstEquipment(ctx, org.id, 'camara');
     await client.post(`${base}/records`, { type: 'temperatura', data: { equipmentId: fridge.id, value: 2 } });
     expect((await client.delete(`${base}`, { password: 'Cocina-Segura-2026' })).statusCode).toBe(204);
-    expect((await client.delete(`${base}/permanent`, { password: 'Cocina-Segura-2026' })).statusCode).toBe(204);
+    // N1: la app solo marca la petición (202); purga el mantenimiento con el rol propietario.
+    expect((await client.delete(`${base}/permanent`, { password: 'Cocina-Segura-2026' })).statusCode).toBe(202);
+    expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', org.id).executeTakeFirst()).toBeDefined();
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
     expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', org.id).executeTakeFirst()).toBeUndefined();
-    // Purga diaria: un local pendiente con el plazo vencido.
+    // Plazo vencido: la tarea de la app deja la facturación lista y el mantenimiento purga.
     const other = await setupOwner(ctx, 'otro@example.com');
     await ctx.deps.db.updateTable('organizations').set({ deletion_scheduled_at: new Date(Date.now() - 60_000) }).where('id', '=', other.org.id).execute();
     const r = await runRetention(ctx.deps, { force: true });
     expect(r.organizations).toBe(1);
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
     // Restaurar borra la petición de eliminación inmediata anterior.
     const third = await setupOwner(ctx, 'tercero@example.com');
     await ctx.deps.db.updateTable('organizations').set({ purge_requested_at: new Date(), deletion_scheduled_at: new Date(Date.now() + 86_400_000) }).where('id', '=', third.org.id).execute();
@@ -163,6 +163,9 @@ describe('#2 purga del local por la API: solo con el plazo vencido o la petició
   it('la seudonimización de la auditoría sigue funcionando por la función acotada', async () => {
     const { user, org } = await setupOwner(ctx);
     await ctx.deps.db.insertInto('audit_events').values({ event: 'auth.login', user_id: user.id, organization_id: org.id, ip: '1.2.3.4', metadata: JSON.stringify({ email: 'owner@example.com' }) }).execute();
+    // N3: solo de cuentas YA borradas.
+    await expect(pseudonymizeUserAudit(ctx.deps.db, user.id, 'owner@example.com')).rejects.toThrow(/ya borrada/);
+    await ctx.deps.db.deleteFrom('users').where('id', '=', user.id).execute();
     await pseudonymizeUserAudit(ctx.deps.db, user.id, 'owner@example.com');
     const ev = await ctx.deps.db.selectFrom('audit_events').select(['ip', 'metadata']).where('user_id', '=', user.id).where('event', '=', 'auth.login').executeTakeFirstOrThrow();
     expect(ev.ip).toBeNull();
@@ -174,16 +177,17 @@ describe('#2 purga del local por la API: solo con el plazo vencido o la petició
 // #4 / #5 / #6 Recepción
 // ---------------------------------------------------------------------------
 describe('#4 / #5 / #6 recepción', () => {
-  it('#4 sin categoría y por encima de 4 °C: alerta Y acción correctora obligatoria (web y tablet)', async () => {
+  it('#4 / N9 sin categoría no se acepta (web y tablet), aunque traiga una máxima o la acción correctora', async () => {
     const { client, base, k, org } = await setupKiosk();
     const st = await createStaff(ctx, org.id, 'Jonathan');
-    const web = await client.post(`${base}/records`, rec({ temperature: 9 }));
-    expect(web.statusCode).toBe(400);
-    expect(json(web).error.details[0].path).toBe('data.correctiveAction');
+    for (const data of [{ temperature: 9 }, { temperature: 9, correctiveAction: 'x' }, { temperature: 15, maxTemperature: 50 }, {}]) {
+      const web = await client.post(`${base}/records`, rec(data));
+      expect(web.statusCode).toBe(400);
+      expect(json(web).error.details.map((d: { path: string }) => d.path)).toContain('data.category');
+    }
     const kiosk = await k('POST', '/api/kiosk/records', { staffId: st.id, ...rec({ temperature: 6 }) });
     expect(kiosk.statusCode).toBe(400);
-    // Atajo antiguo con una máxima laxa: nunca por encima de la de refrigerado.
-    expect((await client.post(`${base}/records`, rec({ temperature: 15, maxTemperature: 50 }))).statusCode).toBe(400);
+    expect(json(kiosk).error.details.map((d: { path: string }) => d.path)).toContain('data.category');
   });
 
   it('#5 el límite no se edita al recibir: el de la petición se ignora; el propio del proveedor sí cuenta (dentro de un margen) y se marca', async () => {

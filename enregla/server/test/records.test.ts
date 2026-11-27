@@ -59,14 +59,14 @@ describe('creación de registros por tipo', () => {
   it('recepción aceptada y rechazada (motivo obligatorio)', async () => {
     const { client, base } = await setupOwner(ctx);
     const sup = json(await client.post(`${base}/suppliers`, { name: 'Pescados Mar' })).supplier;
-    const ok = await client.post(`${base}/records`, { type: 'recepcion', data: { supplierId: sup.id, product: 'Merluza', lot: 'L-22', temperature: 1.5, expiryDate: '2026-12-01', accepted: true } });
+    const ok = await client.post(`${base}/records`, { type: 'recepcion', data: { supplierId: sup.id, product: 'Merluza', lot: 'L-22', category: 'refrigerado', temperature: 1.5, expiryDate: '2026-12-01', accepted: true } });
     expect(ok.statusCode).toBe(201);
     expect(json(ok).record.data).toMatchObject({ supplierName: 'Pescados Mar', product: 'Merluza', accepted: true, rejectionReason: null });
     expect((await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: 'X', product: 'Pollo', accepted: false } })).statusCode).toBe(400);
     expect((await client.post(`${base}/records`, { type: 'recepcion', data: { product: 'Pollo', accepted: true } })).statusCode).toBe(400);
-    const rej = await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: 'Ocasional', product: 'Pollo', accepted: false, rejectionReason: 'Llegó a 9 °C' } });
+    const rej = await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: 'Ocasional', product: 'Pollo', category: 'refrigerado', accepted: false, rejectionReason: 'Llegó a 9 °C' } });
     expect(json(rej).record.alert).toBe(true);
-    expect((await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: 'X', product: 'Y', accepted: true, expiryDate: '31/12/2026' } })).statusCode).toBe(400);
+    expect((await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: 'X', product: 'Y', category: 'ambiente', accepted: true, expiryDate: '31/12/2026' } })).statusCode).toBe(400);
   });
 
   it('aceite: > 25 % de compuestos polares exige acción correctora', async () => {

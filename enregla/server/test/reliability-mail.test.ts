@@ -1,3 +1,4 @@
+import { runMaintenance } from '../src/modules/maintenance/run.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
 import { addMember, backdateConfig, closeTestApp, createTestApp, FIXED_NOW, FIXED_TODAY, json, PASSWORD, resetDb, setupOwner, type TestCtx } from './helpers.js';
@@ -226,7 +227,10 @@ describe('10. borrado diferido de locales', () => {
     expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', a.org.id).executeTakeFirst()).toBeDefined();
     await ctx.deps.db.updateTable('organizations').set({ deletion_scheduled_at: new Date(Date.now() - 1000) }).where('id', '=', a.org.id).execute();
     const r = await runRetention(ctx.deps, { force: true });
+    // La tarea de la app solo deja la facturación lista; purga el mantenimiento (rol propietario).
     expect(r.organizations).toBe(1);
+    expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', a.org.id).executeTakeFirst()).toBeDefined();
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
     expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', a.org.id).executeTakeFirst()).toBeUndefined();
     expect(await ctx.deps.db.selectFrom('records').select('id').where('organization_id', '=', a.org.id).execute()).toHaveLength(0);
 
@@ -234,7 +238,8 @@ describe('10. borrado diferido de locales', () => {
     expect((await b.client.delete(`${b.base}/permanent`, { password: PASSWORD })).statusCode).toBe(409);
     expect((await b.client.delete(b.base, { password: PASSWORD })).statusCode).toBe(204);
     expect((await b.client.delete(`${b.base}/permanent`, { password: 'incorrecta-1' })).statusCode).toBe(401);
-    expect((await b.client.delete(`${b.base}/permanent`, { password: PASSWORD })).statusCode).toBe(204);
+    expect((await b.client.delete(`${b.base}/permanent`, { password: PASSWORD })).statusCode).toBe(202);
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
     expect(await ctx.deps.db.selectFrom('organizations').select('id').where('id', '=', b.org.id).executeTakeFirst()).toBeUndefined();
   });
 });

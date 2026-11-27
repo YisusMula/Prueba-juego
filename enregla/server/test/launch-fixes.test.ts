@@ -147,7 +147,7 @@ describe('recepción: caducidad pasada y temperatura máxima admisible', () => {
   it('aceptar mercancía caducada o demasiado caliente exige motivo y genera alerta', async () => {
     const { client, base } = await setupOwner(ctx);
     const yesterday = addDays(FIXED_TODAY, -1);
-    const baseData = { supplierName: 'Proveedor', product: 'Pollo', accepted: true };
+    const baseData = { supplierName: 'Proveedor', product: 'Pollo', category: 'ambiente', accepted: true };
     const expired = await client.post(`${base}/records`, { type: 'recepcion', data: { ...baseData, expiryDate: yesterday } });
     expect(expired.statusCode).toBe(400);
     expect(json(expired).error.details[0]).toMatchObject({ path: 'data.correctiveAction', message: expect.stringMatching(/caducidad ya ha pasado/) });
@@ -160,12 +160,12 @@ describe('recepción: caducidad pasada y temperatura máxima admisible', () => {
     expect(accepted.statusCode).toBe(201);
     expect(json(accepted).record).toMatchObject({ alert: true, data: { expired: true, correctiveAction: 'Se usa hoy para personal' } });
 
-    const hot = await client.post(`${base}/records`, { type: 'recepcion', data: { ...baseData, temperature: 12, maxTemperature: 4 } });
+    const hot = await client.post(`${base}/records`, { type: 'recepcion', data: { ...baseData, category: 'refrigerado', temperature: 12 } });
     expect(hot.statusCode).toBe(400);
     expect(json(hot).error.details[0].path).toBe('data.correctiveAction');
-    const hotOk = await client.post(`${base}/records`, { type: 'recepcion', data: { ...baseData, temperature: 12, maxTemperature: 4, correctiveAction: 'Devuelto al proveedor' } });
+    const hotOk = await client.post(`${base}/records`, { type: 'recepcion', data: { ...baseData, category: 'refrigerado', temperature: 12, correctiveAction: 'Devuelto al proveedor' } });
     expect(json(hotOk).record).toMatchObject({ alert: true, data: { temperatureOutOfRange: true, maxTemperature: 4 } });
-    const fine = await client.post(`${base}/records`, { type: 'recepcion', data: { ...baseData, temperature: 3, maxTemperature: 4, expiryDate: addDays(FIXED_TODAY, 3) } });
+    const fine = await client.post(`${base}/records`, { type: 'recepcion', data: { ...baseData, category: 'refrigerado', temperature: 3, expiryDate: addDays(FIXED_TODAY, 3) } });
     expect(json(fine).record).toMatchObject({ alert: false, data: { temperatureOutOfRange: false, expired: false } });
 
     const today = json(await client.get(`${base}/tasks/today`));

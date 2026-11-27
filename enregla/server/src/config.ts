@@ -127,7 +127,6 @@ export interface Config {
     verifyIp: RateLimitRule;
     verifyAccount: RateLimitRule;
     tokenIp: RateLimitRule;
-    pinDevice: RateLimitRule;
     /** PIN erróneos por dispositivo (todas las personas). */
     pinFailDevice: RateLimitRule;
     publicIp: RateLimitRule;
@@ -283,7 +282,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     }
     // 1.8: la app no debe tener en su entorno credenciales de administración ni del rol propietario
     // (con ellas se podría desactivar la protección de los registros). Van solo a db/migrate/backup.
-    const leaked = ['POSTGRES_PASSWORD', 'DB_OWNER_PASSWORD', 'DB_APP_PASSWORD'].filter((k) => (env[k] ?? '') !== '');
+    const leaked = ['POSTGRES_PASSWORD', 'DB_OWNER_PASSWORD', 'DB_APP_PASSWORD', 'DB_BACKUP_PASSWORD'].filter((k) => (env[k] ?? '') !== '');
     if (leaked.length > 0) {
       problems.push(
         `${leaked.join(', ')} no debe estar en el entorno de la app: esas claves solo las usan los servicios db, migrate y backup (deploy/secrets/, ver docs/OPERACIONES.md apartado 13)`,
@@ -340,7 +339,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
       verifyIp: { limit: 10, windowSeconds: 3600 },
       verifyAccount: { limit: 3, windowSeconds: 3600 },
       tokenIp: { limit: 30, windowSeconds: 15 * 60 },
-      pinDevice: { limit: 30, windowSeconds: 15 * 60 },
       pinFailDevice: { limit: 20, windowSeconds: 15 * 60 },
       publicIp: { limit: 120, windowSeconds: 60 },
       kioskDevice: { limit: 600, windowSeconds: 60 },

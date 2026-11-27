@@ -2,6 +2,7 @@
  * Auditoría de seguridad final — facturación: M-1 (suscripción huérfana), M-2 (cliente que paga en
  * solo lectura / cobro doble), B-6 (23505 en el webhook) e I-3 (past_due prolongado).
  */
+import { runMaintenance } from '../src/modules/maintenance/run.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import Stripe from 'stripe';
 import { PASSWORD, addMember, closeTestApp, createTestApp, json, resetDb, setupOwner, type TestCtx } from './helpers.js';
@@ -161,9 +162,12 @@ describe('M-1 suscripción de Stripe huérfana tras eliminar el local', () => {
     expect(json(fail).error.code).toBe('BILLING_ERROR');
     expect(await orgRow(org.id)).toBeDefined();
     stripe.failCancel = false;
-    expect((await client.delete(`${base}/permanent`, { password: PASSWORD })).statusCode).toBe(204);
+    expect((await client.delete(`${base}/permanent`, { password: PASSWORD })).statusCode).toBe(202);
     expect(stripe.cancelCalls).toEqual(['sub_live', 'sub_live']);
     expect(stripe.subs.get('sub_live')!.status).toBe('canceled');
+    // Marcada (y ya sin suscripción viva en la base de datos): la purga del mantenimiento no la salta.
+    expect(await orgRow(org.id)).toMatchObject({ subscription_status: 'canceled' });
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
     expect(await orgRow(org.id)).toBeUndefined();
   });
 
@@ -183,10 +187,14 @@ describe('M-1 suscripción de Stripe huérfana tras eliminar el local', () => {
     expect(r1).toMatchObject({ organizations: 0, organizationsDeferred: 1 });
     expect(errors.join()).toMatch(/aplazada/);
     expect(await orgRow(org.id)).toBeDefined();
+    // Mientras siga viva, el mantenimiento no la purga (y deja el motivo).
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 0, skipped: 1 });
+    expect(await orgRow(org.id)).toMatchObject({ purge_blocked_reason: 'suscripcion_viva' });
     stripe.failCancel = false;
     const r2 = await runRetention(ctx.deps, { force: true, log });
     expect(r2).toMatchObject({ organizations: 1, organizationsDeferred: 0 });
     expect(stripe.subs.get('sub_live')!.status).toBe('canceled');
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
     expect(await orgRow(org.id)).toBeUndefined();
   });
 });

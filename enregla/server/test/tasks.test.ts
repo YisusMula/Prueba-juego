@@ -69,7 +69,7 @@ describe('tareas de hoy', () => {
     const fryer = await firstEquipment(ctx, org.id, 'freidora');
     await client.post(`${base}/records`, { type: 'temperatura', data: { equipmentId: fridge.id, value: 9, correctiveAction: 'Revisión' } });
     await client.post(`${base}/records`, { type: 'aceite', data: { equipmentId: fryer.id, action: 'revisado', polarCompounds: 30, correctiveAction: 'Cambio' } });
-    await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: 'P', product: 'Pollo', accepted: false, rejectionReason: 'Temperatura' } });
+    await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: 'P', product: 'Pollo', category: 'refrigerado', accepted: false, rejectionReason: 'Temperatura' } });
     await client.post(`${base}/records`, { type: 'plagas', data: { result: 'con_indicios', description: 'X', action: 'Y' } });
     const inc = json(await client.post(`${base}/records`, { type: 'incidencia', data: { description: 'Avería lavavajillas', closed: false } })).record;
     const t = json(await client.get(`${base}/tasks/today`));

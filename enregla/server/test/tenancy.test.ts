@@ -108,7 +108,7 @@ describe('aislamiento entre organizaciones', () => {
       ['POST', `${A.base}/records`, { type: 'temperatura', data: { equipmentId: bFridge.id, value: 2 } }],
       ['POST', `${A.base}/records`, { type: 'aceite', data: { equipmentId: bFryer.id, action: 'revisado' } }],
       ['POST', `${A.base}/records`, { type: 'limpieza', data: { cleaningPlanId: bPlan.id, items: [{ itemId: 'x', done: true }] } }],
-      ['POST', `${A.base}/records`, { type: 'recepcion', data: { supplierId: bSupplier.id, product: 'X', accepted: true } }],
+      ['POST', `${A.base}/records`, { type: 'recepcion', data: { supplierId: bSupplier.id, product: 'X', category: 'ambiente', accepted: true } }],
       ['POST', `${A.base}/records`, { type: 'formacion', data: { traineeStaffId: bStaff.id, course: 'X', trainingDate: '2026-01-01' } }],
       ['POST', `${A.base}/records`, { type: 'incidencia', staffId: bStaff.id, data: { description: 'X', closed: true } }],
     ];

@@ -270,7 +270,7 @@ $$;
 -- 6. Auditoría: retención mínima fijada por el propietario y seudonimización solo de cuentas borradas
 CREATE OR REPLACE FUNCTION public.enregla_purge_audit_events(months int) RETURNS bigint
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
-DECLARE n bigint; m int := pg_catalog.greatest(coalesce(months, 0), public.enregla_setting_int('audit_min_months', 12));
+DECLARE n bigint; m int := GREATEST(coalesce(months, 0), public.enregla_setting_int('audit_min_months', 12));
 BEGIN
   DELETE FROM public.audit_events WHERE created_at < pg_catalog.now() - pg_catalog.make_interval(months => m);
   GET DIAGNOSTICS n = ROW_COUNT;

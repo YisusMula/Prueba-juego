@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { runMaintenance } from '../src/modules/maintenance/run.js';
 import { Client, PASSWORD, addMember, closeTestApp, createTestApp, createUser, json, login, resetDb, setupOwner, tokenFromMail, type TestCtx } from './helpers.js';
 
 let ctx: TestCtx;
@@ -190,11 +191,19 @@ describe('RGPD: exportación y borrado', () => {
     // Borrado diferido: los registros se conservan durante el plazo.
     expect(await ctx.deps.db.selectFrom('records').selectAll().execute()).toHaveLength(1);
     expect(json(await client.get(base)).organization.deletionScheduledAt).not.toBeNull();
-    expect((await client.delete(`${base}/permanent`, { password: PASSWORD })).statusCode).toBe(204);
+    // N1: la app solo MARCA la eliminación inmediata (202); la purga la hace el mantenimiento (propietario).
+    const perm = await client.delete(`${base}/permanent`, { password: PASSWORD });
+    expect(perm.statusCode).toBe(202);
+    expect(json(perm).message).toContain('en la próxima hora');
+    expect(json(await client.get(base)).organization.purgeRequestedAt).toBe(json(perm).purgeRequestedAt);
+    expect(await ctx.deps.db.selectFrom('records').selectAll().execute()).toHaveLength(1);
+    const m = await runMaintenance(ctx.deps.db, { auditMonths: 12 });
+    expect(m.organizations).toMatchObject({ due: 1, purged: 1, blocked: false });
     expect(await ctx.deps.db.selectFrom('records').selectAll().execute()).toHaveLength(0);
     expect(await ctx.deps.db.selectFrom('organizations').selectAll().execute()).toHaveLength(0);
-    const audit = await ctx.deps.db.selectFrom('audit_events').selectAll().where('event', '=', 'org.deleted').execute();
+    const audit = await ctx.deps.db.selectFrom('audit_events').selectAll().where('event', '=', 'org.purged').execute();
     expect(audit).toHaveLength(1);
+    expect(audit[0]!.metadata).toMatchObject({ reason: 'eliminacion_inmediata_del_titular', records: 1 });
   });
 });
 

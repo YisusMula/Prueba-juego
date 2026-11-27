@@ -70,7 +70,7 @@ describe('exportación CSV', () => {
     const freezer = await firstEquipment(ctx, org.id, 'congelador');
     await client.post(`${base}/records`, { type: 'temperatura', data: { equipmentId: freezer.id, value: -19.5 } });
     await client.post(`${base}/records`, { type: 'incidencia', data: { description: '=HYPERLINK("http://evil","x")', correctiveAction: '+cmd|calc', closed: false } });
-    await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: '@SUM(A1)', product: '-producto; "raro"', accepted: true } });
+    await client.post(`${base}/records`, { type: 'recepcion', data: { supplierName: '@SUM(A1)', product: '-producto; "raro"', category: 'ambiente', accepted: true } });
     const res = await client.get(`${base}/reports/csv?from=${today()}&to=${today()}`);
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('text/csv; charset=utf-8');

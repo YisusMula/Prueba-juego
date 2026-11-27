@@ -7,3 +7,13 @@
 **/*.log
 .git
 deploy/secrets
+# N10: copias y volcados de la base de datos nunca entran en la imagen.
+backups
+**/backups
+**/*.dump
+**/*.dump.sha256
+**/*.sql.gz
+**/*.partial
+**/*.bak
+**/*.orig
+**/*~

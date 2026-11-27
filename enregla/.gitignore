@@ -7,3 +7,11 @@ dist/
 backups/
 dist-demo/
 deploy/secrets/*.env
+# N10: cualquier variante de los secretos (copias .bak/.orig/~, otros nombres); solo los ejemplos.
+deploy/secrets/*
+!deploy/secrets/*.example
+# Copias de la base de datos y volcados, estén donde estén.
+*.dump
+*.dump.sha256
+*.sql.gz
+*.partial

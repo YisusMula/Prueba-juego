@@ -315,18 +315,22 @@ describe('1.6 recepción con categoría de producto', () => {
     expect(edited.statusCode).toBe(400);
   });
 
-  it('cliente antiguo sin categoría ni máxima: se aplica refrigerado (≤ 4 °C) y una lectura de 6 °C queda con alerta', async () => {
+  it('N9: la categoría es obligatoria; el antiguo atajo «máx. 4 °C» se ignora (sin falsa alarma con comida caliente)', async () => {
     const { client, base } = await setupOwner(ctx);
-    // Evaluación #4: también exige la acción correctora.
-    expect((await client.post(`${base}/records`, rec({ temperature: 6 }))).statusCode).toBe(400);
-    const res = await client.post(`${base}/records`, rec({ temperature: 6, correctiveAction: 'Se usa de inmediato' }));
-    expect(res.statusCode).toBe(201);
-    expect(json(res).record).toMatchObject({ alert: true, data: { category: 'refrigerado', categoryAssumed: true, maxTemperature: 4, temperatureOutOfRange: true } });
-    // Con máxima explícita (cliente antiguo con atajo) se respeta y exige motivo como antes.
-    expect((await client.post(`${base}/records`, rec({ temperature: 6, maxTemperature: 4 }))).statusCode).toBe(400);
-    // Sin temperatura no se presupone nada.
-    const noTemp = json(await client.post(`${base}/records`, rec({}))).record;
-    expect(noTemp).toMatchObject({ alert: false, data: { category: null, maxTemperature: null } });
+    const noCat = await client.post(`${base}/records`, rec({ temperature: 6, correctiveAction: 'Se usa de inmediato' }));
+    expect(noCat.statusCode).toBe(400);
+    expect(json(noCat).error.details.map((d: { path: string }) => d.path)).toContain('data.category');
+    // Comida caliente a 70 °C con el atajo antiguo maxTemperature 4: dentro de límite (≥ 63 °C).
+    const hot = json(await client.post(`${base}/records`, rec({ category: 'caliente', temperature: 70, maxTemperature: 4 }))).record;
+    expect(hot).toMatchObject({ alert: false, data: { category: 'caliente', minTemperature: 63, maxTemperature: null, temperatureOutOfRange: false } });
+    // Refrigerado, congelado o caliente aceptado sin medir: 400.
+    for (const category of ['refrigerado', 'congelado', 'caliente']) {
+      const r = await client.post(`${base}/records`, rec({ category }));
+      expect(r.statusCode).toBe(400);
+      expect(json(r).error.details.map((d: { path: string }) => d.path)).toContain('data.temperature');
+    }
+    // Ambiente sin temperatura: sí (no hay límite).
+    expect((await client.post(`${base}/records`, rec({ category: 'ambiente' }))).statusCode).toBe(201);
   });
 
   it('el kiosko aplica las mismas reglas y el proveedor guarda una categoría por defecto', async () => {
