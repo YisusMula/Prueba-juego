@@ -46,7 +46,7 @@ export async function staffRoutes(app: FastifyInstance): Promise<void> {
       .set({
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.active !== undefined ? { active: body.active } : {}),
-        ...(pinChange ? { pin_hash: body.pin ? await hashSecret(body.pin) : null, pin_failed_count: 0, pin_locked_until: null } : {}),
+        ...(pinChange ? { pin_hash: body.pin ? await hashSecret(body.pin) : null, pin_failed_count: 0, pin_locked_until: null, pin_lock_level: 0 } : {}),
         updated_at: sql<Date>`now()`,
       })
       .where('id', '=', id)
@@ -65,7 +65,7 @@ export async function staffRoutes(app: FastifyInstance): Promise<void> {
     const id = idParam(req.params, 'staffId', 'Miembro del personal');
     const row = await db
       .updateTable('staff')
-      .set({ pin_failed_count: 0, pin_locked_until: null, updated_at: sql<Date>`now()` })
+      .set({ pin_failed_count: 0, pin_locked_until: null, pin_lock_level: 0, updated_at: sql<Date>`now()` })
       .where('id', '=', id)
       .where('organization_id', '=', ctx.org.id)
       .returning(['id', 'name', 'pin_hash', 'active', 'pin_locked_until', 'created_at'])

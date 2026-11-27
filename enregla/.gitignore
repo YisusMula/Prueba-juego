@@ -15,3 +15,13 @@ deploy/secrets/*
 *.dump.sha256
 *.sql.gz
 *.partial
+# N10: copias de los secretos FUERA de deploy/secrets/ (p. ej. deploy/secrets-old/db.env, owner.env en la raíz).
+**/db.env*
+**/owner.env*
+**/backup.env*
+**/app-db.env*
+**/*.env.bak
+**/*.env.orig
+**/*.env~
+**/*.env.old
+!**/*.example

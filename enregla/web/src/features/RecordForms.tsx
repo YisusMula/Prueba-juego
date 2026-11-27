@@ -447,8 +447,17 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   // Refrigerado, congelado o caliente: hay que medir la temperatura para aceptarlo (también lo exige el servidor).
   const tempRequired = category != null && RECEPTION_TEMPERATURE_REQUIRED.includes(category);
   // «Ambiente» para un proveedor que suele traer frío o caliente: motivo obligatorio (también en el servidor).
-  const supplierDefault = supplier?.defaultCategory ?? null;
-  const categoryNeedsReason = category === 'ambiente' && supplierDefault != null && supplierDefault !== 'ambiente';
+  // R6: también si el proveedor se escribe a mano con el nombre de uno dado de alta, y en una corrección
+  // de un registro que era refrigerado, congelado o caliente.
+  const typedSupplier =
+    !supplier && supplierId === '__other' && supplierName.trim()
+      ? p.ctx.suppliers.find((x) => x.name.trim().toLowerCase() === supplierName.trim().toLowerCase())
+      : undefined;
+  const supplierDefault = (supplier ?? typedSupplier)?.defaultCategory ?? null;
+  const supplierWantsCold = category === 'ambiente' && supplierDefault != null && supplierDefault !== 'ambiente';
+  const initialCategory = i?.category ?? null;
+  const changedToAmbient = category === 'ambiente' && initialCategory != null && initialCategory !== 'ambiente';
+  const categoryNeedsReason = supplierWantsCold || changedToAmbient;
   const expired = !!expiry && expiry < today;
   const issue = outOfLimits || expired;
   const needsReason = accepted === 'si' && issue;
@@ -546,7 +555,11 @@ export function RecepcionForm(p: Props<'recepcion'>) {
       {categoryNeedsReason ? (
         <Field
           label="¿Por qué es ambiente?"
-          hint={`${supplier!.name} suele traer producto ${RECEPTION_CATEGORY_LABELS[supplierDefault!].toLowerCase()}. Quedará señalado en el informe.`}
+          hint={
+            supplierWantsCold
+              ? `${(supplier ?? typedSupplier)!.name} suele traer producto ${RECEPTION_CATEGORY_LABELS[supplierDefault!].toLowerCase()}. Quedará señalado en el informe.`
+              : `El registro original era producto ${RECEPTION_CATEGORY_LABELS[initialCategory!].toLowerCase()}. Quedará señalado en el informe.`
+          }
           error={errors.categoryReason || server.categoryReason}
         >
           <Input value={categoryReason} onChange={(e) => setCategoryReason(e.target.value)} maxLength={300} placeholder="Ej.: hoy trae conservas, no producto fresco" />

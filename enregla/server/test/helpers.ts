@@ -77,6 +77,7 @@ const TABLES = [
   'email_tokens',
   'sessions',
   'users',
+  'enregla_org_subscriptions',
 ];
 
 export async function resetDb(ctx: TestCtx): Promise<void> {

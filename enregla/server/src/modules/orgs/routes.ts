@@ -195,6 +195,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
           deletion_requested_at: sql<Date>`now()`,
           deletion_scheduled_at: sql<Date>`now() + make_interval(days => ${graceDays})`,
           purge_requested_at: null,
+          purge_requested_by: null,
           deletion_requested_by: ctx.userId,
           // La cancelación ya está hecha en Stripe; el webhook lo confirmará.
           ...(hasLiveStripeSubscription(org) ? { subscription_status: 'canceled', cancel_at_period_end: false } : {}),
@@ -251,7 +252,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     // Solo se restaura lo que de verdad sigue pendiente; nunca un 500.
     const org = await db
       .updateTable('organizations')
-      .set({ deletion_requested_at: null, deletion_scheduled_at: null, deletion_requested_by: null, purge_requested_at: null, updated_at: sql<Date>`now()` })
+      .set({ deletion_requested_at: null, deletion_scheduled_at: null, deletion_requested_by: null, purge_requested_at: null, purge_requested_by: null, updated_at: sql<Date>`now()` })
       .where('id', '=', ctx.org.id)
       .where('deletion_scheduled_at', 'is not', null)
       .returningAll()
@@ -303,6 +304,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       // por «suscripción viva» y no se cumpliría «en la próxima hora».
       .set({
         purge_requested_at: sql<Date>`now()`,
+        purge_requested_by: ctx.userId,
         updated_at: sql<Date>`now()`,
         ...(ctx.org.stripe_subscription_id ? { subscription_status: 'canceled' as const, cancel_at_period_end: false } : {}),
       })

@@ -45,7 +45,7 @@ type Screen =
   | { name: 'form'; type: RecordType; preset?: Record<string, string> }
   | { name: 'result'; record: AppRecord; person: Person; corrected?: boolean }
   | { name: 'correct'; recent: Recent }
-  | { name: 'manager'; action: 'exit' | 'unpair' };
+  | { name: 'manager'; action: 'exit' | 'unpair' | 'unlock'; staff?: { id: string; name: string } };
 type Pending = { type: RecordType; data: unknown };
 
 /** Inactividad: se olvida a la persona (y su PIN) y se vuelve al inicio. */
@@ -56,6 +56,12 @@ export const IDLE_MS = 60_000;
  * nadie firma como Ana sin darse cuenta. A los IDLE_MS se olvida a la persona como siempre.
  */
 export const CONFIRM_MS = 20_000;
+/**
+ * R5: durante este tiempo tras aparecer «¿Eres Ana?» no se acepta ningún toque (quien tocaba a ciegas la
+ * rejilla de equipos no responde sin querer). Las respuestas están ARRIBA, en la franja de la cabecera,
+ * y el resto de la pantalla es neutro: tocar donde estaban los equipos no hace nada.
+ */
+export const CONFIRM_ARM_MS = 700;
 /**
  * Tras guardar se muestra «Guardado por Ana» este tiempo (más si hay alerta) y se vuelve solo a la lista
  * de equipos (temperaturas) o al inicio, con la persona elegida y la franja «Registrando como Ana»
@@ -193,11 +199,19 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<unknown>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** R7: persona con el PIN bloqueado: un responsable puede desbloquearlo aquí mismo. */
+  const [lockedStaff, setLockedStaff] = useState<{ id: string; name: string } | null>(null);
   const [verifying, setVerifying] = useState(false);
   const idleTimer = useRef<number | undefined>(undefined);
   const confirmTimer = useRef<number | undefined>(undefined);
   const personRef = useRef<Person | null>(null);
   const [confirmWho, setConfirmWho] = useState(false);
+  const [confirmArmed, setConfirmArmed] = useState(false);
+  useEffect(() => {
+    if (!confirmWho) return setConfirmArmed(false);
+    const t = window.setTimeout(() => setConfirmArmed(true), CONFIRM_ARM_MS);
+    return () => window.clearTimeout(t);
+  }, [confirmWho]);
   // Clave de idempotencia por registro: se reutiliza en los reintentos (también los automáticos al volver la conexión).
   const [keys] = useState(() => new IdempotencyKeys());
   /** Último envío que falló por red o tiempo agotado: se reintenta solo al volver `online`. */
@@ -304,6 +318,7 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
         }
         if (err.code === 'PIN_LOCKED') {
           setPerson(null);
+          setLockedStaff({ id: who.id, name: who.name });
           setNotice(`El PIN de ${who.name} está bloqueado por demasiados intentos.${err.retryAfter ? ` Inténtalo en ${formatWait(err.retryAfter)}` : ''} o pide a un encargado que lo desbloquee.`);
           setScreen({ name: 'home' });
           return;
@@ -352,6 +367,7 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
     } catch (err) {
       if (isApiError(err) && err.code === 'UNAUTHENTICATED') return onRevoked();
       if (isApiError(err) && err.code === 'PIN_LOCKED') {
+        setLockedStaff({ id: p.id, name: p.name });
         setNotice(`El PIN de ${p.name} está bloqueado por demasiados intentos.${err.retryAfter ? ` Inténtalo en ${formatWait(err.retryAfter)}` : ''} o pide a un encargado que lo desbloquee.`);
         setScreen({ name: 'home' });
       } else {
@@ -446,21 +462,44 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
           role="dialog"
           aria-modal="true"
           aria-labelledby="kconfirm"
-          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-paper px-6 text-center"
+          aria-describedby="kconfirm-help"
+          className="fixed inset-0 z-50 flex flex-col bg-paper"
           data-testid="kiosk-confirm-person"
+          data-armed={confirmArmed || undefined}
         >
-          <Icon name="user" size={64} className="text-brand" />
-          <h1 id="kconfirm" className="text-4xl font-extrabold [overflow-wrap:anywhere] sm:text-5xl">
-            ¿Eres {person.name}?
-          </h1>
-          <p className="max-w-xl text-xl text-ink-muted">Hace un rato que nadie toca la tablet. Confirma quién está registrando.</p>
-          <div className="grid w-full max-w-xl gap-4">
-            <Button size="xl" block icon="check" autoFocus onClick={() => setConfirmWho(false)}>
+          {/* Respuestas en la franja de arriba (donde está la cabecera, no la rejilla de equipos). */}
+          <div className="grid grid-cols-2 gap-3 border-b-2 border-line-strong bg-surface p-3 sm:p-4">
+            <Button
+              size="xl"
+              block
+              icon="check"
+              disabled={!confirmArmed}
+              onClick={() => setConfirmWho(false)}
+              className="min-h-20 text-xl [overflow-wrap:anywhere]"
+            >
               Sí, soy {person.name}
             </Button>
-            <Button size="xl" block variant="secondary" icon="users" onClick={someoneElse}>
+            <Button
+              size="xl"
+              block
+              variant="secondary"
+              icon="users"
+              disabled={!confirmArmed}
+              onClick={someoneElse}
+              className="min-h-20 text-xl"
+            >
               No, soy otra persona
             </Button>
+          </div>
+          {/* Zona neutra: tocar aquí (donde estaban los equipos) no responde nada. */}
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center" data-testid="kiosk-confirm-neutral">
+            <Icon name="user" size={64} className="text-brand" />
+            <h1 id="kconfirm" className="text-4xl font-extrabold [overflow-wrap:anywhere] sm:text-5xl">
+              ¿Eres {person.name}?
+            </h1>
+            <p id="kconfirm-help" className="max-w-xl text-xl text-ink-muted">
+              Hace un rato que nadie toca la tablet. Responde <strong>arriba</strong>: tocar aquí no hace nada.
+            </p>
           </div>
         </div>
       ) : null}
@@ -479,7 +518,29 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
 
       <main id="main" tabIndex={-1} className="mx-auto w-full max-w-5xl flex-1 px-4 py-5 outline-none sm:px-6">
         {notice ? (
-          <Callout tone="bad" className="mb-4 text-lg" live="assertive" action={<Button variant="ghost" onClick={() => setNotice(null)}>Cerrar</Button>}>
+          <Callout
+            tone="bad"
+            className="mb-4 text-lg"
+            live="assertive"
+            action={
+              <div className="flex flex-wrap gap-2">
+                {lockedStaff ? (
+                  <Button icon="lock" onClick={() => setScreen({ name: 'manager', action: 'unlock', staff: lockedStaff })}>
+                    Desbloquear (responsable)
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setNotice(null);
+                    setLockedStaff(null);
+                  }}
+                >
+                  Cerrar
+                </Button>
+              </div>
+            }
+          >
             {notice}
           </Callout>
         ) : null}
@@ -593,9 +654,16 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
           <ManagerAuthScreen
             token={token}
             action={screen.action}
+            staff={screen.staff}
             onCancel={() => setScreen({ name: 'home' })}
             onRevoked={onRevoked}
             onDone={(by) => {
+              if (screen.action === 'unlock') {
+                setLockedStaff(null);
+                setNotice(`PIN de ${screen.staff?.name ?? ''} desbloqueado por ${by}. Ya puede volver a identificarse.`);
+                setScreen({ name: 'home' });
+                return;
+              }
               setPerson(null);
               setRecent(null);
               if (screen.action === 'unpair') onUnpair();
@@ -1612,12 +1680,14 @@ function CorrectionFlow({
 function ManagerAuthScreen({
   token,
   action,
+  staff,
   onCancel,
   onDone,
   onRevoked,
 }: {
   token: string;
-  action: 'exit' | 'unpair';
+  action: 'exit' | 'unpair' | 'unlock';
+  staff?: { id: string; name: string };
   onCancel: () => void;
   onDone: (by: string) => void;
   onRevoked: () => void;
@@ -1632,7 +1702,13 @@ function ManagerAuthScreen({
     setBusy(true);
     setError(null);
     try {
-      const r = action === 'exit' ? await kioskApi.exit(token, { email: email.trim(), password }) : await kioskApi.unpair(token, { email: email.trim(), password });
+      const body = { email: email.trim(), password };
+      const r =
+        action === 'exit'
+          ? await kioskApi.exit(token, body)
+          : action === 'unlock' && staff
+            ? await kioskApi.unlockStaff(token, staff.id, body)
+            : await kioskApi.unpair(token, body);
       onDone(r.by.name);
     } catch (err) {
       if (isApiError(err) && err.code === 'UNAUTHENTICATED') return onRevoked();
@@ -1650,12 +1726,14 @@ function ManagerAuthScreen({
     <section aria-labelledby="kmgr" className="mx-auto max-w-xl">
       <BackButton onClick={onCancel} label="Cancelar" />
       <h1 id="kmgr" className="text-3xl font-extrabold">
-        {action === 'exit' ? 'Salir del modo cocina' : 'Desvincular esta tablet'}
+        {action === 'exit' ? 'Salir del modo cocina' : action === 'unlock' ? `Desbloquear el PIN de ${staff?.name ?? ''}` : 'Desvincular esta tablet'}
       </h1>
       <p className="mt-2 text-lg text-ink-muted">
         {action === 'exit'
           ? 'Solo un propietario o encargado del local puede cerrar el modo cocina. La tablet seguirá vinculada.'
-          : 'Solo un propietario o encargado del local puede desvincularla. Dejará de funcionar hasta que se vuelva a vincular desde Ajustes → Dispositivos de cocina.'}
+          : action === 'unlock'
+            ? 'Un propietario o encargado del local puede desbloquearlo ahora mismo. Quedará registrado quién lo hizo.'
+            : 'Solo un propietario o encargado del local puede desvincularla. Dejará de funcionar hasta que se vuelva a vincular desde Ajustes → Dispositivos de cocina.'}
       </p>
       <form onSubmit={onSubmit} noValidate className="mt-5 space-y-4 text-lg">
         <Field label="Email del propietario o encargado">
@@ -1670,7 +1748,7 @@ function ManagerAuthScreen({
           </Callout>
         ) : null}
         <Button type="submit" size="xl" block loading={busy} variant={action === 'unpair' ? 'danger' : 'primary'} icon="lock">
-          {action === 'exit' ? 'Salir del modo cocina' : 'Desvincular'}
+          {action === 'exit' ? 'Salir del modo cocina' : action === 'unlock' ? 'Desbloquear' : 'Desvincular'}
         </Button>
       </form>
     </section>

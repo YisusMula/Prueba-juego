@@ -56,6 +56,8 @@ export const NO_EMAIL_MESSAGE = 'En la demo no se envían correos.';
 const SAMPLE_IP = '192.0.2.24';
 const PIN_MAX_FAILURES = 5;
 const PIN_LOCK_MS = 15 * 60_000;
+/** Como el servidor (R7): bloqueos de 1 min, luego 5 y luego 15 mientras nadie acierte. */
+const PIN_LOCK_STEPS_MS = [60_000, 5 * 60_000, PIN_LOCK_MS];
 const PIN_DEVICE_WINDOW_MS = 15 * 60_000;
 const PIN_DEVICE_MAX_FAILS = 20;
 
@@ -234,6 +236,7 @@ function verifyPin(db: DemoState, ctx: { device: { id: string }; org: DOrg }, st
   }
   if (/^\d{4,6}$/.test(pin) && pin === st.pin) {
     st.failed = 0;
+    st.lockLevel = 0;
     return;
   }
   st.failed += 1;
@@ -244,9 +247,11 @@ function verifyPin(db: DemoState, ctx: { device: { id: string }; org: DOrg }, st
     throw new DemoError(429, 'RATE_LIMITED', 'Demasiados PIN incorrectos en este dispositivo. Espera unos minutos.', undefined, { 'Retry-After': String(Math.ceil(retry)) });
   }
   if (st.failed >= PIN_MAX_FAILURES) {
-    st.lockedUntil = now + PIN_LOCK_MS;
-    audit(db, ctx.org.id, 'staff.pin_locked', null, { staffId, deviceId: ctx.device.id });
-    throw pinLocked(PIN_LOCK_MS / 1000);
+    const lockMs = PIN_LOCK_STEPS_MS[Math.min(st.lockLevel ?? 0, PIN_LOCK_STEPS_MS.length - 1)]!;
+    st.lockLevel = (st.lockLevel ?? 0) + 1;
+    st.lockedUntil = now + lockMs;
+    audit(db, ctx.org.id, 'staff.pin_locked', null, { staffId, deviceId: ctx.device.id, lockSeconds: lockMs / 1000 });
+    throw pinLocked(lockMs / 1000);
   }
   throw new DemoError(401, 'INVALID_PIN', 'PIN incorrecto');
 }
@@ -599,6 +604,7 @@ route('POST', `${ORG}/staff/:staffId/unlock`, (db, req) => {
   if (!s) throw notFound('Miembro del personal');
   s.failed = 0;
   s.lockedUntil = null;
+  s.lockLevel = 0;
   return ok({ staff: staffView(s) });
 });
 
@@ -1072,6 +1078,18 @@ route('POST', '/api/kiosk/exit', (db, req) => {
   const { ctx, user } = kioskManagerAuth(db, req);
   audit(db, ctx.org.id, 'device.kiosk_exit', user.id, { deviceId: ctx.device.id, deviceName: ctx.device.name });
   return ok({ ok: true, by: { name: user.name } });
+});
+// Como el servidor (R7): un responsable desbloquea en la tablet el PIN de una persona.
+route('POST', '/api/kiosk/staff/:staffId/unlock', (db, req) => {
+  const id = idParam(req.params.staffId, 'Persona');
+  const { ctx, user } = kioskManagerAuth(db, req);
+  const s = db.staff.find((x) => x.id === id && x.orgId === ctx.org.id);
+  if (!s) throw notFound('Persona');
+  s.failed = 0;
+  s.lockedUntil = null;
+  s.lockLevel = 0;
+  audit(db, ctx.org.id, 'staff.pin_unlocked', user.id, { staffId: id, deviceId: ctx.device.id, fromKiosk: true });
+  return ok({ ok: true, by: { name: user.name }, staff: { id: s.id, name: s.name } });
 });
 route('POST', '/api/kiosk/unpair', (db, req) => {
   const { ctx, user } = kioskManagerAuth(db, req);

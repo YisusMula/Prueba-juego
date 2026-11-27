@@ -67,6 +67,8 @@ services:
       PGUSER: enregla_owner
       PGDATABASE: enregla
       APP_DB_ROLE: enregla_app
+      # Rol de copias (solo lectura, sin las tablas que no se copian): también lo fija migrate.
+      BACKUP_DB_ROLE: enregla_backup
     # Solo la clave del propietario (PGPASSWORD de deploy/secrets/owner.env), nada más.
     env_file:
       - path: deploy/secrets/owner.env
@@ -97,6 +99,9 @@ services:
       PGUSER: enregla_owner
       PGDATABASE: enregla
       AUDIT_RETENTION_MONTHS: ${AUDIT_RETENTION_MONTHS:-12}
+      # Para purgar un local que ha tenido suscripción, el mantenimiento la comprueba en Stripe (solo
+      # lectura; puede ser una clave restringida). Sin ella, esos locales no se purgan (error en el log).
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
     env_file:
       - path: deploy/secrets/owner.env
         required: true

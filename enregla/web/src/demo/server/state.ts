@@ -23,7 +23,7 @@ export type DOrg = {
   createdAt: number;
 };
 export type DMembership = { orgId: string; userId: string; role: Role; dailyReminder: boolean; createdAt: number };
-export type DStaff = { id: string; orgId: string; name: string; pin: string | null; active: boolean; failed: number; lockedUntil: number | null; createdAt: number };
+export type DStaff = { id: string; orgId: string; name: string; pin: string | null; active: boolean; failed: number; lockedUntil: number | null; createdAt: number; /** Bloqueo progresivo (R7). */ lockLevel?: number };
 export type DDevice = { id: string; orgId: string; name: string; token: string; createdBy: string | null; createdAt: number; lastUsedAt: number | null; revokedAt: number | null };
 export type EquipmentState = { validFrom: number; checksPerDay: number; active: boolean };
 export type DEquipment = {

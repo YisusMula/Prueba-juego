@@ -17,3 +17,9 @@ backups
 **/*.bak
 **/*.orig
 **/*~
+# N10: copias de secretos fuera de deploy/secrets/.
+**/db.env*
+**/owner.env*
+**/backup.env*
+**/app-db.env*
+**/*.env.old

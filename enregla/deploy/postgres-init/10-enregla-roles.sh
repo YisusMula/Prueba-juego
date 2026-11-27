@@ -13,8 +13,9 @@
 #   enregla_app   → rol de EJECUCIÓN de la app: sin DDL y sin ser propietario de nada. Los
 #                   permisos sobre las tablas los fija `migrate` tras cada migración
 #                   (APP_DB_ROLE): en `records` solo SELECT e INSERT.
-#   enregla_backup → solo LECTURA de todo (pg_read_all_data) para pg_dump. Sin escritura, sin DDL:
-#                   quien robe la clave de las copias no puede modificar ni borrar nada.
+#   enregla_backup → solo LECTURA para pg_dump (SELECT tabla a tabla, lo fija `migrate` con
+#                   BACKUP_DB_ROLE), sin ver las tablas que no se copian (bandeja de emails, sesiones,
+#                   tokens…). Sin escritura, sin DDL: quien robe su clave no puede modificar ni borrar nada.
 # El superusuario POSTGRES_USER queda solo para administración (no lo usa ningún servicio).
 # Idempotente: se puede ejecutar varias veces.
 # =============================================================================
@@ -43,8 +44,11 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enregla_backup') AS c
 ALTER ROLE enregla_owner WITH LOGIN NOSUPERUSER PASSWORD :'owner_pw';
 ALTER ROLE enregla_app WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD :'app_pw';
 ALTER ROLE enregla_backup WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD :'backup_pw';
--- Solo lectura de todas las tablas (rol predefinido de PostgreSQL 14+), para pg_dump.
-GRANT pg_read_all_data TO enregla_backup;
+-- Solo lectura tabla a tabla (la fija `migrate`); nada de roles predefinidos que lo leen todo.
+REVOKE pg_read_all_data FROM enregla_backup;
+-- Defensa adicional contra transacciones abiertas indefinidamente con el rol de la app (la hora de
+-- los registros ya la pone el reloj, no el inicio de la transacción).
+ALTER ROLE enregla_app SET idle_in_transaction_session_timeout = '60s';
 
 -- 2. La base de datos y el esquema son del rol propietario. Nadie más puede crear objetos.
 ALTER DATABASE :"db" OWNER TO enregla_owner;

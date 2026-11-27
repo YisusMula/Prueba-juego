@@ -53,11 +53,9 @@ try {
   const old = await db.selectFrom('users').select('id').where('email', '=', DEMO_EMAIL).executeTakeFirst();
   if (old) {
     const orgs = await db.selectFrom('memberships').select('organization_id').where('user_id', '=', old.id).where('role', '=', 'owner').execute();
-    // Como la eliminación inmediata de un titular: así funciona también con el rol de ejecución (0007).
-    for (const o of orgs) {
-      await db.updateTable('organizations').set({ deletion_scheduled_at: sql<Date>`now()`, purge_requested_at: sql<Date>`now()` }).where('id', '=', o.organization_id).execute();
-      await sql`SELECT enregla_purge_organization(${o.organization_id}::uuid)`.execute(db);
-    }
+    // El seed se ejecuta con el rol propietario (o superusuario): borra directamente los locales demo
+    // anteriores (la app no puede hacerlo; ver E2E_SEED_DATABASE_URL).
+    for (const o of orgs) await db.deleteFrom('organizations').where('id', '=', o.organization_id).execute();
     await db.deleteFrom('users').where('id', '=', old.id).execute();
   }
 

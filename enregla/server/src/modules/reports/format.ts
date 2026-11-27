@@ -134,7 +134,12 @@ function receptionLimitText(d: Record<string, unknown>): string {
     .filter(Boolean)
     .join(', ');
   const own = d.limitDiffersFromReference === true ? 'límite del proveedor' : null;
-  const amb = d.categoryDiffersFromSupplier === true ? `el proveedor suele ser otro tipo; motivo: ${String(d.categoryReason ?? '')}` : null;
+  const amb =
+    d.categoryDiffersFromSupplier === true
+      ? `el proveedor suele ser otro tipo; motivo: ${String(d.categoryReason ?? '')}`
+      : typeof d.categoryChangedFrom === 'string'
+        ? `antes ${(RECEPTION_CATEGORY_LABELS[d.categoryChangedFrom as ReceptionCategory] ?? d.categoryChangedFrom).toLowerCase()}; motivo: ${String(d.categoryReason ?? '')}`
+        : null;
   const parts = [cat ? `${cat}${d.categoryAssumed ? ' por defecto' : ''}` : null, lim || (cat ? 'sin límite' : null), own, amb].filter(Boolean);
   return parts.length ? ` (${parts.join(', ')})` : '';
 }

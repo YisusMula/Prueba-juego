@@ -152,6 +152,8 @@ export type RecepcionStored = {
   categoryAssumed?: boolean;
   /** «Ambiente» para un proveedor habitualmente refrigerado/congelado/caliente: con su motivo. */
   categoryDiffersFromSupplier?: boolean;
+  /** Corrección que pasó de refrigerado/congelado/caliente a ambiente (con motivo). */
+  categoryChangedFrom?: ReceptionCategory | null;
   categoryReason?: string | null;
   limitSource?: 'referencia' | 'proveedor' | 'peticion' | 'presupuesta' | null;
   limitDiffersFromReference?: boolean;

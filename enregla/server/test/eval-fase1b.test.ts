@@ -52,7 +52,7 @@ describe('N1 eliminación inmediata y purga por el mantenimiento', () => {
     expect(await recordCount(o.org.id)).toBe(0);
     const [purged] = await audits('org.purged');
     expect(purged).toMatchObject({ organization_id: o.org.id, user_id: o.user.id });
-    expect(purged!.metadata).toMatchObject({ reason: 'eliminacion_inmediata_del_titular', records: 2, name: o.org.name });
+    expect(purged!.metadata).toMatchObject({ reason: 'eliminacion_inmediata_solicitada', records: 2, name: o.org.name });
   });
 
   it('(b) la base de datos audita cada cambio de deletion_* / purge_requested_at y cada acceso retirado, con session_user', async () => {
@@ -164,12 +164,14 @@ describe('N5 PIN en la tablet', () => {
 // N6 Arranque en producción
 // ---------------------------------------------------------------------------
 describe('N6 la app no arranca en producción con cualquier problema de permisos', () => {
-  it('basta un problema (no solo superusuario o propietario) para negarse', () => {
-    const h = { role: 'evil_app', hardened: false, problems: ['puede ejecutar la purga de locales'], privileged: false };
-    expect(refuseToStart(h, true, false)).toMatch(/purga/);
-    expect(refuseToStart(h, true, true)).toBeNull();
-    expect(refuseToStart(h, false, false)).toBeNull();
-    expect(refuseToStart({ ...h, hardened: true, problems: [] }, true, false)).toBeNull();
+  it('basta un problema (no solo superusuario o propietario) para negarse; si son permisos, pide ejecutar migrate (R1)', () => {
+    const h = { role: 'evil_app', hardened: false, problems: ['puede ejecutar funciones de purga'], privileged: false };
+    const msg = refuseToStart(h, true)!;
+    expect(msg).toMatch(/purga/);
+    expect(msg).toMatch(/run --rm migrate/);
+    expect(msg).not.toMatch(/ALLOW_PRIVILEGED_DB_ROLE/);
+    expect(refuseToStart(h, false)).toBeNull();
+    expect(refuseToStart({ ...h, hardened: true, problems: [] }, true)).toBeNull();
   });
   it('el propietario (o un superusuario) se detecta como privilegiado', async () => {
     const h = await recordsHardeningStatus(new pg.Pool({ connectionString: TEST_DATABASE_URL, max: 1 }));
@@ -229,7 +231,11 @@ describe.skipIf(!APP_URL)('rol real de la app (segunda evaluación)', () => {
     // Ni borrar miembros o cuentas directamente para provocar purgas.
     await expect(app.query('DELETE FROM organizations WHERE id = $1', [o.org.id])).rejects.toThrow(/permission denied/);
     // Lo legítimo (lo que hace la app): pendiente con el plazo completo y petición inmediata ahora.
-    await app.query("UPDATE organizations SET deletion_requested_at = now(), deletion_scheduled_at = now() + interval '30 days', purge_requested_at = now() WHERE id = $1", [o.org.id]);
+    // (Desde 0010, quien la pide debe ser propietario real del local.)
+    await app.query(
+      "UPDATE organizations SET deletion_requested_at = now(), deletion_requested_by = $2, deletion_scheduled_at = now() + interval '30 days', purge_requested_at = now(), purge_requested_by = $2 WHERE id = $1",
+      [o.org.id, o.user.id],
+    );
     const ch = await audits('db.org_deletion_changed');
     expect(ch[ch.length - 1]!.metadata).toMatchObject({ session_user: new URL(APP_URL!).username });
     expect(await recordCount(o.org.id)).toBe(1);
@@ -265,7 +271,7 @@ describe.skipIf(!APP_URL)('rol real de la app (segunda evaluación)', () => {
       const h = await recordsHardeningStatus(evil);
       expect(h).toMatchObject({ privileged: true, hardened: false });
       expect(h.problems.join()).toMatch(/propietario/);
-      expect(refuseToStart(h, true, false)).not.toBeNull();
+      expect(refuseToStart(h, true)).not.toBeNull();
     } finally {
       await evil.end();
       await admin.query('DROP ROLE enregla_evil_test');

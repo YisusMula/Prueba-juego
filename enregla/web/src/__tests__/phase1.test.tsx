@@ -303,6 +303,9 @@ describe('modo cocina', () => {
     await act(async () => {
       vi.advanceTimersByTime(30_000);
     });
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
     await user.click(within(screen.getByTestId('kiosk-confirm-person')).getByRole('button', { name: 'Sí, soy Luis Pérez' }));
     await user.click(screen.getByRole('button', { name: /Cámara de verduras/ }));
     await user.click(screen.getByRole('button', { name: '3' }));

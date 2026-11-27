@@ -167,7 +167,7 @@ describe('M-1 suscripción de Stripe huérfana tras eliminar el local', () => {
     expect(stripe.subs.get('sub_live')!.status).toBe('canceled');
     // Marcada (y ya sin suscripción viva en la base de datos): la purga del mantenimiento no la salta.
     expect(await orgRow(org.id)).toMatchObject({ subscription_status: 'canceled' });
-    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12, billing: stripe })).organizations).toMatchObject({ purged: 1 });
     expect(await orgRow(org.id)).toBeUndefined();
   });
 
@@ -188,13 +188,13 @@ describe('M-1 suscripción de Stripe huérfana tras eliminar el local', () => {
     expect(errors.join()).toMatch(/aplazada/);
     expect(await orgRow(org.id)).toBeDefined();
     // Mientras siga viva, el mantenimiento no la purga (y deja el motivo).
-    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 0, skipped: 1 });
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12, billing: stripe })).organizations).toMatchObject({ purged: 0, skipped: 1 });
     expect(await orgRow(org.id)).toMatchObject({ purge_blocked_reason: 'suscripcion_viva' });
     stripe.failCancel = false;
     const r2 = await runRetention(ctx.deps, { force: true, log });
     expect(r2).toMatchObject({ organizations: 1, organizationsDeferred: 0 });
     expect(stripe.subs.get('sub_live')!.status).toBe('canceled');
-    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12 })).organizations).toMatchObject({ purged: 1 });
+    expect((await runMaintenance(ctx.deps.db, { auditMonths: 12, billing: stripe })).organizations).toMatchObject({ purged: 1 });
     expect(await orgRow(org.id)).toBeUndefined();
   });
 });

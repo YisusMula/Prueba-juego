@@ -35,6 +35,7 @@ export type AuditEvent =
   | 'staff.pin_changed'
   | 'staff.pin_failed'
   | 'staff.pin_locked'
+  | 'staff.pin_unlocked'
   | 'report.generated'
   | 'billing.checkout_started'
   | 'billing.subscription_updated'

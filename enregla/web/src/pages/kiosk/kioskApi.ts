@@ -28,4 +28,7 @@ export const kioskApi = {
   exit: (token: string, body: { email: string; password: string }) => api.post<{ ok: true; by: { name: string } }>('/api/kiosk/exit', body, auth(token)),
   /** Desvincular la tablet: revoca el dispositivo en el servidor. */
   unpair: (token: string, body: { email: string; password: string }) => api.post<{ ok: true; by: { name: string } }>('/api/kiosk/unpair', body, auth(token)),
+  /** R7: un responsable desbloquea en la tablet el PIN bloqueado de una persona (email y contraseña). */
+  unlockStaff: (token: string, staffId: string, body: { email: string; password: string }) =>
+    api.post<{ ok: true; by: { name: string }; staff: { id: string; name: string } }>(`/api/kiosk/staff/${staffId}/unlock`, body, auth(token)),
 };

@@ -203,7 +203,7 @@ describe('RGPD: exportación y borrado', () => {
     expect(await ctx.deps.db.selectFrom('organizations').selectAll().execute()).toHaveLength(0);
     const audit = await ctx.deps.db.selectFrom('audit_events').selectAll().where('event', '=', 'org.purged').execute();
     expect(audit).toHaveLength(1);
-    expect(audit[0]!.metadata).toMatchObject({ reason: 'eliminacion_inmediata_del_titular', records: 1 });
+    expect(audit[0]!.metadata).toMatchObject({ reason: 'eliminacion_inmediata_solicitada', records: 1 });
   });
 });
 

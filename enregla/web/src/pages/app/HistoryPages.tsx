@@ -217,7 +217,9 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
         },
         ...(r.data.categoryDiffersFromSupplier
           ? [{ label: 'Motivo del tipo', value: `El proveedor suele traer otro tipo de producto. Motivo: ${r.data.categoryReason ?? '—'}` }]
-          : []),
+          : r.data.categoryChangedFrom
+            ? [{ label: 'Motivo del tipo', value: `Antes era ${RECEPTION_CATEGORY_LABELS[r.data.categoryChangedFrom].toLowerCase()}. Motivo: ${r.data.categoryReason ?? '—'}` }]
+            : []),
         {
           label: 'Temperatura',
           value: (

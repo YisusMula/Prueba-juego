@@ -9,7 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { RecepcionForm, type FormContext } from '@/features/RecordForms';
-import { KioskPage, CONFIRM_MS, IDLE_MS, RESULT_MS } from '@/pages/kiosk/Kiosk';
+import { KioskPage, CONFIRM_ARM_MS, CONFIRM_MS, IDLE_MS, RESULT_MS } from '@/pages/kiosk/Kiosk';
 import { remeasureDue } from '@/hooks/useNow';
 import { storage } from '@/lib/storage';
 import { handle, toResponse } from '@/demo/server';
@@ -95,6 +95,16 @@ describe('N4: tablet, persona que firma', () => {
     const overlay = screen.getByTestId('kiosk-confirm-person');
     expect(overlay).toHaveAttribute('aria-modal', 'true');
     expect(within(overlay).getByRole('heading', { name: '¿Eres Luis Pérez?' })).toBeInTheDocument();
+    // R5: al aparecer, los toques no cuentan (botones inactivos); y la zona central (donde estaban los
+    // equipos) es neutra.
+    expect(within(overlay).getByRole('button', { name: 'Sí, soy Luis Pérez' })).toBeDisabled();
+    await user.click(within(overlay).getByRole('button', { name: 'Sí, soy Luis Pérez' }));
+    expect(screen.getByTestId('kiosk-confirm-person')).toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(CONFIRM_ARM_MS + 50);
+    });
+    await user.click(screen.getByTestId('kiosk-confirm-neutral'));
+    expect(screen.getByTestId('kiosk-confirm-person')).toBeInTheDocument();
     await user.click(within(overlay).getByRole('button', { name: 'Sí, soy Luis Pérez' }));
     expect(screen.queryByTestId('kiosk-confirm-person')).toBeNull();
     expect(screen.getByTestId('kiosk-signing-as')).toHaveTextContent('Registrando como Luis Pérez');
@@ -102,6 +112,9 @@ describe('N4: tablet, persona que firma', () => {
     // Otra pausa de 25 s: ahora es otra persona.
     await act(async () => {
       vi.advanceTimersByTime(25_000);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(CONFIRM_ARM_MS + 50);
     });
     await user.click(within(screen.getByTestId('kiosk-confirm-person')).getByRole('button', { name: 'No, soy otra persona' }));
     expect(screen.queryByTestId('kiosk-signing-as')).toBeNull();

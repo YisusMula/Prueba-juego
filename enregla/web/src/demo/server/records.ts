@@ -17,7 +17,7 @@ const isOutOfRange = (value: number, min: number | null, max: number | null) => 
 
 type Prepared = { data: Record<string, unknown>; alert: boolean; equipmentId: string | null; cleaningPlanId: string | null };
 
-function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, today: string): Prepared {
+function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, today: string, previous?: { data: Record<string, unknown> }): Prepared {
   switch (type) {
     case 'temperatura': {
       const d = parse(S.temperaturaData, raw, ['data']);
@@ -53,12 +53,21 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
     case 'recepcion': {
       const d = parse(S.recepcionData, raw, ['data']);
       let supplierName = d.supplierName;
+      let supplierId = d.supplierId ?? null;
       let supplier: { defaultCategory: S.ReceptionCategory | null; receptionLimit: number | null } | null = null;
-      if (d.supplierId) {
-        const s = db.suppliers.find((x) => x.id === d.supplierId && x.orgId === orgId);
+      if (supplierId) {
+        const s = db.suppliers.find((x) => x.id === supplierId && x.orgId === orgId);
         if (!s) throw notFound('Proveedor');
         supplierName = s.name;
         supplier = { defaultCategory: s.defaultCategory ?? null, receptionLimit: s.receptionLimit ?? null };
+      } else if (supplierName) {
+        // Como el servidor (R6): un nombre escrito a mano que coincide con un proveedor ES ese proveedor.
+        const s = db.suppliers.find((x) => x.orgId === orgId && x.name.trim().toLowerCase() === supplierName!.trim().toLowerCase());
+        if (s) {
+          supplierId = s.id;
+          supplierName = s.name;
+          supplier = { defaultCategory: s.defaultCategory ?? null, receptionLimit: s.receptionLimit ?? null };
+        }
       }
       // Como el servidor: límite de la categoría o el propio del proveedor; nunca el de la petición.
       const limits = S.receptionLimits(d, supplier);
@@ -67,18 +76,23 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
       const needsReason = expired || temperatureOutOfRange;
       // Como el servidor (N9): «ambiente» para un proveedor habitualmente refrigerado/congelado/caliente.
       const categoryDiffersFromSupplier = d.category === 'ambiente' && supplier?.defaultCategory != null && supplier.defaultCategory !== 'ambiente';
+      const prevCategory = (previous?.data.category as S.ReceptionCategory | null | undefined) ?? null;
+      const categoryChangedToAmbient = d.category === 'ambiente' && prevCategory != null && prevCategory !== 'ambiente';
       if (categoryDiffersFromSupplier && !d.categoryReason) {
         throw validationError(
           'data.categoryReason',
           `Este proveedor suele traer producto ${S.RECEPTION_CATEGORY_LABELS[supplier!.defaultCategory!].toLowerCase()}: explica por qué lo registras como ambiente`,
         );
       }
+      if (categoryChangedToAmbient && !d.categoryReason) {
+        throw validationError('data.categoryReason', `El registro original era producto ${S.RECEPTION_CATEGORY_LABELS[prevCategory].toLowerCase()}: explica por qué lo cambias a ambiente`);
+      }
       if (d.accepted && needsReason && !d.correctiveAction) {
         throw validationError('data.correctiveAction', expired ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas' : S.receptionLimitMessage(limits));
       }
       return {
         data: {
-          supplierId: d.supplierId ?? null,
+          supplierId,
           supplierName,
           product: d.product,
           lot: d.lot,
@@ -88,7 +102,8 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
           limitSource: limits.source,
           limitDiffersFromReference: limits.differsFromReference,
           categoryDiffersFromSupplier,
-          categoryReason: categoryDiffersFromSupplier ? d.categoryReason : null,
+          categoryChangedFrom: categoryChangedToAmbient ? prevCategory : null,
+          categoryReason: categoryDiffersFromSupplier || categoryChangedToAmbient ? d.categoryReason : null,
           maxTemperature: limits.max,
           minTemperature: limits.min,
           temperatureOutOfRange,
@@ -170,7 +185,7 @@ export function createRecord(
     type = original.type;
     if (db.records.some((r) => r.amendsRecordId === original!.id)) throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
   }
-  const prepared = prepare(db, org.id, type, rawData, localDate(new Date(now), org.timezone));
+  const prepared = prepare(db, org.id, type, rawData, localDate(new Date(now), org.timezone), original ? { data: original.data } : undefined);
   const staffId = actor.staffId === undefined ? (original?.staffId ?? null) : actor.staffId;
   let staffName: string | null = null;
   if (staffId && original && staffId === original.staffId) staffName = original.staffName;

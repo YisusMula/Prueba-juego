@@ -7,6 +7,7 @@
 import { createDb, createPool } from '../db/index.js';
 import { resolveDatabaseUrl } from '../config.js';
 import { runMaintenance } from '../modules/maintenance/run.js';
+import { StripeBillingProvider } from '../modules/billing/provider.js';
 
 const url = resolveDatabaseUrl({
   DATABASE_URL: process.env.DATABASE_URL,
@@ -21,6 +22,10 @@ if (!url) {
   process.exit(1);
 }
 const auditMonths = Number(process.env.AUDIT_RETENTION_MONTHS ?? 12);
+// R4 b: para purgar un local que ha tenido suscripción, el mantenimiento la comprueba EN STRIPE (solo
+// lectura de suscripciones; basta una clave restringida). Sin clave, esos locales no se purgan.
+const stripeKey = process.env.STRIPE_SECRET_KEY?.trim();
+const billing = stripeKey ? new StripeBillingProvider({ secretKey: stripeKey, webhookSecret: '', priceMonthly: '', priceAnnual: '' }) : null;
 const loopIdx = process.argv.indexOf('--loop');
 const every = loopIdx >= 0 ? Number(process.argv[loopIdx + 1] ?? 3600) : 0;
 const log = {
@@ -34,7 +39,7 @@ process.on('SIGTERM', () => (stop = true));
 process.on('SIGINT', () => (stop = true));
 do {
   try {
-    const r = await runMaintenance(db, { auditMonths, log });
+    const r = await runMaintenance(db, { auditMonths, log, billing });
     log.info({ ...r }, 'Mantenimiento hecho');
   } catch (err) {
     log.error({ err: (err as Error).message }, 'Error en el mantenimiento');

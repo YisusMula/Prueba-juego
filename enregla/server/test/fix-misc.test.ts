@@ -37,7 +37,9 @@ describe('H3 bloqueo de PIN con ráfagas concurrentes', () => {
     // Durante el bloqueo ni el PIN correcto entra (aquí además se agotó el límite general del dispositivo, 30).
     expect((await post(plagas(st.id, '4321'))).statusCode).toBe(429);
     const row = await ctx.deps.db.selectFrom('staff').selectAll().where('id', '=', st.id).executeTakeFirstOrThrow();
-    expect(row.pin_locked_until!.getTime()).toBeGreaterThan(Date.now() + 14 * 60_000);
+    // R7: primer bloqueo de 1 minuto (luego 5 y 15 si sigue fallando sin que nadie acierte).
+    expect(row.pin_locked_until!.getTime()).toBeGreaterThan(Date.now() + 50_000);
+    expect(row.pin_locked_until!.getTime()).toBeLessThan(Date.now() + 61_000);
   });
 
   it('un acierto antes del máximo reinicia el contador; tras caducar el bloqueo hay ventana nueva', async () => {

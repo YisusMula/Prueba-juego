@@ -18,6 +18,7 @@ if (!url) {
   process.exit(1);
 }
 const appRole = process.env.APP_DB_ROLE?.trim();
+const backupRole = process.env.BACKUP_DB_ROLE?.trim() || undefined;
 const pool = createPool(url, 1);
 // La base puede tardar en aceptar conexiones TCP en el primer arranque (scripts de inicio): reintentos.
 for (let i = 1; ; i++) {
@@ -37,8 +38,10 @@ try {
   console.log(applied.length === 0 ? 'La base de datos ya está al día.' : `${applied.length} migración(es) aplicada(s).`);
   // Separación de roles (1.8): el rol de ejecución de la app no puede modificar ni borrar registros.
   if (appRole) {
-    await applyAppRolePrivileges(pool, appRole);
+    await applyAppRolePrivileges(pool, appRole, { backupRole });
     console.log(`Permisos del rol de la app (${appRole}) aplicados: en records solo SELECT e INSERT.`);
+    if (backupRole) console.log(`Permisos del rol de copias (${backupRole}) aplicados: solo lectura, sin las tablas que no se copian.`);
+    console.log('Permisos de PUBLIC revisados: ninguna función ejecutable, sin tablas temporales.');
   }
 } catch (err) {
   console.error((err as Error).message);

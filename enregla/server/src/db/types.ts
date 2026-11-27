@@ -66,6 +66,10 @@ export interface OrganizationsTable {
   deletion_scheduled_at: TimestampNullable;
   /** Eliminación inmediata pedida por el titular (migración 0007); la purga la hace enregla_purge_organization. */
   purge_requested_at: Date | null;
+  /** Propietario que pidió la eliminación inmediata (0010: lo comprueba un trigger). */
+  purge_requested_by: string | null;
+  /** Por qué el mantenimiento no ha podido purgarlo (solo lo escribe el propietario). */
+  purge_blocked_reason: Generated<string | null>;
   deletion_requested_by: string | null;
   /** Sesión de Checkout abierta (se expira al pedir el borrado del local). */
   stripe_checkout_session_id: string | null;
@@ -105,6 +109,8 @@ export interface StaffTable {
   pin_hash: string | null;
   pin_failed_count: Generated<number>;
   pin_locked_until: TimestampNullable;
+  /** Bloqueo progresivo (0010): 0 sin bloqueos recientes; 1 → 1 min, 2 → 5 min, 3+ → 15 min. */
+  pin_lock_level: Generated<number>;
   active: Generated<boolean>;
   created_at: Timestamp;
   updated_at: Timestamp;

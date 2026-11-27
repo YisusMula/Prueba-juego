@@ -24,7 +24,7 @@ if (process.env.MIGRATE_ON_START !== 'false') {
 let refusal: string | null = null;
 try {
   const h = await recordsHardeningStatus(deps.pool);
-  refusal = refuseToStart(h, config.isProduction, process.env.ALLOW_PRIVILEGED_DB_ROLE === 'true');
+  refusal = refuseToStart(h, config.isProduction);
   if (!refusal && !h.hardened) {
     const msg = `El rol de base de datos de la app (${h.role}) ${h.problems.join(', ')}: los registros solo están protegidos por la aplicación. Separa los roles (docs/OPERACIONES.md).`;
     if (config.isProduction) app.log.warn(msg);

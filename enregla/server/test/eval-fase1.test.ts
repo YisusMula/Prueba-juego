@@ -60,12 +60,12 @@ describe('#1 secretos de la base de datos fuera del entorno de la app', () => {
       expect(() => loadConfig({ ...prodEnv, [k]: 'otra-clave-muy-larga-5678' })).toThrow(new RegExp(k));
     }
   });
-  it('en producción no arranca si su rol es superusuario o propietario (salvo ALLOW_PRIVILEGED_DB_ROLE)', () => {
+  it('en producción no arranca si su rol es superusuario o propietario (y ya no hay forma de saltárselo)', () => {
     const owner = { role: 'enregla', hardened: false, problems: ['es propietario de la tabla records'], privileged: true };
-    expect(refuseToStart(owner, true, false)).toMatch(/enregla_app/);
-    expect(refuseToStart(owner, true, true)).toBeNull();
-    expect(refuseToStart(owner, false, false)).toBeNull();
-    expect(refuseToStart({ ...owner, privileged: false, hardened: true, problems: [] }, true, false)).toBeNull();
+    expect(refuseToStart(owner, true)).toMatch(/enregla_app/);
+    expect(refuseToStart(owner, true)).not.toMatch(/ALLOW_PRIVILEGED_DB_ROLE/);
+    expect(refuseToStart(owner, false)).toBeNull();
+    expect(refuseToStart({ ...owner, privileged: false, hardened: true, problems: [] }, true)).toBeNull();
   });
 });
 

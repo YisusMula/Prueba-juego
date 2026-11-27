@@ -290,7 +290,7 @@ export function SuppliersSettingsPage() {
 export function StaffSettingsPage() {
   const { orgId, readOnly, tz } = useOrgContext();
   return (
-    <SettingsShell title="Personal y PIN" subtitle="Quienes firman los registros en la tablet de cocina. Tras 5 PIN fallidos se bloquea 15 minutos.">
+    <SettingsShell title="Personal y PIN" subtitle="Quienes firman los registros en la tablet de cocina. Tras 5 PIN fallidos se bloquea 1 minuto (5 y 15 si se repite); un responsable puede desbloquearlo aquí o en la propia tablet.">
       {readOnly ? <WriteGuard what="añadir ni cambiar personal">{null}</WriteGuard> : null}
       <StaffManager orgId={orgId} readOnly={readOnly} tz={tz} />
     </SettingsShell>

@@ -14,6 +14,9 @@ import { createRecord } from '../records/service.js';
 import { recordView } from '../views.js';
 import { idempotencyKey, withIdempotency } from '../records/idempotency.js';
 
+/** R7: duración de los bloqueos sucesivos de un PIN (el último, hasta config.pinLockMinutes). */
+export const PIN_LOCK_STEPS_SECONDS = [60, 300] as const;
+
 const TOKEN_RE = /^kd_[A-Za-z0-9_-]{43}$/;
 
 /**
@@ -99,17 +102,22 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     if (deviceOverLimit) await rateLimiter.release(deviceKey);
     const max = config.pinMaxFailures;
     const lockSecs = config.pinLockMinutes * 60;
+    // R7: bloqueo PROGRESIVO (1 min, luego 5, luego pinLockMinutes) mientras nadie acierte: quien
+    // teclee mal a propósito ya no deja a un compañero 15 min sin poder firmar a la primera.
+    const [s1, s2] = PIN_LOCK_STEPS_SECONDS;
+    const lockFor = sql<number>`(CASE WHEN pin_lock_level <= 0 THEN ${Math.min(s1!, lockSecs)}::int WHEN pin_lock_level = 1 THEN ${Math.min(s2!, lockSecs)}::int ELSE ${lockSecs}::int END)`;
     const expired = sql<boolean>`(pin_locked_until IS NOT NULL AND pin_locked_until <= now())`;
     const next = sql<number>`(CASE WHEN ${expired} THEN 1 ELSE pin_failed_count + 1 END)`;
     const reserved = await db
       .updateTable('staff')
       .set({
         pin_failed_count: next,
-        pin_locked_until: sql<Date | null>`CASE WHEN ${next} >= ${max} THEN now() + make_interval(secs => ${lockSecs}) WHEN ${expired} THEN NULL ELSE pin_locked_until END`,
+        pin_locked_until: sql<Date | null>`CASE WHEN ${next} >= ${max} THEN now() + make_interval(secs => ${lockFor}) WHEN ${expired} THEN NULL ELSE pin_locked_until END`,
+        pin_lock_level: sql<number>`CASE WHEN ${next} >= ${max} THEN pin_lock_level + 1 ELSE pin_lock_level END`,
       })
       .where('id', '=', staffId)
       .where(sql<boolean>`(pin_locked_until IS NULL OR pin_locked_until <= now())`)
-      .returning(['pin_failed_count'])
+      .returning(['pin_failed_count', 'pin_locked_until'])
       .executeTakeFirst();
     if (!reserved) {
       if (!deviceOverLimit) await rateLimiter.release(deviceKey);
@@ -118,15 +126,16 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     }
     const ok = /^\d{4,6}$/.test(pin) && (await verifySecret(pinHash, pin));
     if (ok) {
-      await db.updateTable('staff').set({ pin_failed_count: 0, pin_locked_until: null }).where('id', '=', staffId).execute();
+      await db.updateTable('staff').set({ pin_failed_count: 0, pin_locked_until: null, pin_lock_level: 0 }).where('id', '=', staffId).execute();
       if (!deviceOverLimit) await rateLimiter.release(deviceKey);
       return;
     }
     await audit(db, { event: 'staff.pin_failed', organizationId: ctx.org.id, ip, metadata: { staffId, deviceId: ctx.deviceId } });
     if (deviceOverLimit && reserved.pin_failed_count < max) throw rateLimited(dev.retryAfterSeconds, 'Demasiados PIN incorrectos en este dispositivo. Espera unos minutos.');
     if (reserved.pin_failed_count >= max) {
-      await audit(db, { event: 'staff.pin_locked', organizationId: ctx.org.id, ip, metadata: { staffId, deviceId: ctx.deviceId } });
-      throw lockedError(lockSecs);
+      const secs = reserved.pin_locked_until ? Math.max(1, Math.ceil((reserved.pin_locked_until.getTime() - Date.now()) / 1000)) : lockSecs;
+      await audit(db, { event: 'staff.pin_locked', organizationId: ctx.org.id, ip, metadata: { staffId, deviceId: ctx.deviceId, lockSeconds: secs } });
+      throw lockedError(secs);
     }
     throw new AppError(401, 'INVALID_PIN', 'PIN incorrecto');
   }
@@ -308,6 +317,26 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     const { ctx, user } = await managerAuth(req);
     await audit(db, { event: 'device.kiosk_exit', organizationId: ctx.org.id, userId: user.id, ip: req.ip, metadata: { deviceId: ctx.deviceId, deviceName: ctx.deviceName } });
     return { ok: true, by: { name: user.name } };
+  });
+
+  /**
+   * R7: un encargado desbloquea en la propia tablet el PIN de una persona bloqueada, con su email y
+   * contraseña (mismos límites que salir del modo cocina). Queda en la auditoría.
+   */
+  app.post('/staff/:staffId/unlock', async (req) => {
+    const staffId = (req.params as { staffId?: string }).staffId ?? '';
+    if (!S.uuid.safeParse(staffId).success) throw notFound('Persona');
+    const { ctx, user } = await managerAuth(req);
+    const st = await db
+      .updateTable('staff')
+      .set({ pin_failed_count: 0, pin_locked_until: null, pin_lock_level: 0, updated_at: sql<Date>`now()` })
+      .where('id', '=', staffId)
+      .where('organization_id', '=', ctx.org.id)
+      .returning(['id', 'name'])
+      .executeTakeFirst();
+    if (!st) throw notFound('Persona');
+    await audit(db, { event: 'staff.pin_unlocked', organizationId: ctx.org.id, userId: user.id, ip: req.ip, metadata: { staffId, deviceId: ctx.deviceId, fromKiosk: true } });
+    return { ok: true, by: { name: user.name }, staff: { id: st.id, name: st.name } };
   });
 
   app.post('/unpair', async (req) => {

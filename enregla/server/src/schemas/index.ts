@@ -679,6 +679,8 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   'staff.pin_changed': 'PIN del personal cambiado',
   'staff.pin_failed': 'PIN incorrecto en la cocina',
   'staff.pin_locked': 'PIN bloqueado por intentos fallidos',
+  'staff.pin_unlocked': 'PIN desbloqueado por un responsable',
+  'db.org_billing_changed': 'Cambio en la facturación del local (registrado por la base de datos)',
   'report.generated': 'Informe descargado',
   'public_menu.updated': 'Carta pública cambiada',
   'billing.checkout_started': 'Inicio de contratación',

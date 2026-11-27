@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import type { DB } from '../../db/index.js';
 import { json } from '../../db/index.js';
@@ -41,7 +42,7 @@ interface Prepared {
   cleaningPlanId: string | null;
 }
 
-async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, today: string): Promise<Prepared> {
+async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, today: string, previous?: { data: unknown }): Promise<Prepared> {
   switch (type) {
     case 'temperatura': {
       const d = parseData(S.temperaturaData, raw);
@@ -93,12 +94,28 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
     case 'recepcion': {
       const d = parseData(S.recepcionData, raw);
       let supplierName = d.supplierName;
+      let supplierId = d.supplierId ?? null;
       let supplier: { defaultCategory: S.ReceptionCategory | null; receptionLimit: number | null } | null = null;
-      if (d.supplierId) {
-        const s = await db.selectFrom('suppliers').select(['name', 'default_category', 'reception_limit']).where('id', '=', d.supplierId).where('organization_id', '=', orgId).executeTakeFirst();
+      if (supplierId) {
+        const s = await db.selectFrom('suppliers').select(['name', 'default_category', 'reception_limit']).where('id', '=', supplierId).where('organization_id', '=', orgId).executeTakeFirst();
         if (!s) throw notFound('Proveedor');
         supplierName = s.name;
         supplier = { defaultCategory: s.default_category as S.ReceptionCategory | null, receptionLimit: s.reception_limit };
+      } else if (supplierName) {
+        // R6: un proveedor escrito a mano con el nombre de uno dado de alta ES ese proveedor (sus límites
+        // y su categoría habitual cuentan igual).
+        const s = await db
+          .selectFrom('suppliers')
+          .select(['id', 'name', 'default_category', 'reception_limit'])
+          .where('organization_id', '=', orgId)
+          .where(sql<boolean>`lower(btrim(name)) = lower(btrim(${supplierName}))`)
+          .orderBy('created_at')
+          .executeTakeFirst();
+        if (s) {
+          supplierId = s.id;
+          supplierName = s.name;
+          supplier = { defaultCategory: s.default_category as S.ReceptionCategory | null, receptionLimit: s.reception_limit };
+        }
       }
       // Límite de la categoría (o el propio del proveedor); no se edita al recibir. Sin categoría en
       // una petición antigua con temperatura se aplica refrigerado (≤ 4 °C) (S.receptionLimits).
@@ -111,10 +128,19 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
       // N9: «ambiente» para un proveedor habitualmente refrigerado/congelado/caliente exige motivo.
       const categoryDiffersFromSupplier =
         d.category === 'ambiente' && supplier?.defaultCategory != null && supplier.defaultCategory !== 'ambiente';
+      // R6: una corrección que pasa de refrigerado/congelado/caliente a ambiente también exige motivo.
+      const prevCategory = (previous?.data as { category?: S.ReceptionCategory | null } | undefined)?.category ?? null;
+      const categoryChangedToAmbient = d.category === 'ambiente' && prevCategory != null && prevCategory !== 'ambiente';
       if (categoryDiffersFromSupplier && !d.categoryReason) {
         throw validationError(
           'data.categoryReason',
           `Este proveedor suele traer producto ${S.RECEPTION_CATEGORY_LABELS[supplier!.defaultCategory!].toLowerCase()}: explica por qué lo registras como ambiente`,
+        );
+      }
+      if (categoryChangedToAmbient && !d.categoryReason) {
+        throw validationError(
+          'data.categoryReason',
+          `El registro original era producto ${S.RECEPTION_CATEGORY_LABELS[prevCategory].toLowerCase()}: explica por qué lo cambias a ambiente`,
         );
       }
       if (d.accepted && needsReason && !d.correctiveAction) {
@@ -125,7 +151,7 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
       }
       return {
         data: {
-          supplierId: d.supplierId ?? null,
+          supplierId,
           supplierName,
           product: d.product,
           lot: d.lot,
@@ -135,7 +161,8 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
           limitSource: limits.source,
           limitDiffersFromReference: limits.differsFromReference,
           categoryDiffersFromSupplier,
-          categoryReason: categoryDiffersFromSupplier ? d.categoryReason : null,
+          categoryChangedFrom: categoryChangedToAmbient ? prevCategory : null,
+          categoryReason: categoryDiffersFromSupplier || categoryChangedToAmbient ? d.categoryReason : null,
           maxTemperature: limits.max,
           minTemperature: limits.min,
           temperatureOutOfRange,
@@ -243,7 +270,7 @@ export async function createRecord(
     const already = await db.selectFrom('records').select('id').where('amends_record_id', '=', original.id).executeTakeFirst();
     if (already) throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
   }
-  const prepared = await prepare(db, org.id, type, rawData, localDate(opts.now ?? new Date(), org.timezone));
+  const prepared = await prepare(db, org.id, type, rawData, localDate(opts.now ?? new Date(), org.timezone), original ? { data: original.data } : undefined);
   // En una corrección, por defecto se conserva el firmante del original (aunque ya esté desactivado).
   const staffId = actor.staffId === undefined ? (original?.staff_id ?? null) : actor.staffId;
   let staffName: string | null = null;

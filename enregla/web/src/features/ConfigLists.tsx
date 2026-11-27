@@ -5,7 +5,7 @@ import { api, errorMessage } from '@/api/client';
 import { keys, useCleaningPlans, useEquipment, useStaff, useSuppliers } from '@/api/queries';
 import type { CleaningPlan, Equipment, Staff, Supplier } from '@/api/types';
 import { Button } from '@/components/ui/Button';
-import { Badge, EmptyState, ErrorState, LoadingBlock } from '@/components/ui/Feedback';
+import { Badge, Callout, EmptyState, ErrorState, LoadingBlock } from '@/components/ui/Feedback';
 import { ConfirmDialog, useToast } from '@/components/ui/Overlay';
 import { Icon, type IconName } from '@/components/icons/Icon';
 import { CleaningPlanDialog, EquipmentDialog, StaffDialog, SupplierDialog } from './ConfigForms';
@@ -195,6 +195,14 @@ export function StaffManager({ orgId, readOnly, tz }: ManagerProps & { tz?: stri
         </EmptyState>
       ) : (
         <>
+          {q.data.some((x) => x.active && !x.hasPin) ? (
+            <Callout tone="warn" className="mb-4" title="Recomendado: que todo el personal tenga PIN">
+              {(() => {
+                const names = q.data.filter((x) => x.active && !x.hasPin).map((x) => x.name);
+                return `${names.join(', ')} ${names.length === 1 ? 'no tiene' : 'no tienen'} PIN. Sin PIN, cualquiera puede firmar en la tablet con su nombre (por ejemplo, si a otra persona se le bloquea el suyo). Ponles uno en «Editar».`;
+              })()}
+            </Callout>
+          ) : null}
           <ul className="space-y-3">
             {q.data.map((s) => (
               <Row
