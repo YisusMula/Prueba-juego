@@ -59,6 +59,8 @@ Nada de lo siguiente lo puede decidir el equipo técnico.
 
 ## Fase 1 — Integridad de registros y seguridad alimentaria (3–4 días técnicos)
 
+> **Estado: cerrada el 27 de noviembre de 2026** tras cuatro rondas de corrección y cuatro evaluaciones independientes; la última, sin hallazgos críticos ni altos. Quedan cuatro hallazgos bajos para la fase 2: actualización del servicio de mantenimiento (corregido en la documentación), eventos reservados que distinguen mayúsculas, variantes del nombre del proveedor en la recepción, y la auditoría de altas y cambios de rol hechos directamente en la base de datos. Informes en `/tmp` no conservados; resumen en el historial de commits.
+
 Son los fallos que dañarían la confianza de un inspector o pondrían en riesgo a un comensal. Van primero.
 
 | # | Problema | Evidencia | Corrección | Esfuerzo |
