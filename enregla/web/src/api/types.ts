@@ -64,6 +64,8 @@ export type Organization = {
   subscription: Subscription;
   /** Si no es null, el local está pendiente de eliminación definitiva en esa fecha (solo lectura). */
   deletionScheduledAt: string | null;
+  /** El titular confirmó la eliminación inmediata: el mantenimiento la ejecuta en la próxima hora. */
+  purgeRequestedAt: string | null;
   createdAt: string;
 };
 
@@ -148,6 +150,9 @@ export type RecepcionStored = {
   /** Tipo de producto (registros nuevos); `categoryAssumed`: aplicado por defecto a una petición sin categoría. */
   category?: ReceptionCategory | null;
   categoryAssumed?: boolean;
+  /** «Ambiente» para un proveedor habitualmente refrigerado/congelado/caliente: con su motivo. */
+  categoryDiffersFromSupplier?: boolean;
+  categoryReason?: string | null;
   limitSource?: 'referencia' | 'proveedor' | 'peticion' | 'presupuesta' | null;
   limitDiffersFromReference?: boolean;
   maxTemperature?: number | null;

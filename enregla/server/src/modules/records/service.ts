@@ -106,8 +106,17 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
       const temperatureOutOfRange = S.receptionOutOfLimits(d, limits);
       // Caducidad anterior a hoy (fecha local del local).
       const expired = d.expiryDate != null && d.expiryDate < today;
-      // Fuera de límite (también con la categoría presupuesta) o caducada: alerta y motivo obligatorio.
+      // Fuera de límite o caducada: alerta y motivo obligatorio.
       const needsReason = expired || temperatureOutOfRange;
+      // N9: «ambiente» para un proveedor habitualmente refrigerado/congelado/caliente exige motivo.
+      const categoryDiffersFromSupplier =
+        d.category === 'ambiente' && supplier?.defaultCategory != null && supplier.defaultCategory !== 'ambiente';
+      if (categoryDiffersFromSupplier && !d.categoryReason) {
+        throw validationError(
+          'data.categoryReason',
+          `Este proveedor suele traer producto ${S.RECEPTION_CATEGORY_LABELS[supplier!.defaultCategory!].toLowerCase()}: explica por qué lo registras como ambiente`,
+        );
+      }
       if (d.accepted && needsReason && !d.correctiveAction) {
         throw validationError(
           'data.correctiveAction',
@@ -125,6 +134,8 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
           categoryAssumed: limits.assumed,
           limitSource: limits.source,
           limitDiffersFromReference: limits.differsFromReference,
+          categoryDiffersFromSupplier,
+          categoryReason: categoryDiffersFromSupplier ? d.categoryReason : null,
           maxTemperature: limits.max,
           minTemperature: limits.min,
           temperatureOutOfRange,

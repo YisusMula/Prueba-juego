@@ -92,10 +92,11 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
   async function verifyPinWithReservation(ctx: { org: { id: string }; deviceId: string }, staffId: string, pinHash: string, pin: string, ip: string): Promise<void> {
     const deviceKey = `pin-fail:device:${ctx.deviceId}`;
     const dev = await rateLimiter.hit(deviceKey, config.rateLimits.pinFailDevice);
-    if (!dev.allowed) {
-      await rateLimiter.release(deviceKey);
-      throw rateLimited(dev.retryAfterSeconds, 'Demasiados PIN incorrectos en este dispositivo. Espera unos minutos.');
-    }
+    // N5: superado el tope de fallos de la tablet, un PIN correcto sigue entrando (no se penaliza a
+    // quien acierta); uno erróneo responde 429 y cuenta igualmente para el bloqueo de esa persona
+    // (5 fallos), que es el límite real contra quien prueba PIN.
+    const deviceOverLimit = !dev.allowed;
+    if (deviceOverLimit) await rateLimiter.release(deviceKey);
     const max = config.pinMaxFailures;
     const lockSecs = config.pinLockMinutes * 60;
     const expired = sql<boolean>`(pin_locked_until IS NOT NULL AND pin_locked_until <= now())`;
@@ -111,17 +112,18 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       .returning(['pin_failed_count'])
       .executeTakeFirst();
     if (!reserved) {
-      await rateLimiter.release(deviceKey);
+      if (!deviceOverLimit) await rateLimiter.release(deviceKey);
       const st = await db.selectFrom('staff').select('pin_locked_until').where('id', '=', staffId).executeTakeFirst();
       throw lockedError(st?.pin_locked_until ? Math.ceil((st.pin_locked_until.getTime() - Date.now()) / 1000) : lockSecs);
     }
     const ok = /^\d{4,6}$/.test(pin) && (await verifySecret(pinHash, pin));
     if (ok) {
       await db.updateTable('staff').set({ pin_failed_count: 0, pin_locked_until: null }).where('id', '=', staffId).execute();
-      await rateLimiter.release(deviceKey);
+      if (!deviceOverLimit) await rateLimiter.release(deviceKey);
       return;
     }
     await audit(db, { event: 'staff.pin_failed', organizationId: ctx.org.id, ip, metadata: { staffId, deviceId: ctx.deviceId } });
+    if (deviceOverLimit && reserved.pin_failed_count < max) throw rateLimited(dev.retryAfterSeconds, 'Demasiados PIN incorrectos en este dispositivo. Espera unos minutos.');
     if (reserved.pin_failed_count >= max) {
       await audit(db, { event: 'staff.pin_locked', organizationId: ctx.org.id, ip, metadata: { staffId, deviceId: ctx.deviceId } });
       throw lockedError(lockSecs);
@@ -147,7 +149,6 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
     if (!staff.active) throw new AppError(400, 'VALIDATION_ERROR', 'Ese miembro del personal está desactivado', [{ path: 'staffId', message: 'Ese miembro del personal está desactivado' }]);
     if (staff.pin_hash) {
       if (!body.pin) throw new AppError(401, 'PIN_REQUIRED', 'Introduce tu PIN');
-      await enforce(rateLimiter, `pin:device:${ctx.deviceId}`, config.rateLimits.pinDevice);
       await verifyPinWithReservation(ctx, staff.id, staff.pin_hash, body.pin, req.ip);
     }
     return { staff: { id: staff.id, name: staff.name, hasPin: staff.pin_hash != null } };
@@ -169,7 +170,6 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
 
     if (staff.pin_hash) {
       if (!body.pin) throw new AppError(401, 'PIN_REQUIRED', 'Introduce tu PIN');
-      await enforce(rateLimiter, `pin:device:${ctx.deviceId}`, config.rateLimits.pinDevice);
       await verifyPinWithReservation(ctx, staff.id, staff.pin_hash, body.pin, req.ip);
     }
 
@@ -197,7 +197,6 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
         const msg = path === 'staffId' ? 'Introduce tu PIN' : `Introduce el PIN de ${st.name}`;
         throw new AppError(401, 'PIN_REQUIRED', msg, [{ path: pinPath, message: msg }]);
       }
-      await enforce(rateLimiter, `pin:device:${ctx.deviceId}`, config.rateLimits.pinDevice);
       try {
         await verifyPinWithReservation(ctx, st.id, st.pin_hash, pin, ip);
       } catch (err) {

@@ -47,6 +47,7 @@ export function orgView(o: DOrg, role: Role): Organization {
     publicMenu: { enabled: o.publicMenuEnabled, slug: o.publicMenuSlug },
     subscription: subscriptionView(o),
     deletionScheduledAt: o.deletionScheduledAt ? iso(o.deletionScheduledAt) : null,
+    purgeRequestedAt: o.purgeRequestedAt ? iso(o.purgeRequestedAt) : null,
     createdAt: iso(o.createdAt),
   };
 }

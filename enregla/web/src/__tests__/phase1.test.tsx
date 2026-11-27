@@ -298,10 +298,12 @@ describe('modo cocina', () => {
     expect(await screen.findByRole('heading', { name: '¿Qué equipo?' })).toBeInTheDocument();
     expect(screen.getByTestId('kiosk-signing-as')).toHaveTextContent('Registrando como Luis Pérez');
     expect(screen.getByRole('button', { name: 'Cambiar de persona' })).toBeInTheDocument();
-    // Segundo equipo con 30 s de por medio (ir a la cámara): sigue siendo Luis, sin pedir nada.
+    // Segundo equipo con 30 s de por medio (ir a la cámara): N4, a los 20 s pregunta «¿Eres Luis?» y
+    // basta un toque en «Sí, soy Luis Pérez» para seguir.
     await act(async () => {
       vi.advanceTimersByTime(30_000);
     });
+    await user.click(within(screen.getByTestId('kiosk-confirm-person')).getByRole('button', { name: 'Sí, soy Luis Pérez' }));
     await user.click(screen.getByRole('button', { name: /Cámara de verduras/ }));
     await user.click(screen.getByRole('button', { name: '3' }));
     await user.click(screen.getByRole('button', { name: 'Guardar' }));

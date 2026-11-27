@@ -380,12 +380,7 @@ export function receptionLimits(
     }
     return { category: d.category, min: def.min, max: def.max, assumed: false, source: 'referencia', differsFromReference: false };
   }
-  if (d.maxTemperature != null || d.minTemperature != null) {
-    const chilled = REFERENCE_TEMPS.chilledMax;
-    const max = d.maxTemperature == null ? chilled : Math.min(d.maxTemperature, chilled);
-    return { category: null, min: d.minTemperature ?? null, max, assumed: false, source: 'peticion', differsFromReference: false };
-  }
-  if (d.temperature != null) return { category: 'refrigerado', ...RECEPTION_CATEGORY_LIMITS.refrigerado, assumed: true, source: 'presupuesta', differsFromReference: false };
+  // La categoría es obligatoria en la API (no hay clientes antiguos): sin ella no hay límite.
   return { category: null, min: null, max: null, assumed: false, source: null, differsFromReference: false };
 }
 
@@ -406,13 +401,19 @@ export const recepcionData = z
     temperature: temperature(RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX, RECEPTION_TEMP_MESSAGE).optional().nullable(),
     /**
      * Tipo de producto (NUEVO): fija el límite por defecto (refrigerado ≤ 4 °C, congelado ≤ −18 °C,
-     * ambiente sin límite, caliente ≥ 63 °C). La interfaz lo pide siempre; en la API es opcional
-     * por compatibilidad (ver `receptionLimits`).
+     * ambiente sin límite, caliente ≥ 63 °C). OBLIGATORIO en la API (no hay clientes antiguos que
+     * mantener): sin él no se puede saber qué límite aplicar.
      */
-    category: receptionCategory.optional().nullable(),
+    category: receptionCategory,
     /**
-     * Compatibilidad con clientes antiguos (atajos 4 °C / −18 °C sin categoría). Con `category` se
-     * ignoran: el límite es el de referencia o el propio del proveedor (no se edita al recibir).
+     * Motivo obligatorio si el proveedor tiene como habitual refrigerado, congelado o caliente y se
+     * registra como «ambiente» (lo comprueba el servidor; el PDF lo señala).
+     */
+    categoryReason: optionalText(300),
+    /**
+     * Obsoleto: se acepta pero se IGNORA (el límite es siempre el de referencia de la categoría o el
+     * propio del proveedor; no se edita al recibir). Así desaparece la falsa alarma del antiguo atajo
+     * «≤ 4 °C» aplicado a comida caliente.
      */
     maxTemperature: temperature(RECEPTION_TEMP_MIN, RECEPTION_TEMP_MAX, RECEPTION_TEMP_MESSAGE).optional().nullable(),
     /** Compatibilidad (ver `maxTemperature`). */
@@ -660,6 +661,11 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   'org.deletion_scheduled': 'Eliminación del local programada',
   'org.restored': 'Local restaurado (eliminación cancelada)',
   'org.deleted': 'Local eliminado definitivamente',
+  'org.purge_requested': 'Eliminación inmediata pedida (se ejecuta en la próxima hora)',
+  'org.purged': 'Local eliminado definitivamente (mantenimiento)',
+  'db.org_deletion_changed': 'Cambio en la eliminación del local (registrado por la base de datos)',
+  'db.membership_deleted': 'Acceso retirado (registrado por la base de datos)',
+  'maintenance.purge_blocked': 'Purga de locales bloqueada por la salvaguarda',
   'member.invited': 'Invitación enviada',
   'member.invitation_revoked': 'Invitación anulada',
   'member.joined': 'Se unió al local',

@@ -294,17 +294,28 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       }
       throw new AppError(502, 'BILLING_ERROR', 'No se ha podido cancelar la suscripción en Stripe, así que el local NO se ha eliminado. Inténtalo de nuevo en unos minutos.');
     }
-    // Se registra la petición del titular y la purga la hace la función del propietario (0007), que
-    // solo borra locales pendientes de eliminación. El rol de la app no tiene DELETE sobre organizations.
-    await db.updateTable('organizations').set({ purge_requested_at: sql<Date>`now()` }).where('id', '=', ctx.org.id).where('deletion_scheduled_at', 'is not', null).execute();
-    const del = await sql<{ ok: boolean }>`SELECT enregla_purge_organization(${ctx.org.id}::uuid) AS ok`.execute(db);
-    if (!del.rows[0]?.ok) {
-      const still = await db.selectFrom('organizations').select('id').where('id', '=', ctx.org.id).executeTakeFirst();
-      if (still) throw conflict('Este local ya no está pendiente de eliminación.');
-      throw notFound('Local');
-    }
-    await audit(db, { event: 'org.deleted', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { name: ctx.org.name, reason: 'permanent_request' } });
-    return reply.status(204).send();
+    // Se REGISTRA la petición del titular (la base de datos lo audita) y el local queda bloqueado;
+    // lo purga el mantenimiento (rol propietario, 0009) en su siguiente pasada, como mucho en una hora.
+    // El rol de la app no puede borrar locales ni ejecutar la purga.
+    const marked = await db
+      .updateTable('organizations')
+      // Stripe ya no cobra nada (lo acaba de comprobar stopOrgBilling): sin esto la purga lo saltaría
+      // por «suscripción viva» y no se cumpliría «en la próxima hora».
+      .set({
+        purge_requested_at: sql<Date>`now()`,
+        updated_at: sql<Date>`now()`,
+        ...(ctx.org.stripe_subscription_id ? { subscription_status: 'canceled' as const, cancel_at_period_end: false } : {}),
+      })
+      .where('id', '=', ctx.org.id)
+      .where('deletion_scheduled_at', 'is not', null)
+      .returning(['purge_requested_at'])
+      .executeTakeFirst();
+    if (!marked) throw conflict('Este local ya no está pendiente de eliminación.');
+    await audit(db, { event: 'org.purge_requested', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { name: ctx.org.name } });
+    return reply.status(202).send({
+      purgeRequestedAt: marked.purge_requested_at!.toISOString(),
+      message: 'Eliminación confirmada: el local y todos sus registros se borrarán definitivamente en la próxima hora.',
+    });
   });
 
   app.patch('/membership', async (req) => {

@@ -76,7 +76,7 @@ export function pdfIntegrityNote(graceDays = 30): string {
     'La aplicación no permite modificar ni borrar registros: cada corrección se guarda como un registro nuevo, ' +
     'a continuación del original, con su autor, fecha y motivo. ' +
     `Si el establecimiento elimina el local en la aplicación, sus registros se conservan ${graceDays} días (durante los que puede restaurarlo) y después se borran definitivamente; ` +
-    'su titular también puede eliminarlo de forma inmediata desde la aplicación tras marcarlo para eliminación. ' +
+    'su titular también puede pedir su eliminación inmediata tras marcarlo para eliminación, y entonces se eliminará en la próxima hora. ' +
     'Las filas destacadas en rojo indican valores fuera de los límites configurados por el local.'
   );
 }

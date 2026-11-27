@@ -213,6 +213,10 @@ export function resolveDatabaseUrl(e: { DATABASE_URL?: string; PGHOST?: string; 
   if (!e.PGHOST) return null;
   const enc = encodeURIComponent;
   const auth = e.PGUSER ? `${enc(e.PGUSER)}${e.PGPASSWORD ? `:${enc(e.PGPASSWORD)}` : ''}@` : '';
+  // Socket Unix (PGHOST es un directorio): el directorio va en el parámetro host de la URL.
+  if (e.PGHOST.startsWith('/')) {
+    return `postgres://${auth}localhost:${e.PGPORT ?? 5432}/${enc(e.PGDATABASE ?? e.PGUSER ?? 'postgres')}?host=${enc(e.PGHOST)}`;
+  }
   return `postgres://${auth}${e.PGHOST.includes(':') ? `[${e.PGHOST}]` : e.PGHOST}:${e.PGPORT ?? 5432}/${enc(e.PGDATABASE ?? e.PGUSER ?? 'postgres')}`;
 }
 

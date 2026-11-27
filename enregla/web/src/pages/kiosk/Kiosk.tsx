@@ -24,6 +24,7 @@ import { IdempotencyKeys } from '@/lib/idempotency';
 import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, recordSummary, signer } from '@/features/recordMeta';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useOnline } from '@/hooks/useOnline';
+import { remeasureDue, useNow } from '@/hooks/useNow';
 import { formatCompliance, formatRange, formatTemp, formatTime, isOutOfRange, plural, quedan } from '@/lib/format';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
@@ -49,6 +50,12 @@ type Pending = { type: RecordType; data: unknown };
 
 /** Inactividad: se olvida a la persona (y su PIN) y se vuelve al inicio. */
 export const IDLE_MS = 60_000;
+/**
+ * N4: tras CONFIRM_MS sin tocar la pantalla con una persona elegida, la tablet pasa a pantalla completa
+ * «¿Eres Ana?» (Sí, soy Ana / No, soy otra persona): el siguiente toque cae siempre en esa pregunta, así
+ * nadie firma como Ana sin darse cuenta. A los IDLE_MS se olvida a la persona como siempre.
+ */
+export const CONFIRM_MS = 20_000;
 /**
  * Tras guardar se muestra «Guardado por Ana» este tiempo (más si hay alerta) y se vuelve solo a la lista
  * de equipos (temperaturas) o al inicio, con la persona elegida y la franja «Registrando como Ana»
@@ -188,6 +195,9 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
   const [notice, setNotice] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
   const idleTimer = useRef<number | undefined>(undefined);
+  const confirmTimer = useRef<number | undefined>(undefined);
+  const personRef = useRef<Person | null>(null);
+  const [confirmWho, setConfirmWho] = useState(false);
   // Clave de idempotencia por registro: se reutiliza en los reintentos (también los automáticos al volver la conexión).
   const [keys] = useState(() => new IdempotencyKeys());
   /** Último envío que falló por red o tiempo agotado: se reintenta solo al volver `online`. */
@@ -206,17 +216,27 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
   // Inactividad: se olvida a la persona (y su PIN) y se vuelve al inicio.
   const touch = useCallback(() => {
     window.clearTimeout(idleTimer.current);
+    window.clearTimeout(confirmTimer.current);
+    confirmTimer.current = window.setTimeout(() => {
+      if (personRef.current) setConfirmWho(true);
+    }, CONFIRM_MS);
     idleTimer.current = window.setTimeout(() => {
+      setConfirmWho(false);
       setPerson(null);
       setScreen({ name: 'home' });
     }, IDLE_MS);
   }, []);
+  useEffect(() => {
+    personRef.current = person;
+    if (!person) setConfirmWho(false);
+  }, [person]);
   useEffect(() => {
     touch();
     window.addEventListener('pointerdown', touch);
     window.addEventListener('keydown', touch);
     return () => {
       window.clearTimeout(idleTimer.current);
+      window.clearTimeout(confirmTimer.current);
       window.removeEventListener('pointerdown', touch);
       window.removeEventListener('keydown', touch);
     };
@@ -245,6 +265,20 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
   const forgetPerson = () => {
     setPerson(null);
     setScreen({ name: 'who', then: null });
+  };
+  /** «He terminado»: se olvida a la persona y se vuelve al inicio. */
+  const finish = () => {
+    setPerson(null);
+    setScreen({ name: 'home' });
+  };
+  /** «No, soy otra persona» tras la pausa: se pregunta quién es y se sigue con lo que había en pantalla. */
+  const someoneElse = () => {
+    setConfirmWho(false);
+    setPerson(null);
+    setScreen((sc) => ({
+      name: 'who',
+      then: sc.name === 'temp' ? { kind: 'temp', equipmentId: sc.equipmentId } : sc.name === 'form' ? { kind: 'form', type: sc.type, preset: sc.preset } : sc.name === 'pick-equipment' ? { kind: 'temp', equipmentId: '' } : null,
+    }));
   };
 
   const submit = async (pending: Pending, who: Person | null = person) => {
@@ -401,9 +435,35 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
             <button type="button" onClick={forgetPerson} className="min-h-12 rounded-xl px-2 text-lg font-bold underline underline-offset-4">
               Cambiar de persona
             </button>
+            <Button size="lg" icon="check" className="ml-auto min-h-14 px-6 text-xl" onClick={finish} data-testid="kiosk-finish">
+              He terminado
+            </Button>
           </div>
         ) : null}
       </header>
+      {confirmWho && person ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="kconfirm"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-paper px-6 text-center"
+          data-testid="kiosk-confirm-person"
+        >
+          <Icon name="user" size={64} className="text-brand" />
+          <h1 id="kconfirm" className="text-4xl font-extrabold [overflow-wrap:anywhere] sm:text-5xl">
+            ¿Eres {person.name}?
+          </h1>
+          <p className="max-w-xl text-xl text-ink-muted">Hace un rato que nadie toca la tablet. Confirma quién está registrando.</p>
+          <div className="grid w-full max-w-xl gap-4">
+            <Button size="xl" block icon="check" autoFocus onClick={() => setConfirmWho(false)}>
+              Sí, soy {person.name}
+            </Button>
+            <Button size="xl" block variant="secondary" icon="users" onClick={someoneElse}>
+              No, soy otra persona
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {!online ? (
         <div role="status" className="bg-ink px-4 py-3 text-center text-lg font-semibold text-paper">
@@ -614,6 +674,7 @@ function KioskHome({
   const doneClean = today.cleaning.filter((c) => c.status === 'done' && c.countsToday !== false);
   const { summary } = today;
   const remeasure = today.temperatures.filter((t) => t.remeasure).length;
+  const nowMs = useNow();
   const [allAlerts, setAllAlerts] = useState(false);
   const shownAlerts = allAlerts ? today.alerts : today.alerts.slice(0, 4);
   return (
@@ -669,7 +730,8 @@ function KioskHome({
                   disabled={readOnly}
                   onClick={() => onStart({ kind: 'temp', equipmentId: t.equipmentId })}
                   type="temperatura"
-                  title={t.remeasure ? `Volver a medir: ${t.name}` : t.name}
+                  title={remeasureDue(t, nowMs) ? `Ya toca volver a medir: ${t.name}` : t.remeasure ? `Volver a medir: ${t.name}` : t.name}
+                  due={remeasureDue(t, nowMs)}
                   subtitle={`${t.done} de ${t.required} · ${formatRange(t.minTemp, t.maxTemp)}`}
                   extra={
                     t.lastReading
@@ -758,21 +820,47 @@ function KioskHome({
   );
 }
 
-function BigTile({ onClick, type, title, subtitle, extra, disabled, alert }: { onClick: () => void; type: RecordType; title: string; subtitle: string; extra?: string; disabled?: boolean; alert?: boolean }) {
+function BigTile({
+  onClick,
+  type,
+  title,
+  subtitle,
+  extra,
+  disabled,
+  alert,
+  due,
+}: {
+  onClick: () => void;
+  type: RecordType;
+  title: string;
+  subtitle: string;
+  extra?: string;
+  disabled?: boolean;
+  alert?: boolean;
+  /** #14: ya ha llegado la hora de volver a medir (resaltado en pantalla; no hay notificación). */
+  due?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      data-due={due || undefined}
       className={cn(
         'flex min-h-28 w-full items-center gap-4 rounded-3xl border-2 bg-surface p-4 text-left shadow-card transition-transform active:scale-[0.98] disabled:opacity-50',
         alert ? 'border-bad-solid' : 'border-warn-solid/60',
+        due && 'border-4 bg-bad-soft ring-4 ring-bad-solid/30',
       )}
     >
       <span className={cn('grid size-16 shrink-0 place-items-center rounded-2xl', alert ? 'bg-bad-soft text-bad' : RECORD_TINT[type])}>
         <Icon name={alert ? 'refresh' : RECORD_ICON[type]} size={34} />
       </span>
       <span className="min-w-0 flex-1">
+        {due ? (
+          <span className="mb-1 inline-flex items-center gap-1 rounded-full bg-bad-solid px-3 py-0.5 text-base font-bold text-white" data-testid="remeasure-due">
+            <Icon name="clock" size={16} /> Ya toca
+          </span>
+        ) : null}
         <span className="block text-xl font-extrabold [overflow-wrap:anywhere]">{title}</span>
         <span className="block text-ink-muted">{subtitle}</span>
         {extra ? <span className={cn('block text-sm', alert ? 'font-semibold text-bad' : 'text-ink-muted')}>{extra}</span> : null}
@@ -1224,6 +1312,7 @@ function ResultScreen({
 }
 
 type CorrStep =
+  | { name: 'verify'; error?: string; attempt?: number }
   | { name: 'reason' }
   | { name: 'other' }
   | { name: 'value' }
@@ -1256,7 +1345,10 @@ function CorrectionFlow({
   onRevoked: () => void;
 }) {
   const { record, person } = recent;
-  const [step, setStep] = useState<CorrStep>({ name: 'reason' });
+  // N4: «Corregir» pide SIEMPRE el PIN de quien registró (si lo tiene) ANTES de abrir el formulario, y
+  // el servidor lo comprueba: nadie corrige un registro ajeno porque la tablet siguiera abierta.
+  const [step, setStep] = useState<CorrStep>(person.hasPin ? { name: 'verify' } : { name: 'reason' });
+  const [verifiedPin, setVerifiedPin] = useState<string | undefined>(undefined);
   const [reason, setReason] = useState<KioskCorrectionReason | null>(null);
   const [reasonText, setReasonText] = useState('');
   const [data, setData] = useState<unknown>(undefined);
@@ -1302,10 +1394,25 @@ function CorrectionFlow({
     }
   };
 
-  /** Tras elegir los datos o la persona: PIN de quien registró (si lo tiene) y enviar. */
+  /** Tras elegir los datos o la persona: se envía con el PIN ya comprobado al empezar. */
   const confirm = (np?: string, d?: unknown) => {
-    if (person.hasPin) setStep({ name: 'pin' });
-    else void send(undefined, np, d);
+    if (person.hasPin && !verifiedPin) setStep({ name: 'pin' });
+    else void send(verifiedPin, np, d);
+  };
+
+  const verifyFirst = async (pin: string) => {
+    setBusy(true);
+    try {
+      await kioskApi.verifyPin(token, { staffId: person.id, pin });
+      setVerifiedPin(pin);
+      setStep({ name: 'reason' });
+    } catch (err) {
+      if (isApiError(err) && err.code === 'UNAUTHENTICATED') return onRevoked();
+      const msg = isApiError(err) && err.code === 'INVALID_PIN' ? 'PIN incorrecto. Prueba otra vez.' : errorMessage(err);
+      setStep((st) => ({ name: 'verify', error: msg, attempt: (st.name === 'verify' ? (st.attempt ?? 0) : 0) + 1 }));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const header = (
@@ -1323,6 +1430,21 @@ function CorrectionFlow({
     </Callout>
   ) : null;
 
+  if (step.name === 'verify') {
+    return (
+      <PinScreen
+        key={`verify-${step.attempt ?? 0}`}
+        person={person}
+        error={step.error}
+        busy={busy}
+        title={`¿Eres ${person.name}?`}
+        subtitle="Para corregir este registro, escribe tu PIN"
+        submitLabel="Corregir"
+        onBack={onCancel}
+        onDone={(pin) => void verifyFirst(pin)}
+      />
+    );
+  }
   if (step.name === 'pin') {
     return (
       <PinScreen
@@ -1334,7 +1456,10 @@ function CorrectionFlow({
         subtitle="Escribe tu PIN para guardar la corrección"
         submitLabel="Guardar corrección"
         onBack={onCancel}
-        onDone={(pin) => void send(pin)}
+        onDone={(pin) => {
+          setVerifiedPin(pin);
+          void send(pin);
+        }}
       />
     );
   }
@@ -1347,7 +1472,7 @@ function CorrectionFlow({
         busy={busy}
         title={`Hola, ${newPerson.name}`}
         subtitle="Escribe tu PIN: el registro pasará a tu nombre"
-        submitLabel={person.hasPin ? 'Siguiente' : 'Guardar corrección'}
+        submitLabel={person.hasPin && !verifiedPin ? 'Siguiente' : 'Guardar corrección'}
         onBack={() => setStep({ name: 'person' })}
         onDone={(pin) => {
           setNewPin(pin);
@@ -1391,7 +1516,7 @@ function CorrectionFlow({
             serverError={null}
             disabled={false}
             heading="Escribe el valor correcto"
-            submitLabel={person.hasPin ? 'Siguiente' : 'Guardar corrección'}
+            submitLabel={person.hasPin && !verifiedPin ? 'Siguiente' : 'Guardar corrección'}
             backLabel="Atrás"
             onBack={() => setStep({ name: 'reason' })}
             onSubmit={(d) => {
@@ -1411,7 +1536,7 @@ function CorrectionFlow({
                 ctx={formCtx}
                 initial={record.data as never}
                 large
-                submitLabel={person.hasPin ? 'Siguiente' : 'Guardar corrección'}
+                submitLabel={person.hasPin && !verifiedPin ? 'Siguiente' : 'Guardar corrección'}
                 submitting={busy}
                 onSubmit={(d) => {
                   setData(d);

@@ -209,8 +209,9 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?:
     if (!opts.force && last && Date.now() - last.last_run_at.getTime() < 24 * 3600 * 1000) return none;
 
     const n = (r: { numDeletedRows: bigint }[] | { numDeletedRows: bigint }) => Number((Array.isArray(r) ? r[0]! : r).numDeletedRows);
-    // Por una función acotada del propietario (0007): el rol de la app no puede borrar ni editar la auditoría.
-    const auditEvents = Number((await sql<{ n: string }>`SELECT enregla_purge_audit_events(${auditMonths}::int) AS n`.execute(trx)).rows[0]?.n ?? 0);
+    // La auditoría antigua la purga el MANTENIMIENTO con el rol propietario (0009), no la app.
+    const auditEvents = 0;
+    void auditMonths;
     const unverifiedUsers = n(
       await trx
         .deleteFrom('users')
@@ -244,21 +245,14 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?:
         .execute(),
     );
     const rateLimits = n(await trx.deleteFrom('rate_limits').where('reset_at', '<', sql<Date>`now() - interval '1 hour'`).execute());
-    // Borrado diferido: los locales cuyo plazo de 30 días ha vencido se eliminan con todos sus datos.
-    // I-6: también los pendientes que se han quedado SIN NINGÚN miembro (p. ej. el único owner borró su
-    // cuenta y no había más miembros): nadie puede verlos ni restaurarlos, así que no se conservan más.
-    // Un pendiente sin owner pero con encargados se conserva hasta su fecha (pueden exportar sus datos).
-    // Las filas se bloquean (FOR UPDATE): una restauración simultánea espera y, si llega tarde, recibe 404.
+    // Borrado diferido: la PURGA la hace el mantenimiento (rol propietario, 0009). Aquí solo se asegura
+    // de que nada en Stripe sigue cobrando a los locales que el mantenimiento va a purgar (vencidos o
+    // con eliminación inmediata pedida): si no se puede, la purga los salta hasta que se consiga.
     const due = await trx
       .selectFrom('organizations as o')
       .select(['o.id', 'o.name', 'o.stripe_subscription_id', 'o.subscription_status', 'o.stripe_checkout_session_id'])
       .where('o.deletion_scheduled_at', 'is not', null)
-      .where((eb) =>
-        eb.or([
-          eb('o.deletion_scheduled_at', '<=', sql<Date>`now()`),
-          eb.not(eb.exists(eb.selectFrom('memberships as m').select('m.user_id').whereRef('m.organization_id', '=', 'o.id'))),
-        ]),
-      )
+      .where((eb) => eb.or([eb('o.deletion_scheduled_at', '<=', sql<Date>`now()`), eb('o.purge_requested_at', 'is not', null)]))
       .orderBy('o.deletion_scheduled_at')
       .limit(200)
       .forUpdate()
@@ -268,8 +262,9 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?:
     for (const o of due) {
       // M-1 (a): antes de borrar, nada en Stripe puede seguir cobrando. Si no se puede asegurar,
       // NO se borra: queda en el log y se reintenta en la purga del día siguiente.
+      let stopped: Awaited<ReturnType<typeof stopOrgBilling>>;
       try {
-        const stopped = await stopOrgBilling(deps.billing, o);
+        stopped = await stopOrgBilling(deps.billing, o);
         if (stopped.subscriptionCanceled) {
           await audit(trx, { event: 'billing.subscription_canceled', organizationId: o.id, metadata: { reason: 'org_purged', subscriptionId: stopped.subscriptionCanceled } });
         }
@@ -278,12 +273,12 @@ export async function runRetention(deps: AppDeps, opts: { force?: boolean; log?:
         opts.log?.error({ err: (err as Error).message, organizationId: o.id }, 'Purga de local aplazada: no se pudo cancelar su facturación en Stripe (se reintentará mañana)');
         continue;
       }
-      // Función del propietario (0007): solo borra si el plazo venció, se pidió la eliminación inmediata
-      // o el local se quedó sin miembros. El rol de la app no tiene DELETE sobre organizations.
-      const del = await sql<{ ok: boolean }>`SELECT enregla_purge_organization(${o.id}::uuid) AS ok`.execute(trx);
-      if (!del.rows[0]?.ok) continue;
+      // Facturación detenida (Stripe confirma que no queda nada vivo): el mantenimiento ya puede
+      // purgarlo; no purga con una suscripción viva en la base de datos.
+      if (stopped.subscriptionCanceled || o.stripe_subscription_id) {
+        await trx.updateTable('organizations').set({ subscription_status: 'canceled', cancel_at_period_end: false }).where('id', '=', o.id).execute();
+      }
       purged.push(o);
-      await audit(trx, { event: 'org.deleted', organizationId: o.id, metadata: { name: o.name, reason: 'scheduled_deletion' } });
     }
     const idempotencyKeys = n(
       await trx.deleteFrom('idempotency_keys').where('created_at', '<', sql<Date>`now() - make_interval(days => ${IDEMPOTENCY_RETENTION_DAYS})`).execute(),

@@ -173,8 +173,17 @@ function DeletionBanner() {
       <div className="mx-auto flex max-w-5xl flex-col gap-3 lg:flex-row lg:items-center">
         <Icon name="trash" size={22} className="shrink-0 text-bad" />
         <p className="flex-1 text-ink">
-          <strong>Este local se eliminará definitivamente el {when}.</strong> Hasta entonces está en solo lectura: puedes consultar el historial,
-          descargar informes y exportar los datos.{' '}
+          {org.purgeRequestedAt ? (
+            <>
+              <strong data-testid="purge-requested">Eliminación confirmada: este local y todos sus registros se eliminarán en la próxima hora.</strong>{' '}
+              Mientras tanto sigue en solo lectura y aún puedes exportar los datos.{' '}
+            </>
+          ) : (
+            <>
+              <strong>Este local se eliminará definitivamente el {when}.</strong> Hasta entonces está en solo lectura: puedes consultar el historial,
+              descargar informes y exportar los datos.{' '}
+            </>
+          )}
           {isOwner ? 'Si cambias de opinión, restáuralo.' : 'Solo una persona propietaria puede restaurarlo.'}
           {error ? <span className="mt-1 block font-semibold text-bad">{error}</span> : null}
         </p>
@@ -183,9 +192,11 @@ function DeletionBanner() {
             <Button icon="refresh" onClick={() => void restore()} loading={busy}>
               Restaurar
             </Button>
-            <Button variant="ghost" icon="trash" onClick={() => setPermanentOpen(true)}>
-              Eliminar ya definitivamente
-            </Button>
+            {org.purgeRequestedAt ? null : (
+              <Button variant="ghost" icon="trash" onClick={() => setPermanentOpen(true)}>
+                Eliminar ya definitivamente
+              </Button>
+            )}
           </div>
         ) : null}
       </div>
@@ -199,6 +210,7 @@ function PermanentDeleteDialog({ onClose }: { onClose: () => void }) {
   const { org, orgId } = useOrgContext();
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
   const [confirmName, setConfirmName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -210,11 +222,13 @@ function PermanentDeleteDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await api.del(`/api/orgs/${orgId}/permanent`, { password });
-      storage.setLastOrg(null);
-      qc.removeQueries({ queryKey: keys.org(orgId) });
+      // 202: la eliminación queda CONFIRMADA y la ejecuta el mantenimiento del servidor en su próxima
+      // pasada (cada hora). El local sigue existiendo hasta entonces: no se da por borrado.
+      const r = await api.del<{ purgeRequestedAt: string; message: string }>(`/api/orgs/${orgId}/permanent`, { password });
+      await qc.invalidateQueries({ queryKey: ['org', orgId] });
       await qc.invalidateQueries({ queryKey: keys.account });
-      navigate('/app', { replace: true });
+      toast.show(r.message);
+      onClose();
     } catch (err) {
       if (isApiError(err) && err.status === 404) {
         // Ya estaba borrado (p. ej. por la purga diaria): el resultado buscado se ha cumplido.
@@ -234,8 +248,8 @@ function PermanentDeleteDialog({ onClose }: { onClose: () => void }) {
     <Dialog open onClose={onClose} title="Eliminar el local ya, definitivamente" size="sm">
       <form onSubmit={submit} noValidate className="space-y-4">
         <Callout tone="bad">
-          Se borrarán ahora mismo «{org.name}» y todos sus registros, sin esperar al plazo de 30 días. <strong>No se puede deshacer.</strong> Si
-          necesitas una copia, expórtala antes.
+          «{org.name}» y todos sus registros se eliminarán en la próxima hora, sin esperar al plazo de 30 días (lo hace el mantenimiento
+          automático del servidor, que pasa cada hora). <strong>Después no se puede deshacer.</strong> Si necesitas una copia, expórtala antes.
         </Callout>
         <Field label={`Escribe «${org.name}» para confirmar`}>
           <Input value={confirmName} onChange={(e) => setConfirmName(e.target.value)} autoComplete="off" />

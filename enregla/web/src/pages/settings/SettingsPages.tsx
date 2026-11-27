@@ -791,8 +791,9 @@ export function DataSettingsPage() {
             <SectionTitle>Eliminar el local</SectionTitle>
             {pending ? (
               <p className="text-ink-muted">
-                Ya está pendiente de eliminación: se borrará definitivamente el {deletionDate(org.deletionScheduledAt!, tz)}. Puedes restaurarlo o
-                eliminarlo ya desde el aviso de la parte superior.
+                {org.purgeRequestedAt
+                  ? 'Eliminación confirmada: se borrará definitivamente en la próxima hora. Hasta entonces aún puedes restaurarlo desde el aviso de la parte superior.'
+                  : `Ya está pendiente de eliminación: se borrará definitivamente el ${deletionDate(org.deletionScheduledAt!, tz)}. Puedes restaurarlo o eliminarlo ya desde el aviso de la parte superior.`}
               </p>
             ) : (
               <>

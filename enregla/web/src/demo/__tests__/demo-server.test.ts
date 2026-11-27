@@ -108,14 +108,46 @@ describe('API de la demo', () => {
     expect(csv.indexOf(r.id)).toBeLessThan(csv.indexOf(am.id));
   });
 
-  it('fase 1: recepción con categoría (6 °C refrigerado exige acción; cliente antiguo queda con alerta)', () => {
+  it('fase 1: recepción con categoría (6 °C refrigerado exige acción; sin categoría se rechaza)', () => {
     const base = { supplierName: 'P', product: 'Merluza', accepted: true };
     expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'refrigerado', temperature: 6 } }).status).toBe(400);
-    // Evaluación #4: sin categoría también se exige la acción correctora.
-    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6 } }).status).toBe(400);
-    const old = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6, correctiveAction: 'Se usa ya' } }).json.record;
-    expect(old.alert).toBe(true);
-    expect(old.data).toMatchObject({ category: 'refrigerado', categoryAssumed: true, maxTemperature: 4 });
+    // N9 (como el servidor): la categoría es obligatoria; ya no hay «cliente antiguo» con límite presupuesto.
+    const noCat = send<{ error: { details: { path: string }[] } }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6, correctiveAction: 'Se usa ya' } });
+    expect(noCat.status).toBe(400);
+    expect(noCat.json.error.details.map((d) => d.path)).toContain('data.category');
+    // El antiguo atajo «máx. 4 °C» se ignora: comida caliente a 70 °C no da falsa alarma.
+    const hot = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'caliente', temperature: 70, maxTemperature: 4 } }).json.record;
+    expect(hot.alert).toBe(false);
+  });
+
+  it('N9: «ambiente» para un proveedor de refrigerado exige motivo y lo guarda (como el servidor)', () => {
+    const sup = send<{ supplier: { id: string } }>('POST', `/api/orgs/${orgId}/suppliers`, { name: 'Frío SL', defaultCategory: 'refrigerado' }).json.supplier;
+    const base = { supplierId: sup.id, product: 'Conservas', accepted: true, category: 'ambiente' };
+    const r = send<{ error: { details: { path: string }[] } }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: base });
+    expect(r.status).toBe(400);
+    expect(r.json.error.details.map((d) => d.path)).toContain('data.categoryReason');
+    const ok = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, categoryReason: 'Hoy trae latas' } }).json.record;
+    expect(ok.data).toMatchObject({ categoryDiffersFromSupplier: true, categoryReason: 'Hoy trae latas' });
+    // Refrigerado aceptado sin temperatura: obligatoria.
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'refrigerado' } }).status).toBe(400);
+  });
+
+  it('N1: la eliminación inmediata queda pedida (202) y la ejecuta el mantenimiento en la próxima hora', async () => {
+    const { runDemoMaintenance, MAINTENANCE_INTERVAL_MS } = await import('../server/routes');
+    const { getDb } = await import('../server/store');
+    expect(send('DELETE', `/api/orgs/${orgId}`, { password: DEMO_PASSWORD }).status).toBe(204);
+    const r = send<{ purgeRequestedAt: string; message: string }>('DELETE', `/api/orgs/${orgId}/permanent`, { password: DEMO_PASSWORD });
+    expect(r.status).toBe(202);
+    expect(r.json.message).toContain('en la próxima hora');
+    // Sigue existiendo (pendiente) hasta la pasada del mantenimiento.
+    const org = get<{ organization: { purgeRequestedAt: string | null } }>(`/api/orgs/${orgId}`);
+    expect(org.status).toBe(200);
+    expect(org.json.organization.purgeRequestedAt).toBe(r.json.purgeRequestedAt);
+    const db = getDb();
+    expect(runDemoMaintenance(db, Date.parse(r.json.purgeRequestedAt) + 60_000)).toBe(0);
+    expect(runDemoMaintenance(db, Date.parse(r.json.purgeRequestedAt) + MAINTENANCE_INTERVAL_MS)).toBe(1);
+    expect(db.orgs.some((o) => o.id === orgId)).toBe(false);
+    expect(db.records.some((x) => x.orgId === orgId)).toBe(false);
   });
 
   it('fase 1: «volver a medir» hasta una lectura correcta posterior', () => {

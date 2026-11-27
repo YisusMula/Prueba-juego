@@ -7,23 +7,26 @@
 # (docs/OPERACIONES.md, «Roles de la base de datos»):
 #   docker compose exec -T db sh /docker-entrypoint-initdb.d/10-enregla-roles.sh
 #
-# Crea (o actualiza la contraseña de) dos roles:
+# Crea (o actualiza la contraseña de) tres roles:
 #   enregla_owner → propietario del esquema y de todas las tablas. Solo lo usa el servicio
 #                   `migrate` (migraciones y permisos), nunca la app.
 #   enregla_app   → rol de EJECUCIÓN de la app: sin DDL y sin ser propietario de nada. Los
 #                   permisos sobre las tablas los fija `migrate` tras cada migración
 #                   (APP_DB_ROLE): en `records` solo SELECT e INSERT.
-# El superusuario POSTGRES_USER queda solo para administración y copias de seguridad.
+#   enregla_backup → solo LECTURA de todo (pg_read_all_data) para pg_dump. Sin escritura, sin DDL:
+#                   quien robe la clave de las copias no puede modificar ni borrar nada.
+# El superusuario POSTGRES_USER queda solo para administración (no lo usa ningún servicio).
 # Idempotente: se puede ejecutar varias veces.
 # =============================================================================
 set -eu
 : "${DB_OWNER_PASSWORD:?Define DB_OWNER_PASSWORD (contraseña del rol de migraciones)}"
 : "${DB_APP_PASSWORD:?Define DB_APP_PASSWORD (contraseña del rol de ejecución de la app)}"
+: "${DB_BACKUP_PASSWORD:?Define DB_BACKUP_PASSWORD (contraseña del rol de solo lectura de las copias)}"
 DB="${POSTGRES_DB:-enregla}"
 ADMIN="${POSTGRES_USER:-postgres}"
 
 psql -v ON_ERROR_STOP=1 --username "$ADMIN" --dbname "$DB" \
-  -v owner_pw="$DB_OWNER_PASSWORD" -v app_pw="$DB_APP_PASSWORD" -v db="$DB" <<'SQL'
+  -v owner_pw="$DB_OWNER_PASSWORD" -v app_pw="$DB_APP_PASSWORD" -v backup_pw="$DB_BACKUP_PASSWORD" -v db="$DB" <<'SQL'
 -- 1. Roles (la contraseña se pasa como variable de psql: nunca aparece en el SQL ni en los logs).
 SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enregla_owner') AS create_owner \gset
 \if :create_owner
@@ -33,8 +36,15 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enregla_app') AS crea
 \if :create_app
   CREATE ROLE enregla_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 \endif
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enregla_backup') AS create_backup \gset
+\if :create_backup
+  CREATE ROLE enregla_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+\endif
 ALTER ROLE enregla_owner WITH LOGIN NOSUPERUSER PASSWORD :'owner_pw';
 ALTER ROLE enregla_app WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD :'app_pw';
+ALTER ROLE enregla_backup WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD :'backup_pw';
+-- Solo lectura de todas las tablas (rol predefinido de PostgreSQL 14+), para pg_dump.
+GRANT pg_read_all_data TO enregla_backup;
 
 -- 2. La base de datos y el esquema son del rol propietario. Nadie más puede crear objetos.
 ALTER DATABASE :"db" OWNER TO enregla_owner;
@@ -42,6 +52,9 @@ ALTER SCHEMA public OWNER TO enregla_owner;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"db" TO enregla_app;
 GRANT USAGE ON SCHEMA public TO enregla_app;
+GRANT CONNECT ON DATABASE :"db" TO enregla_backup;
+-- Sin tablas temporales para nadie salvo el propietario (0009 también lo aplica).
+REVOKE TEMPORARY ON DATABASE :"db" FROM PUBLIC;
 
 -- 3. Despliegue existente: lo que creó el usuario anterior (tablas, secuencias, funciones) pasa
 --    al rol propietario. En una base nueva no hay nada que transferir todavía.
@@ -71,4 +84,4 @@ BEGIN
   END IF;
 END $$;
 SQL
-echo "Roles de EnRegla listos: enregla_owner (migraciones) y enregla_app (ejecución)."
+echo "Roles de EnRegla listos: enregla_owner (migraciones y mantenimiento), enregla_app (ejecución) y enregla_backup (copias, solo lectura)."

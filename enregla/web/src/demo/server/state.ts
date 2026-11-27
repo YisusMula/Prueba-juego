@@ -18,6 +18,8 @@ export type DOrg = {
   subscriptionStatus: 'trialing' | 'active';
   trialEndsAt: number;
   deletionScheduledAt: number | null;
+  /** El titular pidió la eliminación inmediata: el «mantenimiento» la ejecuta en la próxima hora. */
+  purgeRequestedAt?: number | null;
   createdAt: number;
 };
 export type DMembership = { orgId: string; userId: string; role: Role; dailyReminder: boolean; createdAt: number };

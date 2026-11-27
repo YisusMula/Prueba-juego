@@ -283,7 +283,7 @@ describe('#10 límites de salir / desvincular', () => {
 // ---------------------------------------------------------------------------
 describe('#12 / #14 PDF y remedición', () => {
   it('#12 la frase del PDF describe la eliminación inmediata tal como la hace el titular', () => {
-    expect(pdfIntegrityNote(30)).toContain('su titular también puede eliminarlo de forma inmediata desde la aplicación tras marcarlo para eliminación');
+    expect(pdfIntegrityNote(30)).toContain('su titular también puede pedir su eliminación inmediata tras marcarlo para eliminación, y entonces se eliminará en la próxima hora');
     expect(pdfIntegrityNote(30)).not.toContain('pedir la eliminación inmediata');
   });
 

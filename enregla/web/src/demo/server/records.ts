@@ -65,6 +65,14 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
       const temperatureOutOfRange = S.receptionOutOfLimits(d, limits);
       const expired = d.expiryDate != null && d.expiryDate < today;
       const needsReason = expired || temperatureOutOfRange;
+      // Como el servidor (N9): «ambiente» para un proveedor habitualmente refrigerado/congelado/caliente.
+      const categoryDiffersFromSupplier = d.category === 'ambiente' && supplier?.defaultCategory != null && supplier.defaultCategory !== 'ambiente';
+      if (categoryDiffersFromSupplier && !d.categoryReason) {
+        throw validationError(
+          'data.categoryReason',
+          `Este proveedor suele traer producto ${S.RECEPTION_CATEGORY_LABELS[supplier!.defaultCategory!].toLowerCase()}: explica por qué lo registras como ambiente`,
+        );
+      }
       if (d.accepted && needsReason && !d.correctiveAction) {
         throw validationError('data.correctiveAction', expired ? 'La fecha de caducidad ya ha pasado: recházala o indica por qué la aceptas' : S.receptionLimitMessage(limits));
       }
@@ -79,6 +87,8 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
           categoryAssumed: limits.assumed,
           limitSource: limits.source,
           limitDiffersFromReference: limits.differsFromReference,
+          categoryDiffersFromSupplier,
+          categoryReason: categoryDiffersFromSupplier ? d.categoryReason : null,
           maxTemperature: limits.max,
           minTemperature: limits.min,
           temperatureOutOfRange,

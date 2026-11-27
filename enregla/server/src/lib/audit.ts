@@ -29,6 +29,7 @@ export type AuditEvent =
   | 'device.created'
   | 'device.revoked'
   | 'device.kiosk_exit'
+  | 'org.purge_requested'
   | 'device.kiosk_auth_failed'
   | 'device.revoked_with_member'
   | 'staff.pin_changed'

@@ -134,7 +134,8 @@ function receptionLimitText(d: Record<string, unknown>): string {
     .filter(Boolean)
     .join(', ');
   const own = d.limitDiffersFromReference === true ? 'límite del proveedor' : null;
-  const parts = [cat ? `${cat}${d.categoryAssumed ? ' por defecto' : ''}` : null, lim || (cat ? 'sin límite' : null), own].filter(Boolean);
+  const amb = d.categoryDiffersFromSupplier === true ? `el proveedor suele ser otro tipo; motivo: ${String(d.categoryReason ?? '')}` : null;
+  const parts = [cat ? `${cat}${d.categoryAssumed ? ' por defecto' : ''}` : null, lim || (cat ? 'sin límite' : null), own, amb].filter(Boolean);
   return parts.length ? ` (${parts.join(', ')})` : '';
 }
 
@@ -166,7 +167,7 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         str(d.supplierName),
         str(d.product),
         str(d.lot),
-        typeof d.temperature === 'number' ? `${pdfNum(d.temperature)} °C${receptionLimitText(d)}` : '',
+        typeof d.temperature === 'number' ? `${pdfNum(d.temperature)} °C${receptionLimitText(d)}` : `Sin medir${receptionLimitText(d)}`,
         `${esDate(d.expiryDate)}${d.expired ? ' (caducada)' : ''}`,
         d.accepted
           ? `${d.temperatureOutOfRange ? 'Aceptada con alerta: supera el límite de temperatura' : d.expired ? 'Aceptada con alerta: caducada' : 'Aceptada'}${d.correctiveAction ? `. Motivo/acción: ${str(d.correctiveAction)}` : ''}`

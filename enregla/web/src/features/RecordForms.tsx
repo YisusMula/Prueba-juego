@@ -428,6 +428,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   // Tipo de producto (obligatorio en la interfaz): fija el límite. El límite NO se edita al recibir: es el
   // de referencia o el propio del proveedor (Ajustes → Proveedores), igual que en el servidor.
   const [category, setCategory] = useState<ReceptionCategory | null>(i ? (i.category ?? null) : (p.ctx.suppliers.find((x) => x.id === supplierId)?.defaultCategory ?? null));
+  const [categoryReason, setCategoryReason] = useState(i?.categoryReason ?? '');
   const [expiry, setExpiry] = useState(i?.expiryDate ?? '');
   const [accepted, setAccepted] = useState<'si' | 'no' | null>(i ? (i.accepted ? 'si' : 'no') : null);
   const [reason, setReason] = useState(i?.rejectionReason ?? '');
@@ -445,6 +446,9 @@ export function RecepcionForm(p: Props<'recepcion'>) {
   const outOfLimits = !tError && limits != null && receptionOutOfLimits(input, limits);
   // Refrigerado, congelado o caliente: hay que medir la temperatura para aceptarlo (también lo exige el servidor).
   const tempRequired = category != null && RECEPTION_TEMPERATURE_REQUIRED.includes(category);
+  // «Ambiente» para un proveedor que suele traer frío o caliente: motivo obligatorio (también en el servidor).
+  const supplierDefault = supplier?.defaultCategory ?? null;
+  const categoryNeedsReason = category === 'ambiente' && supplierDefault != null && supplierDefault !== 'ambiente';
   const expired = !!expiry && expiry < today;
   const issue = outOfLimits || expired;
   const needsReason = accepted === 'si' && issue;
@@ -460,6 +464,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
         if (tError) return;
         const extra: Record<string, string> = {};
         if (!category) extra.category = 'Elige el tipo de producto: fija la temperatura límite';
+        if (categoryNeedsReason && !categoryReason.trim()) extra.categoryReason = 'Explica por qué lo registras como ambiente';
         if (tempRequired && accepted === 'si' && t == null) extra.temperature = 'Anota la temperatura al recibirlo: es obligatoria para producto refrigerado, congelado o caliente';
         if (accepted == null) extra.accepted = expired ? 'La mercancía está caducada: decide si la rechazas o la aceptas con un motivo' : 'Indica si aceptas o rechazas la mercancía';
         if (needsReason && !corrective.trim()) {
@@ -473,6 +478,7 @@ export function RecepcionForm(p: Props<'recepcion'>) {
             lot: lot.trim() || null,
             temperature: t,
             category,
+            categoryReason: categoryNeedsReason ? categoryReason.trim() || null : null,
             expiryDate: expiry || null,
             accepted: accepted === 'si',
             rejectionReason: reason.trim() || null,
@@ -537,6 +543,15 @@ export function RecepcionForm(p: Props<'recepcion'>) {
           };
         })}
       />
+      {categoryNeedsReason ? (
+        <Field
+          label="¿Por qué es ambiente?"
+          hint={`${supplier!.name} suele traer producto ${RECEPTION_CATEGORY_LABELS[supplierDefault!].toLowerCase()}. Quedará señalado en el informe.`}
+          error={errors.categoryReason || server.categoryReason}
+        >
+          <Input value={categoryReason} onChange={(e) => setCategoryReason(e.target.value)} maxLength={300} placeholder="Ej.: hoy trae conservas, no producto fresco" />
+        </Field>
+      ) : null}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field
           label="Temperatura al recibir (°C)"

@@ -21,6 +21,35 @@ type Handler = (db: DemoState, req: DemoRequest) => DemoResponse;
 
 const ok = (json: unknown, status = 200): DemoResponse => ({ status, json });
 const noContent = (): DemoResponse => ({ status: 204 });
+const PURGE_REQUESTED_MESSAGE = 'Eliminación confirmada: el local y todos sus registros se borrarán definitivamente en la próxima hora.';
+/** Cada cuánto pasa el mantenimiento del servidor real (servicio `maintenance`, cada hora). */
+export const MAINTENANCE_INTERVAL_MS = 3_600_000;
+
+/**
+ * Simula el mantenimiento del servidor: purga los locales cuyo plazo venció o cuya eliminación
+ * inmediata se pidió hace al menos una pasada (una hora).
+ */
+export function runDemoMaintenance(db: DemoState, now = Date.now()): number {
+  const due = db.orgs.filter(
+    (o) => o.deletionScheduledAt != null && (o.deletionScheduledAt <= now || (o.purgeRequestedAt != null && now - o.purgeRequestedAt >= MAINTENANCE_INTERVAL_MS)),
+  );
+  for (const o of due) {
+    const id = o.id;
+    const keep = <T extends { orgId: string }>(list: T[]) => list.filter((x) => x.orgId !== id);
+    db.orgs = db.orgs.filter((x) => x.id !== id);
+    db.memberships = keep(db.memberships);
+    db.staff = keep(db.staff);
+    db.devices = keep(db.devices);
+    db.equipment = keep(db.equipment);
+    db.plans = keep(db.plans);
+    db.suppliers = keep(db.suppliers);
+    db.dishes = keep(db.dishes);
+    db.records = keep(db.records);
+    db.invitations = keep(db.invitations);
+    db.audit = keep(db.audit);
+  }
+  return due.length;
+}
 
 /** Texto de los avisos de la demo en las respuestas que normalmente enviarían un email. */
 export const NO_EMAIL_MESSAGE = 'En la demo no se envían correos.';
@@ -195,10 +224,9 @@ function verifyPin(db: DemoState, ctx: { device: { id: string }; org: DOrg }, st
   const now = Date.now();
   const fails = (db.pinFailsByDevice[ctx.device.id] ?? []).filter((t) => now - t < PIN_DEVICE_WINDOW_MS);
   db.pinFailsByDevice[ctx.device.id] = fails;
-  if (fails.length >= PIN_DEVICE_MAX_FAILS) {
-    const retry = (fails[0]! + PIN_DEVICE_WINDOW_MS - now) / 1000;
-    throw new DemoError(429, 'RATE_LIMITED', 'Demasiados PIN incorrectos en este dispositivo. Espera unos minutos.', undefined, { 'Retry-After': String(Math.ceil(retry)) });
-  }
+  // Como el servidor (N5): solo cuentan los FALLOS; superado el tope de la tablet, un PIN correcto
+  // sigue entrando y uno erróneo responde 429 (y cuenta para el bloqueo de esa persona).
+  const deviceOverLimit = fails.length >= PIN_DEVICE_MAX_FAILS;
   if (st.lockedUntil && st.lockedUntil > now) throw pinLocked((st.lockedUntil - now) / 1000);
   if (st.lockedUntil && st.lockedUntil <= now) {
     st.lockedUntil = null;
@@ -209,8 +237,12 @@ function verifyPin(db: DemoState, ctx: { device: { id: string }; org: DOrg }, st
     return;
   }
   st.failed += 1;
-  fails.push(now);
+  if (!deviceOverLimit) fails.push(now);
   audit(db, ctx.org.id, 'staff.pin_failed', null, { staffId, deviceId: ctx.device.id });
+  if (deviceOverLimit && st.failed < PIN_MAX_FAILURES) {
+    const retry = (fails[0]! + PIN_DEVICE_WINDOW_MS - now) / 1000;
+    throw new DemoError(429, 'RATE_LIMITED', 'Demasiados PIN incorrectos en este dispositivo. Espera unos minutos.', undefined, { 'Retry-After': String(Math.ceil(retry)) });
+  }
   if (st.failed >= PIN_MAX_FAILURES) {
     st.lockedUntil = now + PIN_LOCK_MS;
     audit(db, ctx.org.id, 'staff.pin_locked', null, { staffId, deviceId: ctx.device.id });
@@ -416,6 +448,7 @@ route('POST', `${ORG}/restore`, (db, req) => {
   const c = requireOwner(orgCtx(db, req));
   if (!c.org.deletionScheduledAt) throw conflict('Este local no está pendiente de eliminación.');
   c.org.deletionScheduledAt = null;
+  c.org.purgeRequestedAt = null;
   audit(db, c.org.id, 'org.restored', c.user.id);
   return ok({ organization: orgView(c.org, c.role) });
 });
@@ -423,20 +456,12 @@ route('DELETE', `${ORG}/permanent`, (db, req) => {
   const c = requireOwner(orgCtx(db, req));
   reauth(c.user, req.body);
   if (!c.org.deletionScheduledAt) throw conflict('Primero solicita la eliminación del local; la eliminación inmediata solo está disponible para locales pendientes de eliminación.');
-  const id = c.org.id;
-  const keep = <T extends { orgId: string }>(list: T[]) => list.filter((x) => x.orgId !== id);
-  db.orgs = db.orgs.filter((o) => o.id !== id);
-  db.memberships = keep(db.memberships);
-  db.staff = keep(db.staff);
-  db.devices = keep(db.devices);
-  db.equipment = keep(db.equipment);
-  db.plans = keep(db.plans);
-  db.suppliers = keep(db.suppliers);
-  db.dishes = keep(db.dishes);
-  db.records = keep(db.records);
-  db.invitations = keep(db.invitations);
-  db.audit = keep(db.audit);
-  return noContent();
+  // Como el servidor (N1): la app solo MARCA la petición; la purga la hace el mantenimiento en su
+  // próxima pasada (cada hora). Aquí la simula `runDemoMaintenance` al atender cada petición.
+  const now = Date.now();
+  c.org.purgeRequestedAt = now;
+  audit(db, c.org.id, 'org.purge_requested', c.user.id);
+  return { status: 202, json: { purgeRequestedAt: iso(now), message: PURGE_REQUESTED_MESSAGE } };
 });
 route('GET', `${ORG}/membership`, (db, req) => {
   const c = orgCtx(db, req);

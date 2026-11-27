@@ -16,6 +16,8 @@ export function orgView(o: Organization, role: Role) {
     subscription: subscriptionView(o),
     /** Si no es null, el local está pendiente de eliminación definitiva en esa fecha (solo lectura). */
     deletionScheduledAt: o.deletion_scheduled_at?.toISOString() ?? null,
+    /** NUEVO: el titular pidió la eliminación inmediata; el mantenimiento la ejecuta en la próxima hora. */
+    purgeRequestedAt: o.purge_requested_at?.toISOString() ?? null,
     createdAt: o.created_at.toISOString(),
   };
 }

@@ -5,6 +5,7 @@ import { useCompliance, useToday } from '@/api/queries';
 import type { Compliance, RecordType, TodayTasks } from '@/api/types';
 import { useOrgContext } from '@/hooks/useOrgContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { remeasureDue, useNow } from '@/hooks/useNow';
 import { Button, LinkButton, buttonClasses } from '@/components/ui/Button';
 import { Badge, Callout, EmptyState, ErrorState, ProgressRing, Skeleton } from '@/components/ui/Feedback';
 import { Card, PageHeader, SectionTitle } from '@/components/ui/Layout';
@@ -115,6 +116,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const counted = { temps: data.temperatures.filter((t) => t.countsToday !== false), clean: data.cleaning.filter((c) => c.countsToday !== false) };
   // 1.12: un equipo cuya última lectura de hoy está fuera de rango vuelve a «Pendiente» como «Volver a medir».
   const pendingTemps = data.temperatures.filter((t) => (t.countsToday !== false && t.status === 'pending') || t.remeasure);
+  const now = useNow();
   const doneTemps = counted.temps.filter((t) => t.status === 'done');
   const remeasureCount = data.temperatures.filter((t) => t.remeasure).length;
   const pendingClean = counted.clean.filter((c) => c.status === 'pending');
@@ -231,7 +233,8 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     key={t.equipmentId}
                     to={path(`registrar/temperatura?equipo=${t.equipmentId}`)}
                     type="temperatura"
-                    title={t.remeasure ? `Volver a medir: ${t.name}` : t.name}
+                    due={remeasureDue(t, now)}
+                    title={remeasureDue(t, now) ? `Ya toca volver a medir: ${t.name}` : t.remeasure ? `Volver a medir: ${t.name}` : t.name}
                     detail={`${t.done} de ${t.required} ${t.required === 1 ? 'control' : 'controles'} · ${formatRange(t.minTemp, t.maxTemp)}`}
                     extra={
                       t.lastReading
@@ -325,14 +328,37 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   );
 }
 
-function TaskCard({ to, type, title, detail, extra, warn, badge = 'Pendiente' }: { to: string; type: RecordType; title: string; detail: string; extra?: string; warn?: boolean; badge?: 'Pendiente' | 'Volver a medir' | 'Opcional hoy' }) {
+function TaskCard({
+  to,
+  type,
+  title,
+  detail,
+  extra,
+  warn,
+  due,
+  badge = 'Pendiente',
+}: {
+  to: string;
+  type: RecordType;
+  title: string;
+  detail: string;
+  extra?: string;
+  warn?: boolean;
+  /** #14: ya ha llegado la hora de volver a medir (resaltado, sin notificación). */
+  due?: boolean;
+  badge?: 'Pendiente' | 'Volver a medir' | 'Opcional hoy';
+}) {
   const { readOnly } = useOrgContext();
   return (
     <li>
       <Link
         to={to}
         aria-disabled={readOnly || undefined}
-        className="group flex min-h-24 min-w-0 items-center gap-3 rounded-2xl border border-line bg-surface p-4 shadow-card transition-[border-color,transform] hover:-translate-y-0.5 hover:border-brand"
+        data-due={due || undefined}
+        className={cn(
+          'group flex min-h-24 min-w-0 items-center gap-3 rounded-2xl border bg-surface p-4 shadow-card transition-[border-color,transform] hover:-translate-y-0.5 hover:border-brand',
+          due ? 'border-2 border-bad-solid ring-4 ring-bad-solid/25' : 'border-line',
+        )}
       >
         <span className={cn('grid size-12 shrink-0 place-items-center rounded-2xl', RECORD_TINT[type])}>
           <Icon name={RECORD_ICON[type]} size={26} />
@@ -350,6 +376,11 @@ function TaskCard({ to, type, title, detail, extra, warn, badge = 'Pendiente' }:
             {badge === 'Volver a medir' ? <Icon name="refresh" size={14} /> : null}
             {badge}
           </span>
+          {due ? (
+            <span className="mt-1 ml-2 inline-flex items-center gap-1 rounded-full bg-bad-solid px-2.5 py-0.5 text-sm font-bold text-white" data-testid="remeasure-due">
+              <Icon name="clock" size={14} /> Ya toca
+            </span>
+          ) : null}
         </span>
         <Icon name="chevronRight" className="shrink-0 text-ink-muted transition-transform group-hover:translate-x-0.5" />
       </Link>

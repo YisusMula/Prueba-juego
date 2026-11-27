@@ -215,6 +215,9 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
           label: 'Tipo de producto',
           value: r.data.category ? `${RECEPTION_CATEGORY_LABELS[r.data.category]}${r.data.categoryAssumed ? ' (aplicado por defecto: el registro no indicaba el tipo)' : ''}` : '—',
         },
+        ...(r.data.categoryDiffersFromSupplier
+          ? [{ label: 'Motivo del tipo', value: `El proveedor suele traer otro tipo de producto. Motivo: ${r.data.categoryReason ?? '—'}` }]
+          : []),
         {
           label: 'Temperatura',
           value: (

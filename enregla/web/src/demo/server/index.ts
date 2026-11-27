@@ -4,7 +4,7 @@
  * app pasa por el mismo código de errores, reintentos y descargas que con el servidor de verdad.
  */
 import { DemoError } from './errors';
-import { resolve, type DemoResponse } from './routes';
+import { resolve, runDemoMaintenance, type DemoResponse } from './routes';
 import { getDb, persist } from './store';
 
 /** Retardo simulado de red: lo justo para que se vean los estados de carga. */
@@ -26,6 +26,7 @@ export function handle(method: string, url: string, init: { headers?: HeadersIni
       }
     }
     const db = getDb();
+    runDemoMaintenance(db);
     const res = found.handler(db, { method, path: u.pathname, query: u.searchParams, body, headers, params: found.params });
     // Las lecturas también pueden cambiar el estado (último uso de la tablet, auditoría de informes).
     persist();
