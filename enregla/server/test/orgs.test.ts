@@ -81,8 +81,8 @@ describe('ajustes del local y roles', () => {
   it('preferencia de recordatorio por miembro', async () => {
     const { org, base } = await setupOwner(ctx);
     const { client: mgr } = await addMember(ctx, org.id, 'm@example.com', 'manager');
-    expect(json(await mgr.get(`${base}/membership`))).toEqual({ role: 'manager', dailyReminder: true });
-    expect(json(await mgr.patch(`${base}/membership`, { dailyReminder: false }))).toEqual({ dailyReminder: false });
+    expect(json(await mgr.get(`${base}/membership`))).toEqual({ role: 'manager', dailyReminder: true, weeklyReviewReminder: true });
+    expect(json(await mgr.patch(`${base}/membership`, { dailyReminder: false }))).toEqual({ dailyReminder: false, weeklyReviewReminder: true });
     expect(json(await mgr.get(`${base}/membership`)).dailyReminder).toBe(false);
   });
 });

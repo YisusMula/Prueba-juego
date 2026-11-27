@@ -10,7 +10,7 @@ import { randomToken, sha256 } from '../lib/crypto.js';
 import { addDays, isoWeekday, localDate } from '../lib/dates.js';
 import { createOrganization } from '../modules/orgs/routes.js';
 import { isDue } from '../modules/tasks/service.js';
-import { ALLERGENS } from '../schemas/index.js';
+import { ALLERGENS, REFERENCE_DEFAULTS, SUGGESTED_TEMPLATES } from '../schemas/index.js';
 import type { Database, Staff } from '../db/types.js';
 import { correctiveActionsFor } from './seed-actions.js';
 
@@ -68,7 +68,23 @@ try {
   const start = addDays(localDate(new Date(), TZ), -30);
   const startTs = sql<Date>`((${start}::date)::timestamp AT TIME ZONE ${TZ})`;
   // Datos de demostración: suscripción activa (sin Stripe) y configuración "antigua" para que el cumplimiento cuente 30 días.
-  await db.updateTable('organizations').set({ subscription_status: 'active', public_menu_enabled: true, created_at: startTs }).where('id', '=', org.id).execute();
+  await db
+    .updateTable('organizations')
+    .set({
+      subscription_status: 'active',
+      public_menu_enabled: true,
+      created_at: startTs,
+      // Fase 2: datos del establecimiento (ficticios) para la portada del PDF.
+      legal_name: 'Restauración La Demo S.L.',
+      tax_id: 'B12345674',
+      address: 'Calle Mayor 12',
+      postal_code: '28013',
+      city: 'Madrid',
+      province: 'Madrid',
+      sanitary_registry: '26.012345/M',
+    })
+    .where('id', '=', org.id)
+    .execute();
   await db.updateTable('equipment').set({ created_at: startTs }).where('organization_id', '=', org.id).execute();
   await db.updateTable('cleaning_plans').set({ created_at: startTs }).where('organization_id', '=', org.id).execute();
   await db.updateTable('memberships').set({ created_at: startTs }).where('organization_id', '=', org.id).execute();
@@ -141,6 +157,42 @@ try {
   const today = localDate(new Date(), TZ);
   const nowHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
 
+  // Fase 2: registros personalizados sugeridos (cloro diario, verificación de termómetros, buenas prácticas).
+  const templates = [] as { id: string; key: string; name: string; kind: string; items: { id: string; label: string }[]; unit: string | null; min: number | null; max: number | null }[];
+  for (const key of ['agua_cloro', 'termometros', 'buenas_practicas']) {
+    const t = SUGGESTED_TEMPLATES.find((x) => x.key === key)!;
+    const items = (t.items ?? []).map((label) => ({ id: crypto.randomUUID(), label }));
+    const row = await db
+      .insertInto('custom_record_templates')
+      .values({
+        organization_id: org.id,
+        name: t.name,
+        kind: t.kind,
+        items: json(items),
+        unit: t.unit ?? null,
+        min_value: t.min ?? null,
+        max_value: t.max ?? null,
+        frequency: t.frequency,
+        times_per_day: t.timesPerDay ?? 1,
+        weekday: t.weekday ?? null,
+        month_day: t.monthDay ?? null,
+        instructions: t.instructions,
+        suggestion_key: t.key,
+        source: t.source,
+        created_at: startTs,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    templates.push({ id: row.id, key, name: t.name, kind: t.kind, items, unit: t.unit ?? null, min: t.min ?? null, max: t.max ?? null });
+  }
+
+  /** Instante (JS) de una hora local de Madrid. */
+  const jsAt = (date: string, hour: number, minute: number): Date => {
+    const guess = new Date(`${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`);
+    const local = new Date(guess.toLocaleString('en-US', { timeZone: TZ }));
+    const utc = new Date(guess.toLocaleString('en-US', { timeZone: 'UTC' }));
+    return new Date(guess.getTime() - (local.getTime() - utc.getTime()));
+  };
   const at = (date: string, hour: number, minute: number) =>
     sql<Date>`((${date}::date + make_time(${hour}, ${minute}, 0)) AT TIME ZONE ${TZ})`;
   const rows: NewRecord[] = [];
@@ -238,6 +290,108 @@ try {
         { equipment_id: fryer.id, alert: overLimit },
       );
     }
+    // Fase 2 — cocinado y regeneración (1–2 al día), con algún caso por debajo de la referencia.
+    const cookProducts = ['Pollo asado', 'Albóndigas en salsa', 'Merluza al horno', 'Hamburguesa de ternera', 'Tortilla de patata'];
+    const cookTemp = round1(70 + rand() * 12);
+    const lowCook = i === 9;
+    push(date, 13, 'cocinado', {
+      product: pick(cookProducts),
+      process: 'cocinado',
+      coreTemp: lowCook ? 61.5 : cookTemp,
+      minutes: 20 + Math.floor(rand() * 40),
+      referenceTemp: REFERENCE_DEFAULTS.cookingMinTemp,
+      outOfRange: lowCook,
+      correctiveAction: lowCook ? 'Se prolongó la cocción hasta superar 70 °C en el centro' : null,
+    }, { alert: lowCook });
+    if (i % 2 === 0) {
+      const lowReheat = i === 16;
+      push(date, 20, 'cocinado', {
+        product: pick(['Lentejas estofadas', 'Crema de verduras', 'Callos a la madrileña']),
+        process: 'regeneracion',
+        coreTemp: lowReheat ? 68 : round1(75 + rand() * 8),
+        minutes: null,
+        referenceTemp: REFERENCE_DEFAULTS.reheatMinTemp,
+        outOfRange: lowReheat,
+        correctiveAction: lowReheat ? 'Se volvió a calentar hasta 78 °C antes de servir' : null,
+      }, { alert: lowReheat });
+    }
+    // Enfriamiento rápido cada 3 días (inicio y, dos horas después, el cierre enlazado).
+    if (i % 3 === 1 || date === today) {
+      const startId = crypto.randomUUID();
+      const product = pick(['Caldo de ave', 'Fondo oscuro', 'Arroz para ensalada', 'Salsa de tomate']);
+      const startTemp = round1(68 + rand() * 12);
+      const startHour = date === today ? Math.max(0, nowHour - 1) : 16;
+      const beforeLen = rows.length;
+      const startedAt = jsAt(date, startHour, 5 + Math.floor(rand() * 20));
+      push(date, startHour, 'enfriamiento', { phase: 'inicio', product, startTemp, notes: 'En abatidor' }, { id: startId, created_at: startedAt });
+      if (rows.length > beforeLen && date !== today) {
+        const startRow = rows[rows.length - 1]!;
+        const slow = i === 13;
+        const minutes = slow ? 150 : 85 + Math.floor(rand() * 30);
+        const endTemp = slow ? 9 : round1(3 + rand() * 5);
+        const endedAt = new Date(startedAt.getTime() + minutes * 60_000);
+        push(date, startHour, 'enfriamiento', {
+          phase: 'fin',
+          startRecordId: startId,
+          product,
+          startTemp,
+          startedAt: startedAt.toISOString(),
+          endedAt: endedAt.toISOString(),
+          endTemp,
+          minutes,
+          targetTemp: REFERENCE_DEFAULTS.coolingTargetTemp,
+          maxMinutes: REFERENCE_DEFAULTS.coolingMaxMinutes,
+          overTemp: false,
+          overTime: slow,
+          discarded: false,
+          outOfRange: slow,
+          correctiveAction: slow ? 'El abatidor iba sobrecargado: producto regenerado y consumido en el día' : null,
+        }, { related_record_id: startId, alert: slow, staff_id: startRow.staff_id, staff_name: startRow.staff_name, device_id: startRow.device_id, created_at: endedAt });
+      }
+    }
+    // Registros personalizados: cloro del agua cada día y buenas prácticas el día 1.
+    const chlorine = templates.find((t) => t.key === 'agua_cloro')!;
+    if (rand() > 0.1) {
+      const low = i === 21;
+      const reading = low ? 0.1 : round1(0.3 + rand() * 0.5);
+      push(date, 9, 'personalizado', {
+        templateId: chlorine.id,
+        templateName: chlorine.name,
+        kind: 'numeric',
+        notes: null,
+        reading,
+        unit: chlorine.unit,
+        min: chlorine.min,
+        max: chlorine.max,
+        outOfRange: low,
+        correctiveAction: low ? 'Recloración del depósito y nueva medición a la hora: 0,4 mg/l' : null,
+      }, { custom_template_id: chlorine.id, alert: low });
+    }
+    if (date.endsWith('-01')) {
+      const bp = templates.find((t) => t.key === 'buenas_practicas')!;
+      const items = bp.items.map((it, n) => ({ itemId: it.id, label: it.label, ok: n !== 4 }));
+      push(date, 11, 'personalizado', {
+        templateId: bp.id,
+        templateName: bp.name,
+        kind: 'checklist',
+        notes: null,
+        items,
+        failed: 1,
+        correctiveAction: 'Retiradas las cajas de cartón de la zona de elaboración y recordado al equipo',
+      }, { custom_template_id: bp.id, alert: true });
+    }
+    if (i === 10) {
+      const th = templates.find((t) => t.key === 'termometros')!;
+      push(date, 12, 'personalizado', {
+        templateId: th.id,
+        templateName: th.name,
+        kind: 'checklist',
+        notes: 'Comparado con el termómetro de referencia en agua con hielo',
+        items: th.items.map((it) => ({ itemId: it.id, label: it.label, ok: true })),
+        failed: 0,
+        correctiveAction: null,
+      }, { custom_template_id: th.id });
+    }
     // Plagas (semanal, lunes)
     if (isoWeekday(date) === 1) {
       mondays += 1;
@@ -308,6 +462,29 @@ try {
         amendment_reason: `Error al anotar: el termómetro marcaba ${String(fixedValue).replace('.', ',')} °C`,
         alert: false,
         created_at: sql<Date>`${bad.created_at.toISOString()}::timestamptz + interval '20 minutes'`,
+      })
+      .execute();
+  }
+
+  // Fase 2: verificación del responsable de las semanas anteriores (la última semana queda sin revisar,
+  // para que «Hoy» muestre el aviso).
+  const thisMonday = addDays(today, 1 - isoWeekday(today));
+  for (let w = 2; w <= 4; w++) {
+    const from = addDays(thisMonday, -7 * w);
+    const to = addDays(from, 6);
+    if (from < start) continue;
+    await db
+      .insertInto('responsible_verifications')
+      .values({
+        organization_id: org.id,
+        period_from: from,
+        period_to: to,
+        period_kind: 'week',
+        comment: w === 3 ? 'Revisadas las alertas de la cámara de carnes con el equipo' : null,
+        user_id: user.id,
+        user_name: user.name,
+        user_role: 'owner',
+        created_at: at(addDays(to, 1), 10, 15),
       })
       .execute();
   }

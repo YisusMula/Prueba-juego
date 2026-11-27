@@ -1,7 +1,7 @@
-import type { CleaningPlan, Equipment, Organization, RecordRow, Staff } from '../db/types.js';
+import type { CleaningPlan, CustomTemplate, Equipment, Organization, RecordRow, Staff, Verification } from '../db/types.js';
 import type { Role } from '../db/types.js';
 import { subscriptionView } from './billing/status.js';
-import { recordCorrector, recordSignature } from '../schemas/index.js';
+import { effectiveReferenceValues, recordCorrector, recordSignature, sanitaryRegistryLooksValid } from '../schemas/index.js';
 
 export function orgView(o: Organization, role: Role) {
   return {
@@ -18,7 +18,60 @@ export function orgView(o: Organization, role: Role) {
     deletionScheduledAt: o.deletion_scheduled_at?.toISOString() ?? null,
     /** NUEVO: el titular pidió la eliminación inmediata; el mantenimiento la ejecuta en la próxima hora. */
     purgeRequestedAt: o.purge_requested_at?.toISOString() ?? null,
+    /** NUEVO (fase 2): datos del establecimiento para la portada del PDF (null = no indicado). */
+    establishment: establishmentView(o),
+    /** NUEVO (fase 2): valores de referencia vigentes (los del local o, si no tiene, los orientativos). */
+    referenceValues: effectiveReferenceValues(o.reference_values),
+    /** NUEVO: valores que el local ha cambiado (los demás son los de referencia). */
+    referenceValuesCustom: o.reference_values ?? {},
     createdAt: o.created_at.toISOString(),
+  };
+}
+
+export function establishmentView(o: Pick<Organization, 'legal_name' | 'tax_id' | 'address' | 'postal_code' | 'city' | 'province' | 'sanitary_registry'>) {
+  return {
+    legalName: o.legal_name,
+    taxId: o.tax_id,
+    address: o.address,
+    postalCode: o.postal_code,
+    city: o.city,
+    province: o.province,
+    sanitaryRegistry: o.sanitary_registry,
+    /** false si el nº de Registro Sanitario no sigue el formato habitual NN.NNNNN/XX (se guarda igual). */
+    sanitaryRegistryFormatOk: sanitaryRegistryLooksValid(o.sanitary_registry),
+  };
+}
+
+export function customTemplateView(t: CustomTemplate) {
+  return {
+    id: t.id,
+    name: t.name,
+    kind: t.kind,
+    items: t.items,
+    unit: t.unit,
+    min: t.min_value,
+    max: t.max_value,
+    frequency: t.frequency,
+    timesPerDay: t.times_per_day,
+    weekday: t.weekday,
+    monthDay: t.month_day,
+    instructions: t.instructions,
+    suggestionKey: t.suggestion_key,
+    source: t.source,
+    active: t.active,
+    createdAt: t.created_at.toISOString(),
+  };
+}
+
+export function verificationView(v: Verification) {
+  return {
+    id: v.id,
+    from: v.period_from,
+    to: v.period_to,
+    kind: v.period_kind,
+    comment: v.comment,
+    user: { id: v.user_id, name: v.user_name, role: v.user_role },
+    createdAt: v.created_at.toISOString(),
   };
 }
 

@@ -7,6 +7,7 @@ import type {
   Billing,
   CleaningPlan,
   Compliance,
+  CustomTemplate,
   Device,
   Dish,
   Equipment,
@@ -19,7 +20,9 @@ import type {
   RecordType,
   Staff,
   Supplier,
+  TemplateSuggestion,
   TodayTasks,
+  Verification,
 } from './types';
 
 export const keys = {
@@ -127,7 +130,22 @@ export function useBilling(orgId: string) {
 export function useMembership(orgId: string) {
   return useQuery({
     queryKey: keys.orgScoped(orgId, 'membership'),
-    queryFn: () => api.get<{ role: string; dailyReminder: boolean }>(`${base(orgId)}/membership`),
+    queryFn: () => api.get<{ role: string; dailyReminder: boolean; weeklyReviewReminder?: boolean }>(`${base(orgId)}/membership`),
+  });
+}
+/** Registros personalizados del local (activos y desactivados) y plantillas sugeridas. */
+export function useCustomTemplates(orgId: string) {
+  return useQuery({
+    queryKey: keys.orgScoped(orgId, 'custom-templates'),
+    queryFn: () => api.get<{ items: CustomTemplate[]; suggestions: TemplateSuggestion[] }>(`${base(orgId)}/custom-templates`),
+  });
+}
+/** Verificaciones del responsable que se solapan con [from, to]. */
+export function useVerifications(orgId: string, from: string, to: string, enabled = true) {
+  return useQuery({
+    queryKey: keys.orgScoped(orgId, 'verifications', from, to),
+    queryFn: () => api.get<{ items: Verification[] }>(`${base(orgId)}/verifications${qs({ from, to })}`).then((r) => r.items),
+    enabled,
   });
 }
 

@@ -40,7 +40,10 @@ export type AuditEvent =
   | 'billing.checkout_started'
   | 'billing.subscription_updated'
   | 'billing.subscription_canceled'
-  | 'public_menu.updated';
+  | 'public_menu.updated'
+  | 'report.verified'
+  | 'custom_template.created'
+  | 'custom_template.updated';
 
 export interface AuditInput {
   event: AuditEvent;

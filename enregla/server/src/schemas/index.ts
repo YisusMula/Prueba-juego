@@ -11,6 +11,10 @@ z.config({ customError: esErrorMap });
 
 export * from './es.js';
 export * from './password-policy.js';
+export * from './references.js';
+export * from './establishment.js';
+import { referenceValuesBody } from './references.js';
+import { establishmentFields, VERIFICATION_KINDS } from './establishment.js';
 
 /** Longitudes máximas de los textos (las mismas en el formulario y en el servidor). */
 export const LIMITS = {
@@ -132,6 +136,10 @@ export const updateOrgBody = z
     timezone,
     reminderEnabled: z.boolean(),
     reminderHour: z.number().int().min(0).max(23),
+    // Fase 2 (2A): datos del establecimiento para la portada del PDF (todos opcionales).
+    ...establishmentFields,
+    // Fase 2 (2B): valores de referencia del local (cocinado, regeneración, enfriamiento).
+    referenceValues: referenceValuesBody,
   })
   .partial()
   .refine((o) => Object.keys(o).length > 0, 'No hay cambios');
@@ -140,7 +148,14 @@ export const ROLES = ['owner', 'manager'] as const;
 export const role = z.enum(ROLES);
 export const inviteBody = z.object({ email, role: role.default('manager') });
 export const updateMemberBody = z.object({ role });
-export const membershipPrefsBody = z.object({ dailyReminder: z.boolean() });
+export const membershipPrefsBody = z
+  .object({
+    dailyReminder: z.boolean(),
+    /** Fase 2: aviso semanal en el email si la semana anterior no está marcada como revisada. */
+    weeklyReviewReminder: z.boolean(),
+  })
+  .partial()
+  .refine((o) => Object.keys(o).length > 0, 'No hay cambios');
 
 // ---------------------------------------------------------------------------
 // Personal, dispositivos
@@ -262,7 +277,7 @@ export const updateSupplierBody = z
 // ---------------------------------------------------------------------------
 // Registros
 // ---------------------------------------------------------------------------
-export const RECORD_TYPES = ['temperatura', 'limpieza', 'recepcion', 'aceite', 'plagas', 'incidencia', 'formacion'] as const;
+export const RECORD_TYPES = ['temperatura', 'limpieza', 'recepcion', 'aceite', 'plagas', 'incidencia', 'formacion', 'cocinado', 'enfriamiento', 'personalizado'] as const;
 export type RecordType = (typeof RECORD_TYPES)[number];
 export const recordType = z.enum(RECORD_TYPES);
 export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
@@ -273,9 +288,16 @@ export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
   plagas: 'Control de plagas',
   incidencia: 'Incidencias',
   formacion: 'Formación de manipuladores',
+  cocinado: 'Cocinado y regeneración',
+  enfriamiento: 'Enfriamiento rápido',
+  personalizado: 'Registros personalizados',
 };
 
-/** Umbral de referencia de compuestos polares (%): por encima exige acción correctora. */
+/**
+ * Umbral de referencia de compuestos polares (%): por encima exige acción correctora. Fuente: plan
+ * genérico de autocontrol en hostelería del Gobierno Vasco («compuestos polares superiores al 25 %») y
+ * criterios de autocontrol de la Comunitat Valenciana («inferior al 25 %»). Ver docs/VALORES-DE-REFERENCIA.md.
+ */
 export const POLAR_COMPOUNDS_LIMIT = 25;
 
 export const temperaturaData = z.object({
@@ -295,8 +317,11 @@ export const limpiezaData = z.object({
 });
 /**
  * Temperaturas de referencia de las plantillas (orientativas; cada local las revisa): refrigerado
- * ≤ 4 °C, congelado ≤ −18 °C y mantenimiento en caliente ≥ 63 °C. Las usan las plantillas de
- * equipos y los límites por defecto de la recepción, para que sean coherentes.
+ * ≤ 4 °C (RD 1086/2020, art. 30.3), congelado ≤ −18 °C (art. 30.4) y mantenimiento en caliente
+ * ≥ 63 °C (art. 30.2). Las usan las plantillas de equipos y los límites por defecto de la recepción,
+ * para que sean coherentes. En recepción, el plan vasco admite frescos hasta 6 °C y la guía valenciana
+ * da valores por producto: el local puede fijar un límite propio por proveedor (SUPPLIER_LIMIT_RANGES).
+ * Detalle y enlaces en docs/VALORES-DE-REFERENCIA.md.
  */
 export const REFERENCE_TEMPS = { chilledMax: 4, frozenMax: -18, hotMin: 63 } as const;
 
@@ -486,6 +511,62 @@ export const formacionData = z.object({
   hours: z.number().min(0, 'Las horas no pueden ser negativas').max(1000, 'Como máximo 1000 horas').optional().nullable(),
 });
 
+// ---------------------------------------------------------------------------
+// Fase 2 (2B): cocinado / regeneración, enfriamiento rápido y registros personalizados
+// ---------------------------------------------------------------------------
+export const COOKING_PROCESSES = ['cocinado', 'regeneracion'] as const;
+export type CookingProcess = (typeof COOKING_PROCESSES)[number];
+export const COOKING_PROCESS_LABELS: Record<CookingProcess, string> = { cocinado: 'Cocinado', regeneracion: 'Regeneración (recalentamiento)' };
+
+export const cocinadoData = z.object({
+  product: text(LIMITS.product),
+  process: z.enum(COOKING_PROCESSES, { error: 'Elige si es cocinado o regeneración' }),
+  /** Temperatura en el centro del producto (°C). */
+  coreTemp: temperature(),
+  /** Tiempo del tratamiento en minutos, si aplica. */
+  minutes: z.number().int('Escribe los minutos sin decimales').min(0, 'Los minutos no pueden ser negativos').max(1440, 'Como máximo 1440 minutos').optional().nullable(),
+  /** Obligatoria si no alcanza la temperatura de referencia del local (lo comprueba el servidor). */
+  correctiveAction: optionalText(1000),
+});
+
+/**
+ * Enfriamiento rápido en DOS registros (los registros no se modifican): el inicio y, más tarde, el
+ * cierre, que es un registro nuevo enlazado al inicio (`startRecordId`). Mientras no se cierra, el
+ * enfriamiento aparece «en curso» en Hoy y en la tablet.
+ */
+export const enfriamientoInicioData = z.object({
+  phase: z.literal('inicio'),
+  product: text(LIMITS.product),
+  startTemp: temperature(),
+  notes: optionalText(500),
+});
+export const enfriamientoFinData = z.object({
+  phase: z.literal('fin'),
+  startRecordId: uuid,
+  /** Obligatoria salvo que el producto se deseche sin medir (`discarded`). */
+  endTemp: temperature().optional().nullable(),
+  discarded: z.boolean().optional().default(false),
+  correctiveAction: optionalText(1000),
+});
+export const enfriamientoData = z.discriminatedUnion('phase', [enfriamientoInicioData, enfriamientoFinData], {
+  error: 'Indica si empiezas o terminas el enfriamiento',
+});
+
+/** Respuesta a una plantilla de registro personalizada (lista de comprobación, valor o sí/no). */
+export const personalizadoData = z.object({
+  templateId: uuid,
+  items: z
+    .array(z.object({ itemId: z.string().min(1).max(64), ok: z.boolean() }))
+    .max(100)
+    .refine((items) => new Set(items.map((i) => i.itemId)).size === items.length, 'Hay puntos repetidos')
+    .optional()
+    .nullable(),
+  reading: z.number({ error: 'Escribe el valor con números' }).min(-1_000_000).max(1_000_000).optional().nullable(),
+  answer: z.boolean().optional().nullable(),
+  correctiveAction: optionalText(1000),
+  notes: optionalText(1000),
+});
+
 export const recordDataSchemas = {
   temperatura: temperaturaData,
   limpieza: limpiezaData,
@@ -494,6 +575,9 @@ export const recordDataSchemas = {
   plagas: plagasData,
   incidencia: incidenciaData,
   formacion: formacionData,
+  cocinado: cocinadoData,
+  enfriamiento: enfriamientoData,
+  personalizado: personalizadoData,
 } as const;
 
 export const createRecordBody = z.discriminatedUnion('type', [
@@ -504,6 +588,9 @@ export const createRecordBody = z.discriminatedUnion('type', [
   z.object({ type: z.literal('plagas'), staffId: uuid.optional().nullable(), data: plagasData }),
   z.object({ type: z.literal('incidencia'), staffId: uuid.optional().nullable(), data: incidenciaData }),
   z.object({ type: z.literal('formacion'), staffId: uuid.optional().nullable(), data: formacionData }),
+  z.object({ type: z.literal('cocinado'), staffId: uuid.optional().nullable(), data: cocinadoData }),
+  z.object({ type: z.literal('enfriamiento'), staffId: uuid.optional().nullable(), data: enfriamientoData }),
+  z.object({ type: z.literal('personalizado'), staffId: uuid.optional().nullable(), data: personalizadoData }),
 ]);
 export const kioskRecordBody = z.object({
   staffId: uuid,
@@ -665,6 +752,10 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   'org.purged': 'Local eliminado definitivamente (mantenimiento)',
   'db.org_deletion_changed': 'Cambio en la eliminación del local (registrado por la base de datos)',
   'db.membership_deleted': 'Acceso retirado (registrado por la base de datos)',
+  'db.membership_changed': 'Alta o cambio de rol de un miembro (registrado por la base de datos)',
+  'report.verified': 'Periodo marcado como revisado por el responsable',
+  'custom_template.created': 'Registro personalizado creado',
+  'custom_template.updated': 'Registro personalizado cambiado',
   'maintenance.purge_blocked': 'Purga de locales bloqueada por la salvaguarda',
   'member.invited': 'Invitación enviada',
   'member.invitation_revoked': 'Invitación anulada',
@@ -714,6 +805,16 @@ export const reportQuery = z
         }
         return list as RecordType[];
       }),
+  })
+  .refine((q) => q.from <= q.to, { message: 'La fecha inicial debe ser anterior a la final', path: ['from'] });
+
+/** Verificación del responsable: marca un periodo como revisado (hecho inmutable). */
+export const createVerificationBody = z
+  .object({
+    from: isoDate,
+    to: isoDate,
+    kind: z.enum(VERIFICATION_KINDS).default('custom'),
+    comment: optionalText(1000),
   })
   .refine((q) => q.from <= q.to, { message: 'La fecha inicial debe ser anterior a la final', path: ['from'] });
 

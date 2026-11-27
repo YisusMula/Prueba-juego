@@ -253,7 +253,7 @@ async function walkthrough(label, opts) {
     await nav(s, 'Registrar');
     await f.getByRole('link', { name: /Recepción/ }).filter({ visible: true }).first().click();
     await f.getByLabel('Proveedor').selectOption({ label: 'Lácteos La Vaca' });
-    await f.getByLabel('Producto').fill('Nata');
+    await f.getByLabel('Producto', { exact: true }).fill('Nata');
     // Refrigerado (categoría del proveedor): la temperatura es obligatoria al aceptarla.
     await f.getByLabel(/Temperatura al recibir/).fill('3');
     await f.getByLabel(/Fecha de caducidad/).fill('2020-01-02');
@@ -326,13 +326,46 @@ async function walkthrough(label, opts) {
     await expect(f.getByRole('button', { name: 'Informe PDF' })).toHaveCount(0);
     await f.getByRole('button', { name: 'Ver vista previa del CSV' }).click();
     await expect(f.getByTestId('csv-preview')).toContainText('temperatura');
-    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 47 columnas/);
+    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 61 columnas/);
     await f.getByRole('button', { name: 'Ver el PDF de ejemplo' }).click();
     await expect(f.getByText(/PDF de ejemplo con los datos iniciales de la demo/).filter({ visible: true }).first()).toBeVisible();
     const img = f.getByTestId('pdf-preview').getByRole('img');
     await expect(img).toBeVisible();
     expect(await img.evaluate((el) => el.complete && el.naturalWidth > 0)).toBe(true);
     await s.check('informes');
+  });
+
+  await step('Fase 2: revisión semanal, tareas sin registrar, cocinado, enfriamiento y registros personalizados', async () => {
+    await nav(s, 'Hoy');
+    await expect(f.getByTestId('review-notice')).toBeVisible();
+    await f.getByRole('link', { name: 'Revisar y marcar' }).click();
+    const dlg = f.getByRole('dialog');
+    await expect(dlg.getByRole('radio', { name: /La semana pasada/ })).toBeChecked();
+    await dlg.getByRole('button', { name: 'Marcar como revisado' }).click();
+    await expect(f.getByTestId('verifications')).toContainText('Verificado por Usuario Demo');
+    await expect(f.getByTestId('missing-days')).toBeVisible();
+    await nav(s, 'Registrar');
+    await f.getByRole('link', { name: /Cocinado y regeneración/ }).filter({ visible: true }).first().click();
+    await f.getByLabel('Producto', { exact: true }).fill(`Pollo demo ${stamp}`);
+    await f.getByText('Cocinado', { exact: true }).click();
+    await f.getByLabel(/Temperatura en el centro del producto/).fill('72');
+    await f.getByRole('button', { name: 'Guardar', exact: true }).click();
+    await expect(f.getByTestId('record-saved')).toContainText('Hecho');
+    await nav(s, 'Registrar');
+    await f.getByRole('link', { name: /Enfriamiento rápido/ }).filter({ visible: true }).first().click();
+    const nueva = f.getByText('Empezar un enfriamiento nuevo');
+    await expect(f.getByLabel('Producto', { exact: true }).or(nueva)).toBeVisible();
+    if (await nueva.isVisible()) await nueva.click();
+    await f.getByLabel('Producto', { exact: true }).fill(`Caldo demo ${stamp}`);
+    await f.getByLabel(/Temperatura al empezar/).fill('80');
+    await f.getByRole('button', { name: 'Empezar el enfriamiento' }).click();
+    await expect(f.getByTestId('cooling-started')).toBeVisible();
+    await nav(s, 'Hoy');
+    await expect(f.getByTestId('coolings')).toContainText(`Caldo demo ${stamp}`);
+    await settings(s, 'Registros personalizados');
+    await f.getByTestId('suggestion-mantenimiento').getByRole('button', { name: 'Activar' }).click();
+    await expect(f.getByTestId('custom-templates')).toContainText('Mantenimiento de instalaciones y equipos');
+    await s.check('fase 2');
   });
 
   await step('Ajustes: equipo, personal y dispositivos', async () => {

@@ -492,7 +492,13 @@ describe.skipIf(!ADMIN_URL || !APP_URL || !PG_TOOLS)('R1 / R10 restauración (ba
         // Tablas: lo que puede hacer cada rol.
         const tables = (await chk.query<{ t: string }>("SELECT tablename AS t FROM pg_tables WHERE schemaname = 'public'")).rows.map((r) => r.t);
         const priv = async (role: string, t: string, p: string) => (await chk.query(`SELECT has_table_privilege($1, $2, $3) AS ok`, [role, `public.${t}`, p])).rows[0].ok as boolean;
-        const appNoDelete = ['records', 'organizations', 'devices', 'staff', 'equipment', 'cleaning_plans', 'audit_events', 'equipment_config_history', 'cleaning_plan_config_history', 'schema_migrations', 'enregla_owner_settings', 'enregla_org_subscriptions'];
+        const appNoDelete = [
+          'records', 'organizations', 'devices', 'staff', 'equipment', 'cleaning_plans', 'audit_events', 'equipment_config_history', 'cleaning_plan_config_history',
+          'schema_migrations', 'enregla_owner_settings', 'enregla_org_subscriptions',
+          // Fase 2: verificaciones (inmutables), plantillas personalizadas (se desactivan) y su historial.
+          'responsible_verifications', 'custom_record_templates', 'custom_template_config_history',
+        ];
+        for (const t of ['responsible_verifications', 'custom_record_templates', 'custom_template_config_history']) expect(tables, t).toContain(t);
         for (const t of tables) {
           expect(await priv(backupRole, t, 'INSERT'), `${backupRole} INSERT ${t}`).toBe(false);
           expect(await priv(backupRole, t, 'SELECT'), `${backupRole} SELECT ${t}`).toBe(true);
@@ -503,6 +509,18 @@ describe.skipIf(!ADMIN_URL || !APP_URL || !PG_TOOLS)('R1 / R10 restauración (ba
         }
         expect(await priv(appRole, 'records', 'UPDATE')).toBe(false);
         expect(await priv(appRole, 'audit_events', 'UPDATE')).toBe(false);
+        // Fase 2: verificaciones solo leer y añadir; historial de plantillas solo leer; plantillas,
+        // UPDATE solo de las columnas editables (no la fecha de alta, que movería el historial).
+        expect(await priv(appRole, 'responsible_verifications', 'INSERT')).toBe(true);
+        expect(await priv(appRole, 'responsible_verifications', 'UPDATE')).toBe(false);
+        expect(await priv(appRole, 'custom_template_config_history', 'INSERT')).toBe(false);
+        expect(await priv(appRole, 'custom_template_config_history', 'UPDATE')).toBe(false);
+        expect(await priv(appRole, 'custom_record_templates', 'INSERT')).toBe(true);
+        const col = async (t: string, c: string) => (await chk.query('SELECT has_column_privilege($1, $2, $3, $4) AS ok', [appRole, `public.${t}`, c, 'UPDATE'])).rows[0].ok as boolean;
+        expect(await col('custom_record_templates', 'active')).toBe(true);
+        expect(await col('custom_record_templates', 'created_at')).toBe(false);
+        expect(await col('custom_record_templates', 'kind')).toBe(false);
+        expect(await col('custom_record_templates', 'organization_id')).toBe(false);
         const db = (await chk.query<{ tmp: boolean; create: boolean }>(
           "SELECT has_database_privilege('public', current_database(), 'TEMPORARY') AS tmp, has_database_privilege('public', current_database(), 'CREATE') AS create",
         )).rows[0]!;

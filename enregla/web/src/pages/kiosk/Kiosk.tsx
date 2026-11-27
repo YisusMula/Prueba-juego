@@ -386,7 +386,16 @@ function KioskApp({ token, onRevoked, onUnpair, onExit }: { token: string; onRev
   };
 
   const formCtx: FormContext | null = ctx
-    ? { equipment: ctx.equipment, cleaningPlans: ctx.cleaningPlans, suppliers: ctx.suppliers, staff: ctx.staff, timezone: ctx.organization.timezone }
+    ? {
+        equipment: ctx.equipment,
+        cleaningPlans: ctx.cleaningPlans,
+        suppliers: ctx.suppliers,
+        staff: ctx.staff,
+        timezone: ctx.organization.timezone,
+        customTemplates: ctx.customTemplates ?? [],
+        referenceValues: ctx.referenceValues,
+        coolings: todayQ.data?.coolings ?? [],
+      }
     : null;
   const showRecent = canCorrect && (screen.name === 'home' || screen.name === 'who' || screen.name === 'pick-equipment');
 
@@ -740,6 +749,9 @@ function KioskHome({
   const pendingClean = today.cleaning.filter((c) => c.status === 'pending' && c.countsToday !== false);
   const doneTemps = today.temperatures.filter((t) => t.status === 'done' && t.countsToday !== false);
   const doneClean = today.cleaning.filter((c) => c.status === 'done' && c.countsToday !== false);
+  const pendingCustom = (today.custom ?? []).filter((c) => c.status === 'pending' && c.countsToday !== false);
+  const doneCustom = (today.custom ?? []).filter((c) => c.status === 'done' && c.countsToday !== false);
+  const coolings = today.coolings ?? [];
   const { summary } = today;
   const remeasure = today.temperatures.filter((t) => t.remeasure).length;
   const nowMs = useNow();
@@ -786,7 +798,31 @@ function KioskHome({
         </section>
       ) : null}
 
-      {pendingTemps.length + pendingClean.length > 0 ? (
+      {coolings.length > 0 ? (
+        <section aria-labelledby="kcool">
+          <h2 id="kcool" className="mb-3 text-2xl font-extrabold">
+            Enfriamientos en curso
+          </h2>
+          <ul className="grid gap-3 sm:grid-cols-2" data-testid="kiosk-coolings">
+            {coolings.map((c) => (
+              <li key={c.recordId}>
+                <BigTile
+                  disabled={readOnly}
+                  onClick={() => onStart({ kind: 'form', type: 'enfriamiento', preset: { startRecordId: c.recordId } })}
+                  type="enfriamiento"
+                  title={`Terminar: ${c.product}`}
+                  subtitle={`Empezó a las ${formatTime(c.startedAt, tz)} a ${formatTemp(c.startTemp)}`}
+                  extra={c.overdue ? `Han pasado más de ${c.maxMinutes} min` : `Antes de las ${formatTime(c.deadline, tz)}: ${formatTemp(c.targetTemp)} o menos`}
+                  alert={c.overdue}
+                  due={c.overdue}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {pendingTemps.length + pendingClean.length + pendingCustom.length > 0 ? (
         <section aria-labelledby="kpend">
           <h2 id="kpend" className="mb-3 text-2xl font-extrabold">
             Pendiente ahora
@@ -821,6 +857,17 @@ function KioskHome({
                 />
               </li>
             ))}
+            {pendingCustom.map((c) => (
+              <li key={c.templateId}>
+                <BigTile
+                  disabled={readOnly}
+                  onClick={() => onStart({ kind: 'form', type: 'personalizado', preset: { templateId: c.templateId } })}
+                  type="personalizado"
+                  title={c.name}
+                  subtitle={c.required > 1 ? `${c.done} de ${c.required} hoy` : 'Pendiente'}
+                />
+              </li>
+            ))}
           </ul>
         </section>
       ) : summary.total > 0 ? (
@@ -829,7 +876,7 @@ function KioskHome({
         </p>
       ) : null}
 
-      {doneTemps.length + doneClean.length > 0 ? (
+      {doneTemps.length + doneClean.length + doneCustom.length > 0 ? (
         <section aria-labelledby="kdone">
           <h2 id="kdone" className="mb-3 text-2xl font-extrabold">
             Hecho hoy
@@ -847,6 +894,13 @@ function KioskHome({
                 <Icon name="check" size={24} strokeWidth={3} className="shrink-0 text-ok" />
                 <span className="min-w-0 flex-1 text-lg font-semibold [overflow-wrap:anywhere]">{c.name}</span>
                 <span className="shrink-0 font-bold text-ok">Hecho</span>
+              </li>
+            ))}
+            {doneCustom.map((c) => (
+              <li key={c.templateId} className="flex min-h-14 items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-2">
+                {c.withAlert ? <Icon name="alert" size={24} className="shrink-0 text-bad" /> : <Icon name="check" size={24} strokeWidth={3} className="shrink-0 text-ok" />}
+                <span className="min-w-0 flex-1 text-lg font-semibold [overflow-wrap:anywhere]">{c.name}</span>
+                <span className={cn('shrink-0 font-bold', c.withAlert ? 'text-bad' : 'text-ok')}>{c.withAlert ? 'Hecho con alerta' : 'Hecho'}</span>
               </li>
             ))}
           </ul>
@@ -1347,7 +1401,15 @@ function ResultScreen({
         <Icon name={record.alert ? 'alert' : 'check'} size={64} strokeWidth={3} />
       </span>
       <h1 className="mt-5 text-5xl font-extrabold">
-        {corrected ? 'Corrección guardada' : record.alert ? 'Guardado con alerta' : partial ? 'Guardado como parcial' : 'Hecho'}
+        {corrected
+          ? 'Corrección guardada'
+          : record.alert
+            ? 'Guardado con alerta'
+            : partial
+              ? 'Guardado como parcial'
+              : record.type === 'enfriamiento' && record.data.phase === 'inicio'
+                ? 'Enfriamiento empezado'
+                : 'Hecho'}
       </h1>
       <p className="mt-3 text-2xl font-semibold [overflow-wrap:anywhere]">{s.title}</p>
       <p className="text-xl text-ink-muted">
@@ -1359,6 +1421,9 @@ function ResultScreen({
       </p>
       {corrected ? (
         <p className="mt-1 text-lg text-ink-muted">El registro original se conserva enlazado. Motivo: {record.amendmentReason}</p>
+      ) : null}
+      {!corrected && record.type === 'enfriamiento' && record.data.phase === 'inicio' ? (
+        <p className="mt-2 text-xl font-semibold">Queda «en curso» en la pantalla de inicio: termínalo allí cuando lo saques del abatidor.</p>
       ) : null}
       <div className="mt-7 grid gap-3">
         <Button size="xl" icon={record.type === 'temperatura' && !corrected ? 'thermometer' : 'home'} onClick={onContinue}>

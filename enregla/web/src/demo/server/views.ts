@@ -11,9 +11,10 @@ import type {
   Subscription,
   Supplier,
 } from '@/api/types';
-import type { DDevice, DDish, DemoState, DEquipment, DOrg, DPlan, DRecord, DStaff, DSupplier } from './state';
+import type { DDevice, DDish, DemoState, DEquipment, DOrg, DPlan, DRecord, DStaff, DSupplier, DTemplate, DVerification } from './state';
 import { iso } from './time';
-import { recordCorrector, recordSignature } from '@shared/schemas';
+import { effectiveReferenceValues, recordCorrector, recordSignature, sanitaryRegistryLooksValid } from '@shared/schemas';
+import type { CustomTemplate, ReferenceValues, Verification } from '@/api/types';
 
 export function isWritable(org: DOrg, now = Date.now()): boolean {
   if (org.deletionScheduledAt) return false;
@@ -48,9 +49,50 @@ export function orgView(o: DOrg, role: Role): Organization {
     subscription: subscriptionView(o),
     deletionScheduledAt: o.deletionScheduledAt ? iso(o.deletionScheduledAt) : null,
     purgeRequestedAt: o.purgeRequestedAt ? iso(o.purgeRequestedAt) : null,
+    establishment: {
+      legalName: o.legalName ?? null,
+      taxId: o.taxId ?? null,
+      address: o.address ?? null,
+      postalCode: o.postalCode ?? null,
+      city: o.city ?? null,
+      province: o.province ?? null,
+      sanitaryRegistry: o.sanitaryRegistry ?? null,
+      sanitaryRegistryFormatOk: sanitaryRegistryLooksValid(o.sanitaryRegistry),
+    },
+    referenceValues: effectiveReferenceValues(o.referenceValues),
+    referenceValuesCustom: (o.referenceValues ?? {}) as Partial<ReferenceValues>,
     createdAt: iso(o.createdAt),
   };
 }
+
+export const customTemplateView = (t: DTemplate): CustomTemplate => ({
+  id: t.id,
+  name: t.name,
+  kind: t.kind,
+  items: t.items,
+  unit: t.unit,
+  min: t.min,
+  max: t.max,
+  frequency: t.frequency,
+  timesPerDay: t.timesPerDay,
+  weekday: t.weekday,
+  monthDay: t.monthDay,
+  instructions: t.instructions,
+  suggestionKey: t.suggestionKey,
+  source: t.source,
+  active: t.active,
+  createdAt: iso(t.createdAt),
+});
+
+export const verificationView = (v: DVerification): Verification => ({
+  id: v.id,
+  from: v.from,
+  to: v.to,
+  kind: v.kind,
+  comment: v.comment,
+  user: { id: v.userId, name: v.userName, role: v.userRole },
+  createdAt: iso(v.createdAt),
+});
 
 export const staffView = (s: DStaff): Staff => ({
   id: s.id,

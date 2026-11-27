@@ -263,7 +263,9 @@ test.describe('cuenta nueva', () => {
     await expect(page.getByRole('heading', { name: 'Revisa tus equipos' })).toBeVisible();
     await page.getByRole('button', { name: 'Siguiente' }).click();
     await page.getByRole('button', { name: 'Siguiente' }).click();
-    await page.getByRole('button', { name: 'Terminar' }).click();
+    await page.getByRole('button', { name: 'Siguiente' }).click();
+    // Último paso opcional (datos del PDF): se puede saltar.
+    await page.getByRole('button', { name: 'Saltar por ahora' }).click();
     await expect(page.getByRole('heading', { name: '¡Tu local está listo!' })).toBeVisible();
     await expect(page.getByText(/Vincular una tablet o un móvil de cocina es opcional/)).toBeVisible();
     await expect(page.getByRole('link', { name: /Vincular una tablet de cocina \(opcional\)/ })).toBeVisible();

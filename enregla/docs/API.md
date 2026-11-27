@@ -817,6 +817,8 @@ Cuerpo: `{ email: string; password: string }` → `200 { ok: true, by: { name: s
 | GET/PATCH · POST | `/api/orgs/{orgId}/public-menu` · `/public-menu/regenerate` | miembro |
 | GET | `/api/orgs/{orgId}/tasks/today` · `/tasks/compliance` | miembro |
 | GET | `/api/orgs/{orgId}/reports/pdf` · `/reports/csv` | miembro |
+| GET/POST · POST · PATCH | `/api/orgs/{orgId}/custom-templates` · `/custom-templates/suggestions` · `/custom-templates/{id}` (fase 2) | miembro |
+| GET/POST | `/api/orgs/{orgId}/verifications` (fase 2) | miembro |
 | GET · POST | `/api/orgs/{orgId}/billing` · `/billing/checkout`, `/billing/portal` | miembro · owner |
 | POST | `/api/billing/webhook` | firma Stripe |
 | GET · POST | `/api/kiosk/context`, `/api/kiosk/tasks/today` · `/api/kiosk/records`, `/api/kiosk/verify-pin`, `/api/kiosk/records/{id}/amendments`, `/api/kiosk/exit`, `/api/kiosk/unpair` | Bearer de dispositivo (exit/unpair: además contraseña de propietario o encargado) |
@@ -910,3 +912,79 @@ El producto aún no tiene clientes ni versiones antiguas instaladas, así que es
 6. **PIN (kiosko):** bloqueo **progresivo**: 1 min, luego 5 y luego 15 (`PIN_LOCKED` con `Retry-After` del bloqueo real) mientras nadie acierte; un acierto o un desbloqueo lo reinicia. NUEVO `POST /api/kiosk/staff/{staffId}/unlock` (dispositivo) con `{ email, password }` de un propietario o encargado (mismos límites que `/exit`) → `200 { ok: true, by: { name }, staff: { id, name } }`; 401 `INVALID_CREDENTIALS`, 404, 429. Auditoría `staff.pin_unlocked`.
 7. **Producción:** la comprobación de arranque detecta además `pg_execute_server_program`, `pg_read_server_files`, `pg_write_server_files`, `pg_write_all_data` y los atributos `CREATEROLE`, `CREATEDB`, `BYPASSRLS` y `REPLICATION` (también por pertenencia). El mensaje distingue «rol equivocado» (conecta con `enregla_app`) de «permisos» (ejecuta `migrate`). `ALLOW_PRIVILEGED_DB_ROLE` **ya no existe**.
 8. **Base de datos (migración 0010, aditiva):** `organizations.purge_requested_by`, `staff.pin_lock_level`, tabla `enregla_org_subscriptions` (solo propietario), índices únicos `(organization_id, id)` y FK compuestas; `migrate` (`applyAppRolePrivileges`) revoca EXECUTE de PUBLIC en todas las funciones (y por defecto en las futuras), TEMPORARY y CREATE en la base, concede al rol de la app solo sus funciones y al de copias (`BACKUP_DB_ROLE`) solo `SELECT`, con políticas RLS que le ocultan las tablas que no se copian.
+
+## 24. Fase 2 (A1 y A2): PDF de inspección y registros de las guías oficiales
+
+Todos los cambios son **aditivos** (migración `0011_fase2_inspeccion_y_registros.sql`): ningún campo existente cambia de forma ni de significado.
+
+### 24.1 Datos del establecimiento y valores de referencia — `PATCH /api/orgs/{orgId}` (owner, escritura)
+
+Campos nuevos, todos opcionales; `null` o `''` los vacía:
+
+| Campo | Validación |
+|---|---|
+| `legalName` (razón social) | ≤ 200 |
+| `taxId` (NIF / NIE / CIF) | se normaliza (sin espacios, puntos ni guiones, en mayúsculas) y se comprueba la letra o el carácter de control → 400 `taxId` |
+| `address` | ≤ 300 |
+| `postalCode` | 5 cifras de 01 a 52 → 400 `postalCode` |
+| `city`, `province` | ≤ 100 |
+| `sanitaryRegistry` (RGSEAA o autorización) | texto libre ≤ 60; **no** se rechaza si no sigue `NN.NNNNN/XX` (se devuelve `sanitaryRegistryFormatOk: false` para avisar) |
+| `referenceValues` | objeto parcial `{ cookingMinTemp, reheatMinTemp, coolingTargetTemp, coolingMaxMinutes }` (márgenes 50–100 °C, 60–100 °C, 0–15 °C y 30–360 min enteros); se combina con lo guardado; `null` en una clave vuelve al valor por defecto |
+
+`orgView` añade `establishment: { legalName, taxId, address, postalCode, city, province, sanitaryRegistry, sanitaryRegistryFormatOk }`, `referenceValues` (los vigentes: los del local o los orientativos `{ cookingMinTemp: 65, reheatMinTemp: 74, coolingTargetTemp: 10, coolingMaxMinutes: 120 }`) y `referenceValuesCustom` (solo los cambiados). Fuentes en `docs/VALORES-DE-REFERENCIA.md`. La auditoría `org.updated` lleva `metadata.changes` con el valor anterior y el nuevo de cada dato del establecimiento y de `reference_values`. `GET /export` incluye `establishment`, `referenceValues`, `customTemplates` y `verifications`.
+
+`GET/PATCH /membership`: nuevo `weeklyReviewReminder` (por defecto `true`); el PATCH acepta `dailyReminder` y/o `weeklyReviewReminder` y devuelve ambos. El lunes, si la semana anterior no está revisada, el email del recordatorio diario lo dice (o se envía solo ese aviso, «Revisión semanal pendiente», si no hay tareas pendientes).
+
+### 24.2 Tipos de registro nuevos (`POST /records`, `POST /api/kiosk/records`, enmiendas)
+
+`RECORD_TYPES` añade `cocinado`, `enfriamiento` y `personalizado` (también en `?types=` de los informes y en `?type=` del historial).
+
+| Tipo | Entrada `data` | Almacenado | Alerta |
+|---|---|---|---|
+| `cocinado` | `{ product, process: 'cocinado' \| 'regeneracion', coreTemp, minutes?, correctiveAction? }` | + `referenceTemp` (la del local en ese momento), `outOfRange` | `coreTemp < referenceTemp` → `correctiveAction` obligatoria (400 `data.correctiveAction`) |
+| `enfriamiento` (inicio) | `{ phase: 'inicio', product, startTemp, notes? }` | igual | nunca |
+| `enfriamiento` (cierre) | `{ phase: 'fin', startRecordId, endTemp?, discarded?, correctiveAction? }` | `{ phase, startRecordId (raíz), product, startTemp, startedAt, endedAt, endTemp, minutes, targetTemp, maxMinutes, overTemp, overTime, discarded, outOfRange, correctiveAction }`; columna `related_record_id` = inicio | `endTemp > targetTemp`, `minutes > maxMinutes` o `discarded` → acción obligatoria. Sin `endTemp` y sin `discarded` → 400 `data.endTemp`. Segundo cierre del mismo inicio → **409**. Inicio inexistente o que no es un inicio → 404 |
+| `personalizado` | `{ templateId, items?: [{ itemId, ok }], reading?, answer?, notes?, correctiveAction? }` según el tipo de la plantilla | `{ templateId, templateName, kind, notes, items: [{ itemId, label, ok }], failed }` (lista), `{ reading, unit, min, max, outOfRange }` (valor) o `{ answer }` (sí/no); columna `custom_template_id` | algún punto «no», valor fuera de `[min, max]` o respuesta «No» → acción obligatoria. Lista: hay que contestar todos los puntos (400 `data.items`). Plantilla desactivada → 400 `data.templateId` (sus correcciones sí se admiten) |
+
+El cierre de un enfriamiento **no modifica** el inicio: es un registro nuevo enlazado. Los minutos se calculan con la hora del servidor (inicio = `effectiveAt` del inicio). Una corrección del cierre conserva los minutos y el criterio aplicados al cerrar; no puede cambiar de enfriamiento ni de fase (400 `data.phase`).
+
+### 24.3 Registros personalizados — `/api/orgs/{orgId}/custom-templates` (miembro)
+
+- `GET /` → `{ items: CustomTemplate[], suggestions: [{ key, name, kind, items?, unit?, min?, max?, frequency, timesPerDay?, weekday?, monthDay?, instructions, when, source, activated }] }`. `CustomTemplate = { id, name, kind: 'checklist'|'numeric'|'yesno', items: [{ id, label }], unit, min, max, frequency: 'daily'|'weekly'|'monthly'|'on_demand', timesPerDay, weekday, monthDay, instructions, suggestionKey, source, active, createdAt }`.
+- `POST /` (escritura) → 201 `{ template }`. Cuerpo: `{ name, kind, items?, unit?, min?, max?, frequency, timesPerDay?, weekday? (semanal), monthDay? (mensual, 1–28), instructions?, active? }`. Máximo 100 por local (409).
+- `POST /suggestions` `{ key }` (escritura) → 201 la crea o 200 si ya existía (la reactiva). Claves: `agua_cloro`, `termometros`, `mantenimiento`, `buenas_practicas`.
+- `PATCH /{id}` (escritura): todos los campos salvo `kind` (no se cambia: los registros lo usan). Los puntos conservan su `id` si se envía.
+- **No hay DELETE**: desactivar (`active: false`) deja de pedirla y conserva sus registros. Auditoría `custom_template.created` / `custom_template.updated`.
+
+Cuentan en Hoy y en el cumplimiento con **vigencia histórica** (tabla `custom_template_config_history`, como equipos y planes): diaria N veces → N tareas al día; semanal y mensual → 1 tarea el día que toca, hecha si hay algún registro en la semana o el mes; `on_demand` no cuenta. El día de alta o reactivación no es exigible.
+
+### 24.4 Verificación del responsable — `/api/orgs/{orgId}/verifications` (miembro)
+
+- `GET /?from=AAAA-MM-DD&to=AAAA-MM-DD` → `{ items: [{ id, from, to, kind: 'week'|'month'|'custom', comment, user: { id, name, role }, createdAt }] }` (las que se solapan con el periodo, la más reciente primero).
+- `POST /` (escritura) `{ from, to, kind?, comment? }` → 201 `{ verification }`. 400 si `to` es posterior a hoy (fecha local), si el periodo pasa de 366 días, si `kind: 'week'` no va de lunes a domingo o si `kind: 'month'` no va del día 1 al último. Auditoría `report.verified`.
+- Es un **hecho inmutable**: no hay PATCH ni DELETE, la base de datos rechaza `UPDATE`/`DELETE` (y el rol de la app no tiene esos permisos), la hora la pone el reloj de PostgreSQL y quien verifica debe ser propietario o encargado del local con ese rol. Una verificación posterior del mismo periodo **se añade**.
+
+### 24.5 Hoy y cumplimiento
+
+`GET /tasks/today` (y `/api/kiosk/tasks/today`) añade:
+- `custom: [{ templateId, name, kind, frequency, required, done, status, countsToday, withAlert, lastAt }]` (los que tocan hoy; cuentan en `summary`).
+- `coolings: [{ recordId, product, startTemp, startedAt, deadline, minutesElapsed, overdue, targetTemp, maxMinutes }]`: enfriamientos sin cerrar.
+- `review: { from, to, due, verified }`: semana anterior (lunes–domingo); `due` si el local ya existía al terminarla.
+- `alerts[].kind` nuevos: `cocinado_por_debajo`, `enfriamiento_fuera_de_criterio`, `enfriamiento_sin_cerrar` (en curso más allá del tiempo máximo; `recordId` = inicio) y `registro_personalizado_no_conforme`.
+
+`GET /tasks/compliance`: cada día añade `missing: [{ kind: 'temperatura'|'limpieza'|'personalizado', id, name, expected, done, partial?, frequency }]` (qué tarea faltó, con la misma vigencia histórica que el cálculo; `partial: true` si solo hubo una limpieza parcial) y `overall.daysWithGaps`.
+
+`GET /api/kiosk/context` añade `customTemplates` (activos) y `referenceValues`.
+
+### 24.6 Informes
+
+- **PDF**: portada (nombre comercial, razón social, NIF/CIF, dirección, nº de Registro Sanitario o «No indicado», periodo, tipos, fecha de generación y quién lo generó), resumen del periodo (cumplimiento con el mismo cálculo que la app, alertas y cuántas tienen acción correctora, incidencias del periodo abiertas, días con huecos), verificaciones que se solapan con el periodo («Verificado por … el …», indicando si cubren todo el periodo), tablas agrupadas por equipo (con su rango), por plan y por registro personalizado, limpiezas parciales en naranja, sección «Tareas sin registrar» por día (máx. 3000 líneas, con aviso si hay más), espacio «Revisión y firma del responsable» y «Página X de Y» en todas las páginas. Mismos límites que antes (5000 filas, 64 MiB, worker).
+- **CSV**: columnas nuevas al final: `proceso`, `temperatura_centro_c`, `referencia_c`, `minutos`, `fase_enfriamiento`, `inicio_enfriamiento_de`, `temperatura_inicio_c`, `temperatura_fin_c`, `criterio_temperatura_c`, `criterio_minutos`, `desechado`, `registro_personalizado`, `resultado_personalizado`, `detalle_personalizado` (`producto`, `accion_correctora`, `observaciones` y `alerta` se reutilizan).
+
+### 24.7 Restos de la fase 1
+
+- Los eventos reservados (`db.*`, `org.purged`, `maintenance.*`) se rechazan para el rol de la app sin distinguir mayúsculas, espacios (también duros) ni formas Unicode equivalentes (NFKC).
+- Recepción: un proveedor escrito a mano se reconoce también sin tildes, con espacios dobles o duros y con puntuación al principio o al final.
+- Nuevo evento `db.membership_changed` (escrito por la base de datos) en cada alta en `memberships` y en cada cambio de rol (`metadata: { op, old_role, new_role, session_user, client_addr }`).
+- La base de datos rechaza en `records.data` un `supplierId` que no sea `null` o un UUID en texto de un proveedor del local, y las claves de referencia con otra capitalización (`SupplierId`, `equipmentID`…).
+

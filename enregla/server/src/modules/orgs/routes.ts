@@ -17,7 +17,7 @@ import { TEMPLATES } from './templates.js';
 import { hasLiveStripeSubscription } from '../billing/status.js';
 import { BillingTeardownError, stopOrgBilling } from '../billing/teardown.js';
 import { keysetAfter } from '../../lib/pagination.js';
-import { orgView, recordView } from '../views.js';
+import { establishmentView, orgView, recordView } from '../views.js';
 import { guardSlowDownload } from '../../http/slow-download.js';
 
 export function newItemId(): string {
@@ -126,6 +126,26 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     requireRole(req, 'owner');
     const ctx = requireWritable(req);
     const body = parse(S.updateOrgBody, req.body);
+    const before = ctx.org;
+    // Valores de referencia: se combinan con los ya guardados; `null` devuelve uno al de referencia.
+    let referenceValues: Record<string, number> | null | undefined;
+    if (body.referenceValues !== undefined) {
+      const merged: Record<string, number> = { ...((before.reference_values as Record<string, number> | null) ?? {}) };
+      for (const [k, v] of Object.entries(body.referenceValues)) {
+        if (v == null) delete merged[k];
+        else merged[k] = v;
+      }
+      referenceValues = Object.keys(merged).length ? merged : null;
+    }
+    const est = {
+      legal_name: body.legalName,
+      tax_id: body.taxId,
+      address: body.address,
+      postal_code: body.postalCode,
+      city: body.city,
+      province: body.province,
+      sanitary_registry: body.sanitaryRegistry,
+    };
     const org = await db
       .updateTable('organizations')
       .set({
@@ -133,12 +153,23 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
         ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
         ...(body.reminderEnabled !== undefined ? { reminder_enabled: body.reminderEnabled } : {}),
         ...(body.reminderHour !== undefined ? { reminder_hour: body.reminderHour } : {}),
+        ...Object.fromEntries(Object.entries(est).filter(([, v]) => v !== undefined)),
+        ...(referenceValues !== undefined ? { reference_values: referenceValues === null ? null : json(referenceValues) } : {}),
         updated_at: sql<Date>`now()`,
       })
       .where('id', '=', ctx.org.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    await audit(db, { event: 'org.updated', organizationId: org.id, userId: ctx.userId, ip: req.ip, metadata: { fields: Object.keys(body) } });
+    // Cambios de los datos del establecimiento y de los valores de referencia, con el valor anterior y el nuevo.
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    for (const [col, v] of Object.entries(est)) {
+      const prev = (before as unknown as Record<string, unknown>)[col] ?? null;
+      if (v !== undefined && v !== prev) changes[col] = { from: prev, to: v };
+    }
+    if (referenceValues !== undefined && JSON.stringify(before.reference_values ?? null) !== JSON.stringify(referenceValues)) {
+      changes.reference_values = { from: before.reference_values ?? null, to: referenceValues };
+    }
+    await audit(db, { event: 'org.updated', organizationId: org.id, userId: ctx.userId, ip: req.ip, metadata: { fields: Object.keys(body), ...(Object.keys(changes).length ? { changes } : {}) } });
     return { organization: orgView(org, ctx.role) };
   });
 
@@ -323,24 +354,28 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
   app.patch('/membership', async (req) => {
     const ctx = orgCtx(req);
     const body = parse(S.membershipPrefsBody, req.body);
-    await db
+    const m = await db
       .updateTable('memberships')
-      .set({ daily_reminder: body.dailyReminder })
+      .set({
+        ...(body.dailyReminder !== undefined ? { daily_reminder: body.dailyReminder } : {}),
+        ...(body.weeklyReviewReminder !== undefined ? { weekly_review_reminder: body.weeklyReviewReminder } : {}),
+      })
       .where('organization_id', '=', ctx.org.id)
       .where('user_id', '=', ctx.userId)
-      .execute();
-    return { dailyReminder: body.dailyReminder };
+      .returning(['daily_reminder', 'weekly_review_reminder'])
+      .executeTakeFirstOrThrow();
+    return { dailyReminder: m.daily_reminder, weeklyReviewReminder: m.weekly_review_reminder };
   });
 
   app.get('/membership', async (req) => {
     const ctx = orgCtx(req);
     const m = await db
       .selectFrom('memberships')
-      .select(['role', 'daily_reminder'])
+      .select(['role', 'daily_reminder', 'weekly_review_reminder'])
       .where('organization_id', '=', ctx.org.id)
       .where('user_id', '=', ctx.userId)
       .executeTakeFirstOrThrow();
-    return { role: m.role, dailyReminder: m.daily_reminder };
+    return { role: m.role, dailyReminder: m.daily_reminder, weeklyReviewReminder: m.weekly_review_reminder };
   });
 
   // Exportación RGPD completa (JSON en streaming).
@@ -364,6 +399,8 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
         subscriptionStatus: o.subscription_status,
         trialEndsAt: o.trial_ends_at,
         plan: o.plan,
+        establishment: establishmentView(o),
+        referenceValues: o.reference_values ?? null,
         createdAt: o.created_at,
       })}`;
       const members = await db
@@ -389,6 +426,10 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       yield `,"suppliers":${JSON.stringify(suppliers)}`;
       const dishes = await db.selectFrom('dishes').selectAll().where('organization_id', '=', orgId).execute();
       yield `,"dishes":${JSON.stringify(dishes)}`;
+      const templates = await db.selectFrom('custom_record_templates').selectAll().where('organization_id', '=', orgId).execute();
+      yield `,"customTemplates":${JSON.stringify(templates)}`;
+      const verifications = await db.selectFrom('responsible_verifications').selectAll().where('organization_id', '=', orgId).orderBy('created_at').execute();
+      yield `,"verifications":${JSON.stringify(verifications)}`;
       // Registros por lotes para no cargarlos todos en memoria.
       yield `,"records":[`;
       let first = true;

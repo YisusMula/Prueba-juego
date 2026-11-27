@@ -1,5 +1,4 @@
 import type { z } from 'zod';
-import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import type { DB } from '../../db/index.js';
 import { json } from '../../db/index.js';
@@ -40,9 +39,55 @@ interface Prepared {
   alert: boolean;
   equipmentId: string | null;
   cleaningPlanId: string | null;
+  customTemplateId?: string | null;
+  relatedRecordId?: string | null;
 }
 
-async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, today: string, previous?: { data: unknown }): Promise<Prepared> {
+/**
+ * Forma comparable de un nombre de proveedor escrito a mano (A3): sin tildes ni mayúsculas, espacios
+ * (también duros) colapsados y sin puntuación al principio ni al final.
+ */
+export function supplierKey(name: string): string {
+  return name
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[\s\u00A0\u2000-\u200B\u202F\u205F\u3000\uFEFF]+/g, ' ')
+    .trim()
+    .replace(/^[\s.,;:!¡?¿'"«»()\-–—]+|[\s.,;:!¡?¿'"«»()\-–—]+$/g, '');
+}
+
+interface PrepareCtx {
+  org: Organization;
+  today: string;
+  now: Date;
+  previous?: RecordRow;
+}
+
+/** Raíz de la cadena de correcciones de un registro (el original). */
+async function chainRoot(db: DB, orgId: string, id: string): Promise<RecordRow | undefined> {
+  let rec = await db.selectFrom('records').selectAll().where('id', '=', id).where('organization_id', '=', orgId).executeTakeFirst();
+  for (let i = 0; rec?.amends_record_id && i < 100; i++) {
+    rec = await db.selectFrom('records').selectAll().where('id', '=', rec.amends_record_id).where('organization_id', '=', orgId).executeTakeFirst();
+  }
+  return rec;
+}
+
+/** Versión vigente (la última corrección) de la cadena que empieza en `rootId`. */
+export async function latestVersion(db: DB, orgId: string, rootId: string): Promise<RecordRow | undefined> {
+  let rec = await db.selectFrom('records').selectAll().where('id', '=', rootId).where('organization_id', '=', orgId).executeTakeFirst();
+  for (let i = 0; rec && i < 100; i++) {
+    const next = await db.selectFrom('records').selectAll().where('amends_record_id', '=', rec.id).executeTakeFirst();
+    if (!next) break;
+    rec = next;
+  }
+  return rec;
+}
+
+async function prepare(db: DB, type: S.RecordType, raw: unknown, pc: PrepareCtx): Promise<Prepared> {
+  const orgId = pc.org.id;
+  const today = pc.today;
+  const previous = pc.previous;
   switch (type) {
     case 'temperatura': {
       const d = parseData(S.temperaturaData, raw);
@@ -103,14 +148,17 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
         supplier = { defaultCategory: s.default_category as S.ReceptionCategory | null, receptionLimit: s.reception_limit };
       } else if (supplierName) {
         // R6: un proveedor escrito a mano con el nombre de uno dado de alta ES ese proveedor (sus límites
-        // y su categoría habitual cuentan igual).
-        const s = await db
+        // y su categoría habitual cuentan igual). A3: aunque cambien tildes, mayúsculas, espacios
+        // (también duros) o la puntuación final.
+        const wanted = supplierKey(supplierName);
+        const list = await db
           .selectFrom('suppliers')
           .select(['id', 'name', 'default_category', 'reception_limit'])
           .where('organization_id', '=', orgId)
-          .where(sql<boolean>`lower(btrim(name)) = lower(btrim(${supplierName}))`)
           .orderBy('created_at')
-          .executeTakeFirst();
+          .limit(5000)
+          .execute();
+        const s = wanted ? list.find((x) => supplierKey(x.name) === wanted) : undefined;
         if (s) {
           supplierId = s.id;
           supplierName = s.name;
@@ -238,6 +286,125 @@ async function prepare(db: DB, orgId: string, type: S.RecordType, raw: unknown, 
         cleaningPlanId: null,
       };
     }
+    case 'cocinado': {
+      const d = parseData(S.cocinadoData, raw);
+      const refs = S.effectiveReferenceValues(pc.org.reference_values);
+      const referenceTemp = d.process === 'cocinado' ? refs.cookingMinTemp : refs.reheatMinTemp;
+      const outOfRange = d.coreTemp < referenceTemp;
+      if (outOfRange && !d.correctiveAction) {
+        throw validationError('data.correctiveAction', `No llega a la temperatura de referencia (${S.esNumber(referenceTemp)} °C en el centro): indica la acción correctora`);
+      }
+      return {
+        data: { product: d.product, process: d.process, coreTemp: d.coreTemp, minutes: d.minutes ?? null, referenceTemp, outOfRange, correctiveAction: d.correctiveAction },
+        alert: outOfRange,
+        equipmentId: null,
+        cleaningPlanId: null,
+      };
+    }
+    case 'enfriamiento': {
+      const d = parseData(S.enfriamientoData, raw);
+      const prevPhase = (previous?.data as { phase?: string } | undefined)?.phase;
+      if (previous && prevPhase !== d.phase) {
+        throw validationError('data.phase', d.phase === 'fin' ? 'Este registro es el inicio de un enfriamiento: corrige el inicio, no lo cierres aquí' : 'Este registro es el cierre de un enfriamiento: corrige el cierre');
+      }
+      if (d.phase === 'inicio') {
+        return {
+          data: { phase: 'inicio', product: d.product, startTemp: d.startTemp, notes: d.notes },
+          alert: false,
+          equipmentId: null,
+          cleaningPlanId: null,
+        };
+      }
+      // Cierre: un registro NUEVO enlazado al inicio (nunca se modifica el inicio).
+      const root = await chainRoot(db, orgId, d.startRecordId);
+      if (!root || root.type !== 'enfriamiento' || (root.data as { phase?: string }).phase !== 'inicio') throw notFound('Enfriamiento');
+      if (previous && previous.related_record_id !== root.id) throw validationError('data.startRecordId', 'Una corrección del cierre no puede cambiar de enfriamiento');
+      if (!previous) {
+        const closed = await db.selectFrom('records').select('id').where('related_record_id', '=', root.id).where('amends_record_id', 'is', null).executeTakeFirst();
+        if (closed) throw conflict('Este enfriamiento ya está cerrado');
+      }
+      const start = (await latestVersion(db, orgId, root.id)) ?? root;
+      const sd = start.data as { product?: string; startTemp?: number };
+      const prev = previous?.data as { minutes?: number; endedAt?: string; targetTemp?: number; maxMinutes?: number } | undefined;
+      const refs = S.effectiveReferenceValues(pc.org.reference_values);
+      // En una corrección se conservan la hora de fin y los criterios aplicados al cerrar.
+      const endedAt = prev?.endedAt ? new Date(prev.endedAt) : pc.now;
+      const minutes = prev?.minutes ?? Math.max(0, Math.round((endedAt.getTime() - root.effective_at.getTime()) / 60_000));
+      const targetTemp = prev?.targetTemp ?? refs.coolingTargetTemp;
+      const maxMinutes = prev?.maxMinutes ?? refs.coolingMaxMinutes;
+      const discarded = d.discarded === true;
+      if (!discarded && d.endTemp == null) throw validationError('data.endTemp', 'Escribe la temperatura al terminar el enfriamiento');
+      const overTemp = !discarded && d.endTemp != null && d.endTemp > targetTemp;
+      const overTime = minutes > maxMinutes;
+      const outOfRange = discarded || overTemp || overTime;
+      if (outOfRange && !d.correctiveAction) {
+        throw validationError(
+          'data.correctiveAction',
+          discarded
+            ? 'Indica qué se ha hecho con el producto (por ejemplo, «Desechado»)'
+            : `No cumple el criterio de referencia (${S.esNumber(targetTemp)} °C o menos en ${maxMinutes} minutos o menos): indica la acción correctora`,
+        );
+      }
+      return {
+        data: {
+          phase: 'fin',
+          startRecordId: root.id,
+          product: sd.product ?? null,
+          startTemp: sd.startTemp ?? null,
+          startedAt: root.effective_at.toISOString(),
+          endedAt: endedAt.toISOString(),
+          endTemp: discarded ? (d.endTemp ?? null) : d.endTemp,
+          minutes,
+          targetTemp,
+          maxMinutes,
+          overTemp,
+          overTime,
+          discarded,
+          outOfRange,
+          correctiveAction: d.correctiveAction,
+        },
+        alert: outOfRange,
+        equipmentId: null,
+        cleaningPlanId: null,
+        relatedRecordId: root.id,
+      };
+    }
+    case 'personalizado': {
+      const d = parseData(S.personalizadoData, raw);
+      const tpl = await db.selectFrom('custom_record_templates').selectAll().where('id', '=', d.templateId).where('organization_id', '=', orgId).executeTakeFirst();
+      if (!tpl) throw notFound('Registro personalizado');
+      if (!tpl.active && !previous) throw validationError('data.templateId', 'Este registro personalizado está desactivado');
+      if (previous && (previous.data as { templateId?: string }).templateId !== tpl.id) throw validationError('data.templateId', 'Una corrección no puede cambiar de registro personalizado');
+      let alert: boolean;
+      const base = { templateId: tpl.id, templateName: tpl.name, kind: tpl.kind, notes: d.notes };
+      let data: Record<string, unknown>;
+      if (tpl.kind === 'checklist') {
+        const answers = new Map((d.items ?? []).map((i) => [i.itemId, i.ok]));
+        for (const id of answers.keys()) if (!tpl.items.some((i) => i.id === id)) throw validationError('data.items', 'Hay puntos que no pertenecen a este registro');
+        const missing = tpl.items.filter((i) => !answers.has(i.id));
+        if (missing.length > 0) throw validationError('data.items', `Marca todos los puntos (falta: ${missing[0]!.label})`);
+        const items = tpl.items.map((i) => ({ itemId: i.id, label: i.label, ok: answers.get(i.id) === true }));
+        const failed = items.filter((i) => !i.ok).length;
+        alert = failed > 0;
+        data = { ...base, items, failed };
+      } else if (tpl.kind === 'numeric') {
+        if (d.reading == null) throw validationError('data.reading', 'Escribe el valor');
+        const outOfRange = isOutOfRange(d.reading, tpl.min_value, tpl.max_value);
+        alert = outOfRange;
+        data = { ...base, reading: d.reading, unit: tpl.unit, min: tpl.min_value, max: tpl.max_value, outOfRange };
+      } else {
+        if (d.answer == null) throw validationError('data.answer', 'Responde sí o no');
+        alert = d.answer === false;
+        data = { ...base, answer: d.answer };
+      }
+      if (alert && !d.correctiveAction) {
+        throw validationError(
+          'data.correctiveAction',
+          tpl.kind === 'checklist' ? 'Hay puntos que no se cumplen: indica la acción correctora' : tpl.kind === 'numeric' ? 'El valor está fuera del rango: indica la acción correctora' : 'La respuesta es «No»: indica la acción correctora',
+        );
+      }
+      return { data: { ...data, correctiveAction: d.correctiveAction }, alert, equipmentId: null, cleaningPlanId: null, customTemplateId: tpl.id };
+    }
   }
 }
 
@@ -270,7 +437,8 @@ export async function createRecord(
     const already = await db.selectFrom('records').select('id').where('amends_record_id', '=', original.id).executeTakeFirst();
     if (already) throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
   }
-  const prepared = await prepare(db, org.id, type, rawData, localDate(opts.now ?? new Date(), org.timezone), original ? { data: original.data } : undefined);
+  const now = opts.now ?? new Date();
+  const prepared = await prepare(db, type, rawData, { org, today: localDate(now, org.timezone), now, previous: original });
   // En una corrección, por defecto se conserva el firmante del original (aunque ya esté desactivado).
   const staffId = actor.staffId === undefined ? (original?.staff_id ?? null) : actor.staffId;
   let staffName: string | null = null;
@@ -291,6 +459,8 @@ export async function createRecord(
         device_id: actor.deviceId,
         equipment_id: prepared.equipmentId,
         cleaning_plan_id: prepared.cleaningPlanId,
+        custom_template_id: prepared.customTemplateId ?? null,
+        related_record_id: prepared.relatedRecordId ?? null,
         amends_record_id: original?.id ?? null,
         amendment_reason: amendment?.reason ?? null,
         alert: prepared.alert,
@@ -300,7 +470,10 @@ export async function createRecord(
       .returningAll()
       .executeTakeFirstOrThrow();
   } catch (err) {
-    if ((err as { code?: string }).code === '23505') throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
+    if ((err as { code?: string; constraint?: string }).code === '23505') {
+      if ((err as { constraint?: string }).constraint === 'records_single_close_idx') throw conflict('Este enfriamiento ya está cerrado');
+      throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
+    }
     throw err;
   }
 }

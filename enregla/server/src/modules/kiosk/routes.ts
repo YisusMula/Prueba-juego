@@ -11,7 +11,7 @@ import { sha256 } from '../../lib/crypto.js';
 import { isWritable } from '../billing/status.js';
 import { computeToday } from '../tasks/service.js';
 import { createRecord } from '../records/service.js';
-import { recordView } from '../views.js';
+import { customTemplateView, recordView } from '../views.js';
 import { idempotencyKey, withIdempotency } from '../records/idempotency.js';
 
 /** R7: duración de los bloqueos sucesivos de un PIN (el último, hasta config.pinLockMinutes). */
@@ -57,11 +57,12 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
   app.get('/context', async (req) => {
     const ctx = deviceCtx(req);
     const orgId = ctx.org.id;
-    const [staff, equipment, plans, suppliers] = await Promise.all([
+    const [staff, equipment, plans, suppliers, templates] = await Promise.all([
       db.selectFrom('staff').select(['id', 'name', 'pin_hash']).where('organization_id', '=', orgId).where('active', '=', true).orderBy('name').limit(500).execute(),
       db.selectFrom('equipment').selectAll().where('organization_id', '=', orgId).where('active', '=', true).orderBy('created_at').limit(500).execute(),
       db.selectFrom('cleaning_plans').selectAll().where('organization_id', '=', orgId).where('active', '=', true).orderBy('created_at').limit(500).execute(),
       db.selectFrom('suppliers').select(['id', 'name', 'products', 'default_category', 'reception_limit']).where('organization_id', '=', orgId).orderBy('name').limit(500).execute(),
+      db.selectFrom('custom_record_templates').selectAll().where('organization_id', '=', orgId).where('active', '=', true).orderBy('created_at').limit(100).execute(),
     ]);
     return {
       device: { id: ctx.deviceId, name: ctx.deviceName },
@@ -70,6 +71,9 @@ export async function kioskRoutes(app: FastifyInstance): Promise<void> {
       equipment: equipment.map((e) => ({ id: e.id, name: e.name, type: e.type, minTemp: e.min_temp, maxTemp: e.max_temp, checksPerDay: e.checks_per_day })),
       cleaningPlans: plans.map((p) => ({ id: p.id, name: p.name, frequency: p.frequency, weekday: p.weekday, monthDay: p.month_day, items: p.items })),
       suppliers: suppliers.map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.default_category ?? null, receptionLimit: s.reception_limit ?? null })),
+      /** NUEVO (fase 2): registros personalizados activos y valores de referencia del local. */
+      customTemplates: templates.map(customTemplateView),
+      referenceValues: S.effectiveReferenceValues(ctx.org.reference_values),
     };
   });
 

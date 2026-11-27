@@ -1,5 +1,5 @@
 import type { RecordRow } from '../../db/types.js';
-import { RECEPTION_CATEGORY_LABELS, recordCorrector, recordSignature, type ReceptionCategory, type RecordType } from '../../schemas/index.js';
+import { COOKING_PROCESS_LABELS, RECEPTION_CATEGORY_LABELS, recordCorrector, recordSignature, type CookingProcess, type ReceptionCategory, type RecordType } from '../../schemas/index.js';
 import { formatDateTimeEs } from '../../lib/dates.js';
 
 export type ReportRecord = Omit<RecordRow, 'seq'> & {
@@ -10,6 +10,10 @@ export type ReportRecord = Omit<RecordRow, 'seq'> & {
   amended_by_name?: string | null;
   /** En una corrección: quién figuraba como autor en la versión anterior (empleado o, si no, usuario). */
   amends_signer?: string | null;
+  /** Inicio de enfriamiento: id del registro que lo cierra (null = sin cerrar). */
+  closed_by?: string | null;
+  /** Inicio de enfriamiento: hora del cierre. */
+  closed_at?: Date | null;
 };
 
 export interface Column {
@@ -49,6 +53,9 @@ export function notes(r: ReportRecord, tz = 'UTC'): string {
     parts.push(
       `CORRECCIÓN de un registro anterior. Firmó: ${signer(r)} · Corrigió: ${corrector(r)} el ${formatDateTimeEs(r.created_at, tz)} · Motivo: ${r.amendment_reason ?? ''}${changed}`,
     );
+  }
+  if (r.type === 'enfriamiento' && (r.data as { phase?: string }).phase === 'inicio' && r.amends_record_id == null) {
+    parts.push(r.closed_at ? `Cerrado el ${formatDateTimeEs(r.closed_at, tz)} (ver el cierre)` : 'SIN CERRAR: no consta el final del enfriamiento');
   }
   if (r.amended_by) {
     parts.push(
@@ -125,7 +132,77 @@ export const COLUMNS: Record<RecordType, Column[]> = {
     { header: 'Firma', weight: 1.1 },
     { header: 'Notas', weight: 1.2 },
   ],
+  cocinado: [
+    { header: 'Fecha y hora', weight: 1.1 },
+    { header: 'Producto', weight: 1.6 },
+    { header: 'Proceso', weight: 1 },
+    { header: 'T.ª en el centro', weight: 0.8 },
+    { header: 'Referencia', weight: 0.8 },
+    { header: 'Tiempo', weight: 0.6 },
+    { header: 'Firma', weight: 1.1 },
+    { header: 'Acción correctora', weight: 1.7 },
+    { header: 'Notas', weight: 1.4 },
+  ],
+  enfriamiento: [
+    { header: 'Fecha y hora', weight: 1.1 },
+    { header: 'Producto', weight: 1.5 },
+    { header: 'Fase', weight: 0.7 },
+    { header: 'Temperaturas', weight: 1.3 },
+    { header: 'Tiempo (criterio)', weight: 1.3 },
+    { header: 'Firma', weight: 1.1 },
+    { header: 'Acción correctora', weight: 1.6 },
+    { header: 'Notas', weight: 1.5 },
+  ],
+  personalizado: [
+    { header: 'Fecha y hora', weight: 1.1 },
+    { header: 'Registro', weight: 1.3 },
+    { header: 'Resultado', weight: 1.1 },
+    { header: 'Detalle', weight: 2 },
+    { header: 'Firma', weight: 1.1 },
+    { header: 'Acción correctora', weight: 1.6 },
+    { header: 'Notas', weight: 1.3 },
+  ],
 };
+
+/** «3 de 5 correctos» / valor con unidad / Sí-No de un registro personalizado. */
+export function customResult(d: Record<string, unknown>): string {
+  if (d.kind === 'checklist') {
+    const items = (d.items as { ok: boolean }[] | undefined) ?? [];
+    const ok = items.filter((i) => i.ok).length;
+    return ok === items.length ? `Todo correcto (${ok} de ${items.length})` : `No conforme (${ok} de ${items.length} correctos)`;
+  }
+  if (d.kind === 'numeric') return `${pdfNum(d.reading)}${d.unit ? ` ${str(d.unit)}` : ''}${d.outOfRange ? ' (fuera de rango)' : ''}`;
+  return d.answer === true ? 'Sí' : d.answer === false ? 'No' : '';
+}
+
+/** Detalle de un registro personalizado: puntos no conformes, rango o pregunta. */
+export function customDetail(d: Record<string, unknown>): string {
+  if (d.kind === 'checklist') {
+    const bad = ((d.items as { label: string; ok: boolean }[] | undefined) ?? []).filter((i) => !i.ok).map((i) => i.label);
+    return bad.length ? `No cumple: ${bad.join('; ')}` : '';
+  }
+  if (d.kind === 'numeric') {
+    const unit = d.unit ? ` ${str(d.unit)}` : '';
+    const a = typeof d.min === 'number' ? pdfNum(d.min) : null;
+    const b = typeof d.max === 'number' ? pdfNum(d.max) : null;
+    return a && b ? `Rango: ${a} a ${b}${unit}` : a ? `Mínimo: ${a}${unit}` : b ? `Máximo: ${b}${unit}` : '';
+  }
+  return '';
+}
+
+/** Texto de temperaturas y tiempos de un registro de enfriamiento (inicio o cierre). */
+function coolingTemps(d: Record<string, unknown>): string {
+  if (d.phase === 'inicio') return `Inicio: ${pdfNum(d.startTemp)} °C`;
+  const end = d.discarded ? (typeof d.endTemp === 'number' ? `${pdfNum(d.endTemp)} °C (desechado)` : 'Desechado sin medir') : `${pdfNum(d.endTemp)} °C`;
+  return `Inicio: ${typeof d.startTemp === 'number' ? `${pdfNum(d.startTemp)} °C` : '—'} → fin: ${end}`;
+}
+function coolingTime(d: Record<string, unknown>, tz: string): string {
+  if (d.phase === 'inicio') return '';
+  const crit = `criterio: ≤ ${pdfNum(d.targetTemp)} °C en ≤ ${str(d.maxMinutes)} min`;
+  const start = typeof d.startedAt === 'string' ? `desde ${formatDateTimeEs(new Date(d.startedAt), tz)}, ` : '';
+  const flags = [d.overTime ? 'fuera de tiempo' : null, d.overTemp ? 'por encima de la temperatura' : null].filter(Boolean).join(', ');
+  return `${start}${str(d.minutes)} min (${crit})${flags ? `: ${flags}` : ''}`;
+}
 
 /** « (Refrigerado, máx. 4 °C)»: categoría y límite aplicados a la recepción (vacío si no hay ninguno). */
 function receptionLimitText(d: Record<string, unknown>): string {
@@ -196,6 +273,22 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
       return [when, str(d.description), str(d.correctiveAction), d.closed ? 'Cerrada' : 'Abierta', signer(r), notes(r, tz)];
     case 'formacion':
       return [when, str(d.traineeName), str(d.course), esDate(d.trainingDate), str(d.trainer), num(d.hours), signer(r), notes(r, tz)];
+    case 'cocinado':
+      return [
+        when,
+        str(d.product),
+        COOKING_PROCESS_LABELS[d.process as CookingProcess] ?? str(d.process),
+        `${pdfNum(d.coreTemp)} °C${d.outOfRange ? ' (no llega)' : ''}`,
+        typeof d.referenceTemp === 'number' ? `≥ ${pdfNum(d.referenceTemp)} °C` : '',
+        typeof d.minutes === 'number' ? `${d.minutes} min` : '',
+        signer(r),
+        str(d.correctiveAction),
+        notes(r, tz),
+      ];
+    case 'enfriamiento':
+      return [when, str(d.product), d.phase === 'fin' ? 'Fin' : 'Inicio', coolingTemps(d), coolingTime(d, tz), signer(r), str(d.correctiveAction), notes(r, tz)];
+    case 'personalizado':
+      return [when, str(d.templateName), customResult(d), [customDetail(d), d.notes ? `Observaciones: ${str(d.notes)}` : ''].filter(Boolean).join(' · '), signer(r), str(d.correctiveAction), notes(r, tz)];
   }
 }
 
@@ -254,6 +347,21 @@ export const CSV_HEADERS = [
   'temperatura_minima_c',
   // Evaluación de la fase 1: la recepción usó el límite propio del proveedor (distinto del de referencia).
   'limite_del_proveedor',
+  // Fase 2: cocinado y regeneración, enfriamiento rápido y registros personalizados.
+  'proceso',
+  'temperatura_centro_c',
+  'referencia_c',
+  'minutos',
+  'fase_enfriamiento',
+  'inicio_enfriamiento_de',
+  'temperatura_inicio_c',
+  'temperatura_fin_c',
+  'criterio_temperatura_c',
+  'criterio_minutos',
+  'desechado',
+  'registro_personalizado',
+  'resultado_personalizado',
+  'detalle_personalizado',
 ];
 
 export function csvRow(r: ReportRecord, tz: string): string[] {
@@ -290,7 +398,7 @@ export function csvRow(r: ReportRecord, tz: string): string[] {
     plan_limpieza: str(d.planName),
     items_realizados: r.type === 'limpieza' ? items.filter((i) => i.done).map((i) => i.area).join('; ') : '',
     items_no_realizados: r.type === 'limpieza' ? items.filter((i) => !i.done).map((i) => i.area).join('; ') : '',
-    observaciones: str(d.observations),
+    observaciones: str(d.observations ?? d.notes),
     proveedor: str(d.supplierName),
     producto: str(d.product),
     lote: str(d.lot),
@@ -308,6 +416,20 @@ export function csvRow(r: ReportRecord, tz: string): string[] {
     fecha_formacion: esDate(d.trainingDate),
     formador: str(d.trainer),
     horas: num(d.hours),
+    proceso: r.type === 'cocinado' ? str(COOKING_PROCESS_LABELS[d.process as CookingProcess] ?? d.process) : '',
+    temperatura_centro_c: r.type === 'cocinado' ? num(d.coreTemp) : '',
+    referencia_c: r.type === 'cocinado' ? num(d.referenceTemp) : '',
+    minutos: r.type === 'cocinado' || r.type === 'enfriamiento' ? num(d.minutes) : '',
+    fase_enfriamiento: r.type === 'enfriamiento' ? (d.phase === 'fin' ? 'fin' : 'inicio') : '',
+    inicio_enfriamiento_de: r.type === 'enfriamiento' ? str(d.startRecordId) : '',
+    temperatura_inicio_c: r.type === 'enfriamiento' ? num(d.startTemp) : '',
+    temperatura_fin_c: r.type === 'enfriamiento' ? num(d.endTemp) : '',
+    criterio_temperatura_c: r.type === 'enfriamiento' ? num(d.targetTemp) : '',
+    criterio_minutos: r.type === 'enfriamiento' ? num(d.maxMinutes) : '',
+    desechado: r.type === 'enfriamiento' && d.phase === 'fin' ? (d.discarded ? 'sí' : 'no') : '',
+    registro_personalizado: r.type === 'personalizado' ? str(d.templateName) : '',
+    resultado_personalizado: r.type === 'personalizado' ? customResult(d).replace('−', '-') : '',
+    detalle_personalizado: r.type === 'personalizado' ? customDetail(d).replace(/−/g, '-') : '',
   };
   return CSV_HEADERS.map((h) => row[h] ?? '');
 }

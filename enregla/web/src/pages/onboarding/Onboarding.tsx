@@ -11,14 +11,15 @@ import { Field, Input, zodToFieldErrors } from '@/components/ui/Form';
 import { Logo } from '@/components/ui/Logo';
 import { Icon, type IconName } from '@/components/icons/Icon';
 import { CleaningManager, EquipmentManager, StaffManager } from '@/features/ConfigLists';
+import { EstablishmentForm } from '@/features/EstablishmentForm';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { PRICING } from '@/config/brand';
 import { cn } from '@/lib/cn';
 import { formatLocalDate, relativeDays } from '@/lib/format';
 import { storage } from '@/lib/storage';
 
-/** Cuatro pasos (la pantalla final «¡Listo!» no es un paso). En la URL, `paso` va de 1 a 4 (5 = terminado). */
-const STEPS = ['Tu local', 'Equipos', 'Limpieza', 'Personal'] as const;
+/** Cinco pasos (la pantalla final «¡Listo!» no es un paso). En la URL, `paso` va de 1 a 5 (6 = terminado). */
+const STEPS = ['Tu local', 'Equipos', 'Limpieza', 'Personal', 'Datos del PDF'] as const;
 const DONE = STEPS.length;
 
 const BUSINESS_ICONS: Record<BusinessType, IconName> = {
@@ -112,10 +113,39 @@ export function OnboardingPage() {
               intro="Quienes firmarán los registros en la tablet. No necesitan email ni cuenta. Te recomendamos darles un PIN: así nadie firma con el nombre de otra persona."
               onBack={() => go(2)}
               onNext={() => go(4)}
-              nextLabel="Terminar"
             >
               <StaffManager orgId={orgId} readOnly={ro} />
             </StepShell>
+          ) : effectiveStep === 4 ? (
+            <section aria-labelledby="step-title">
+              <h1 id="step-title" className="text-3xl font-extrabold">
+                Datos para la inspección <span className="text-ink-muted">(opcional)</span>
+              </h1>
+              <p className="mt-2 mb-6 text-lg text-ink-muted">
+                Razón social, NIF, dirección y nº de Registro Sanitario salen en la portada del informe PDF que enseñas en una inspección. Puedes saltarlo y rellenarlo cuando quieras en Ajustes → Datos y
+                recordatorios. Lo que no rellenes aparecerá como «No indicado».
+              </p>
+              {orgQ.data && !ro ? (
+                <EstablishmentForm
+                  org={orgQ.data}
+                  intro={false}
+                  submitLabel="Guardar y terminar"
+                  onSaved={() => go(5)}
+                  extraActions={
+                    <Button variant="ghost" onClick={() => go(5)}>
+                      Saltar por ahora
+                    </Button>
+                  }
+                />
+              ) : (
+                <Button onClick={() => go(5)}>Terminar</Button>
+              )}
+              <div className="mt-8 border-t border-line pt-4">
+                <Button variant="secondary" icon="arrowLeft" onClick={() => go(3)}>
+                  Atrás
+                </Button>
+              </div>
+            </section>
           ) : (
             <StepDone orgId={orgId} />
           )}

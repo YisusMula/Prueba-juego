@@ -85,6 +85,15 @@ export async function applyAppRolePrivileges(pool: pg.Pool, role: string, opts: 
     // Tablas desde las que un DELETE borraría registros en cascada: la app no las borra (desactiva).
     // Los locales los purga el MANTENIMIENTO con el rol propietario (0009), nunca la app.
     await q('REVOKE DELETE ON organizations, devices, staff, equipment, cleaning_plans FROM %ROLE%');
+    // Fase 2: plantillas de registros personalizados (los registros las referencian: se desactivan,
+    // no se borran) y verificaciones del responsable (hecho inmutable: solo leer y añadir).
+    if ((await client.query("SELECT to_regclass('public.custom_record_templates') AS t")).rows[0].t) {
+      await q('REVOKE DELETE ON custom_record_templates FROM %ROLE%');
+      await q('REVOKE UPDATE ON custom_record_templates FROM %ROLE%');
+      await q('GRANT UPDATE (name, items, unit, min_value, max_value, frequency, times_per_day, weekday, month_day, instructions, active, updated_at) ON custom_record_templates TO %ROLE%');
+      await q('REVOKE INSERT, UPDATE, DELETE ON custom_template_config_history FROM %ROLE%');
+      await q('REVOKE UPDATE, DELETE ON responsible_verifications FROM %ROLE%');
+    }
     // Auditoría: solo añadir (la hora la pone la base de datos; los eventos db.* son del propietario) y leer.
     await q('REVOKE UPDATE, DELETE ON audit_events FROM %ROLE%');
     // Historial de configuración: lo escriben triggers del propietario; la app solo lo lee.

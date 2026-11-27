@@ -56,12 +56,15 @@ export async function closeTestApp(ctx: TestCtx): Promise<void> {
 }
 
 const TABLES = [
+  'responsible_verifications',
+  'custom_template_config_history',
   'job_runs',
   'email_outbox',
   'idempotency_keys',
   'equipment_config_history',
   'cleaning_plan_config_history',
   'records',
+  'custom_record_templates',
   'audit_events',
   'rate_limits',
   'stripe_events',

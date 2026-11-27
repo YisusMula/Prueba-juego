@@ -15,7 +15,10 @@ describe('personal', () => {
     expect(res.statusCode).toBe(201);
     const st = json(res).staff;
     expect(st).toMatchObject({ name: 'Lucía', hasPin: true, active: true, lockedUntil: null });
-    expect(res.body).not.toContain('1234');
+    // El PIN no aparece en ningún campo de la respuesta (comparar por campos: un id aleatorio puede contener '1234').
+    const leaks = (v: unknown): boolean =>
+      v === '1234' || (typeof v === 'object' && v !== null && Object.entries(v).some(([k, x]) => /pin(_hash)?$/i.test(k) && k !== 'hasPin' ? true : leaks(x)));
+    expect(leaks(json(res))).toBe(false);
     const row = await ctx.deps.db.selectFrom('staff').selectAll().where('id', '=', st.id).executeTakeFirstOrThrow();
     expect(row.pin_hash!.startsWith('$argon2id$')).toBe(true);
 

@@ -17,6 +17,7 @@ import { QrCode } from '@/components/ui/QrCode';
 import { Icon, type IconName } from '@/components/icons/Icon';
 import { CleaningManager, EquipmentManager, StaffManager, SupplierManager } from '@/features/ConfigLists';
 import { PasswordMeter } from '@/features/PasswordMeter';
+import { EstablishmentForm, ReferenceValuesForm } from '@/features/EstablishmentForm';
 import { DownloadButton } from '@/features/DownloadButton';
 import { STATUS_LABELS, WriteGuard, deletionDate } from '@/features/SubscriptionBanner';
 import { SUPPORT_EMAIL } from '@/config/legal';
@@ -70,10 +71,11 @@ export function SettingsHubPage() {
     {
       title: 'Tu local',
       items: [
-        { to: 'ajustes/local', icon: 'store', title: 'Datos y recordatorios', text: 'Nombre, zona horaria y aviso diario' },
+        { to: 'ajustes/local', icon: 'store', title: 'Datos y recordatorios', text: 'Nombre, datos para el PDF (NIF, RGSEAA), referencias y avisos' },
         { to: 'ajustes/equipos', icon: 'thermometer', title: 'Equipos', text: 'Cámaras, congeladores, vitrinas y freidoras' },
         { to: 'ajustes/limpieza', icon: 'sparkles', title: 'Planes de limpieza', text: 'Zonas y frecuencias' },
         { to: 'ajustes/proveedores', icon: 'truck', title: 'Proveedores', text: 'Para las recepciones de mercancía' },
+        { to: 'ajustes/registros', icon: 'clipboard', title: 'Registros personalizados', text: 'Agua, termómetros, mantenimiento y tus propios controles' },
         { to: 'alergenos', icon: 'utensils', title: 'Carta de alérgenos', text: 'Platos, QR y versión imprimible' },
       ],
     },
@@ -184,6 +186,15 @@ export function OrgSettingsPage() {
       toast.show(errorMessage(err), 'bad');
     }
   };
+  const setWeekly = async (v: boolean) => {
+    try {
+      await api.patch(`/api/orgs/${orgId}/membership`, { weeklyReviewReminder: v });
+      await qc.invalidateQueries({ queryKey: keys.orgScoped(orgId, 'membership') });
+      toast.show(v ? 'Recibirás el aviso semanal de revisión' : 'Ya no recibirás el aviso semanal de revisión');
+    } catch (err) {
+      toast.show(errorMessage(err), 'bad');
+    }
+  };
 
   const tzOptions: (readonly [string, string])[] = COMMON_TIMEZONES.some(([v]) => v === org.timezone)
     ? COMMON_TIMEZONES
@@ -243,14 +254,42 @@ export function OrgSettingsPage() {
           ) : membership.isError ? (
             <ErrorState error={membership.error} onRetry={() => void membership.refetch()} />
           ) : (
-            <Switch
-              checked={membership.data.dailyReminder}
-              onChange={(v) => void setPersonal(v)}
-              label="Quiero recibir el recordatorio diario"
-              description={org.reminderEnabled ? 'Preferencia personal: solo te afecta a ti.' : 'El recordatorio del local está desactivado ahora mismo.'}
-            />
+            <div className="space-y-4">
+              <Switch
+                checked={membership.data.dailyReminder}
+                onChange={(v) => void setPersonal(v)}
+                label="Quiero recibir el recordatorio diario"
+                description={org.reminderEnabled ? 'Preferencia personal: solo te afecta a ti.' : 'El recordatorio del local está desactivado ahora mismo.'}
+              />
+              <Switch
+                checked={membership.data.weeklyReviewReminder !== false}
+                onChange={(v) => void setWeekly(v)}
+                label="Avisarme los lunes si la semana pasada está sin revisar"
+                description="En el mismo email del recordatorio, para marcarla como revisada en Informes."
+              />
+            </div>
           )}
           {readOnly ? <p className="mt-3 text-sm text-ink-muted">Esta preferencia se puede cambiar también en solo lectura.</p> : null}
+        </Card>
+        <Card id="establecimiento">
+          <SectionTitle>Datos del establecimiento (PDF)</SectionTitle>
+          {!isOwner ? (
+            <OwnerOnly>{null}</OwnerOnly>
+          ) : (
+            <WriteGuard>
+              <EstablishmentForm org={org} />
+            </WriteGuard>
+          )}
+        </Card>
+        <Card id="referencias">
+          <SectionTitle>Valores de referencia</SectionTitle>
+          {!isOwner ? (
+            <OwnerOnly>{null}</OwnerOnly>
+          ) : (
+            <WriteGuard>
+              <ReferenceValuesForm org={org} />
+            </WriteGuard>
+          )}
         </Card>
       </div>
     </SettingsShell>
@@ -678,12 +717,27 @@ export function TeamSettingsPage() {
 const auditLabel = (event: string) => AUDIT_EVENT_LABELS[event] ?? 'Otra acción';
 
 /** Detalle breve para algunos eventos (a quién se invitó, nuevo rol…). */
+const ORG_FIELD_LABELS: Record<string, string> = {
+  legal_name: 'razón social',
+  tax_id: 'NIF/CIF',
+  address: 'dirección',
+  postal_code: 'código postal',
+  city: 'municipio',
+  province: 'provincia',
+  sanitary_registry: 'Registro Sanitario',
+  reference_values: 'valores de referencia',
+};
+
 function auditDetail(ev: { event: string; metadata: Record<string, unknown> }): string | null {
   const m = ev.metadata;
   if (ev.event === 'member.invited' && typeof m.email === 'string') return m.email;
   if (ev.event === 'member.role_changed' && typeof m.role === 'string') return `nuevo rol: ${m.role === 'owner' ? 'propietario/a' : 'encargado/a'}`;
   if (ev.event === 'public_menu.updated') return m.regenerated ? 'enlace cambiado' : m.enabled === true ? 'activada' : m.enabled === false ? 'desactivada' : null;
   if (ev.event === 'report.generated' && typeof m.format === 'string') return m.format.toUpperCase();
+  if (ev.event === 'report.verified' && typeof m.from === 'string' && typeof m.to === 'string') return `del ${formatLocalDate(m.from)} al ${formatLocalDate(m.to)}`;
+  if ((ev.event === 'custom_template.created' || ev.event === 'custom_template.updated') && typeof m.name === 'string') return m.name;
+  if (ev.event === 'db.membership_changed' && typeof m.new_role === 'string') return `${m.op === 'INSERT' ? 'alta' : 'cambio'}: ${m.new_role === 'owner' ? 'propietario/a' : 'encargado/a'}`;
+  if (ev.event === 'org.updated' && m.changes && typeof m.changes === 'object') return `cambiado: ${Object.keys(m.changes).map((k) => ORG_FIELD_LABELS[k] ?? k).join(', ')}`;
   return null;
 }
 

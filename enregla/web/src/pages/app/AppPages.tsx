@@ -1,8 +1,12 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
-import { useCompliance, useToday } from '@/api/queries';
-import type { Compliance, RecordType, TodayTasks } from '@/api/types';
+import { useSearchParams } from 'react-router';
+import { orgApi, useCompliance, useOrgMutation, useToday, useVerifications } from '@/api/queries';
+import { api, errorMessage } from '@/api/client';
+import type { Compliance, MissingTask, RecordType, TodayTasks, Verification } from '@/api/types';
+import { Dialog, useToast } from '@/components/ui/Overlay';
+import { ChoiceGroup, Textarea } from '@/components/ui/Form';
 import { useOrgContext } from '@/hooks/useOrgContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { remeasureDue, useNow } from '@/hooks/useNow';
@@ -114,6 +118,11 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const { path } = useOrgContext();
   // Lo dado de alta (o reactivado) hoy se muestra aparte: no es exigible hasta mañana ni cuenta en el progreso.
   const counted = { temps: data.temperatures.filter((t) => t.countsToday !== false), clean: data.cleaning.filter((c) => c.countsToday !== false) };
+  const custom = data.custom ?? [];
+  const coolings = data.coolings ?? [];
+  const pendingCustom = custom.filter((c) => c.countsToday !== false && c.status === 'pending');
+  const doneCustom = custom.filter((c) => c.countsToday !== false && c.status === 'done');
+  const notYetCustom = custom.filter((c) => c.countsToday === false);
   // 1.12: un equipo cuya última lectura de hoy está fuera de rango vuelve a «Pendiente» como «Volver a medir».
   const pendingTemps = data.temperatures.filter((t) => (t.countsToday !== false && t.status === 'pending') || t.remeasure);
   const now = useNow();
@@ -123,6 +132,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const doneClean = counted.clean.filter((c) => c.status === 'done');
   const notYetTemps = data.temperatures.filter((t) => t.countsToday === false);
   const notYetClean = data.cleaning.filter((c) => c.countsToday === false);
+  const notYetCount = notYetTemps.length + notYetClean.length + notYetCustom.length;
   const { summary } = data;
   const allDone = summary.total > 0 && summary.pending === 0 && remeasureCount === 0;
   const subCard = useSubscriptionNotice();
@@ -141,7 +151,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
           <div className="min-w-0">
             <h2 id="resumen" className="text-2xl font-extrabold">
               {summary.total === 0
-                ? notYetTemps.length + notYetClean.length > 0
+                ? notYetCount > 0
                   ? 'Nada obligatorio hoy'
                   : 'Sin tareas programadas'
                 : allDone
@@ -152,7 +162,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
             </h2>
             <p className="mt-1 text-ink-muted">
               {summary.total === 0
-                ? notYetTemps.length + notYetClean.length > 0
+                ? notYetCount > 0
                   ? 'Lo dado de alta hoy empieza a contar mañana. Puedes ir registrándolo.'
                   : 'No hay controles de temperatura ni limpiezas previstos para hoy.'
                 : `${summary.done} ${summary.done === 1 ? 'tarea hecha' : 'tareas hechas'}${(summary.doneWithAlert ?? 0) > 0 ? ` (${summary.doneWithAlert} con alerta)` : ''} · ${data.alerts.length === 0 ? 'sin alertas' : `${data.alerts.length} ${data.alerts.length === 1 ? 'alerta' : 'alertas'}`}`}
@@ -171,6 +181,33 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
         </Card>
         {subCard ? <SubscriptionCard notice={subCard} /> : null}
       </section>
+
+      <ReviewNotice review={data.review} />
+
+      {coolings.length > 0 ? (
+        <section aria-labelledby="en-curso">
+          <SectionTitle id="en-curso">
+            <span className="inline-flex items-center gap-2">
+              <Icon name="snowflake" className="text-brand" /> Enfriamientos en curso
+            </span>
+          </SectionTitle>
+          <ul className="grid gap-3 sm:grid-cols-2" data-testid="coolings">
+            {coolings.map((c) => (
+              <TaskCard
+                key={c.recordId}
+                to={path(`registrar/enfriamiento?enfriamiento=${c.recordId}`)}
+                type="enfriamiento"
+                title={c.product}
+                detail={`Empezó a las ${formatTime(c.startedAt, tz)} a ${formatTemp(c.startTemp)} · criterio ${formatTemp(c.targetTemp)} en ${c.maxMinutes} min`}
+                extra={c.overdue ? `Han pasado más de ${c.maxMinutes} min: termínalo y anota qué haces con el producto` : `Termina antes de las ${formatTime(c.deadline, tz)}`}
+                warn={c.overdue}
+                due={c.overdue}
+                badge="En curso"
+              />
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {data.alerts.length > 0 ? (
         <section aria-labelledby="alertas">
@@ -206,7 +243,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
         </section>
       ) : null}
 
-      {summary.total === 0 && notYetTemps.length + notYetClean.length > 0 ? null : summary.total === 0 ? (
+      {summary.total === 0 && notYetCount > 0 ? null : summary.total === 0 ? (
         <EmptyState
           icon="thermometer"
           title="Nada programado para hoy"
@@ -222,7 +259,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
         <>
           <section aria-labelledby="pendientes">
             <SectionTitle id="pendientes">Pendiente</SectionTitle>
-            {pendingTemps.length + pendingClean.length === 0 ? (
+            {pendingTemps.length + pendingClean.length + pendingCustom.length === 0 ? (
               <Callout tone="ok" title="No queda nada pendiente">
                 Buen trabajo. Si surge algo, regístralo desde «Otro registro».
               </Callout>
@@ -258,10 +295,19 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     warn={!!c.partial}
                   />
                 ))}
+                {pendingCustom.map((c) => (
+                  <TaskCard
+                    key={c.templateId}
+                    to={path(`registrar/personalizado?registro=${c.templateId}`)}
+                    type="personalizado"
+                    title={c.name}
+                    detail={c.frequency === 'daily' ? `${c.done} de ${c.required} ${c.required === 1 ? 'vez' : 'veces'} hoy` : c.frequency === 'weekly' ? 'Toca esta semana' : 'Toca este mes'}
+                  />
+                ))}
               </ul>
             )}
           </section>
-          {doneTemps.length + doneClean.length > 0 ? (
+          {doneTemps.length + doneClean.length + doneCustom.length > 0 ? (
             <section aria-labelledby="hechas">
               <SectionTitle id="hechas">Hecho</SectionTitle>
               <ul className="divide-y divide-line rounded-2xl border border-line bg-surface">
@@ -297,13 +343,23 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     <Badge tone="ok" icon="check">Hecho</Badge>
                   </li>
                 ))}
+                {doneCustom.map((c) => (
+                  <li key={c.templateId} className="flex items-center gap-3 px-4 py-3">
+                    {c.withAlert ? <Icon name="alert" className="shrink-0 text-bad" /> : <Icon name="check" className="shrink-0 text-ok" strokeWidth={2.5} />}
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-semibold [overflow-wrap:anywhere]">{c.name}</span>
+                      <span className="block text-sm text-ink-muted">{c.lastAt ? `Último a las ${formatTime(c.lastAt, tz)}` : 'Hecho'}</span>
+                    </span>
+                    {c.withAlert ? <Badge tone="bad" icon="alert">Hecho con alerta</Badge> : <Badge tone="ok" icon="check">Hecho</Badge>}
+                  </li>
+                ))}
               </ul>
             </section>
           ) : null}
         </>
       )}
 
-      {notYetTemps.length + notYetClean.length > 0 ? (
+      {notYetCount > 0 ? (
         <section aria-labelledby="manana">
           <SectionTitle id="manana">Empieza a contar mañana</SectionTitle>
           <p className="-mt-2 mb-3 text-sm text-ink-muted">Dado de alta o reactivado hoy: puedes registrarlo ya, pero no cuenta en el progreso de hoy.</p>
@@ -320,6 +376,9 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
             ))}
             {notYetClean.map((c) => (
               <TaskCard key={c.cleaningPlanId} to={path(`registrar/limpieza?plan=${c.cleaningPlanId}`)} type="limpieza" title={c.name} detail={c.status === 'done' ? 'Hecha' : 'Sin hacer'} badge="Opcional hoy" />
+            ))}
+            {notYetCustom.map((c) => (
+              <TaskCard key={c.templateId} to={path(`registrar/personalizado?registro=${c.templateId}`)} type="personalizado" title={c.name} detail={c.status === 'done' ? 'Hecho' : 'Sin hacer'} badge="Opcional hoy" />
             ))}
           </ul>
         </section>
@@ -346,7 +405,7 @@ function TaskCard({
   warn?: boolean;
   /** #14: ya ha llegado la hora de volver a medir (resaltado, sin notificación). */
   due?: boolean;
-  badge?: 'Pendiente' | 'Volver a medir' | 'Opcional hoy';
+  badge?: 'Pendiente' | 'Volver a medir' | 'Opcional hoy' | 'En curso';
 }) {
   const { readOnly } = useOrgContext();
   return (
@@ -370,10 +429,10 @@ function TaskCard({
           <span
             className={cn(
               'mt-1 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-sm font-bold',
-              badge === 'Pendiente' ? 'bg-warn-soft text-warn' : badge === 'Volver a medir' ? 'bg-bad-soft text-bad' : 'bg-surface-2 text-ink-muted',
+              badge === 'Pendiente' || badge === 'En curso' ? 'bg-warn-soft text-warn' : badge === 'Volver a medir' ? 'bg-bad-soft text-bad' : 'bg-surface-2 text-ink-muted',
             )}
           >
-            {badge === 'Volver a medir' ? <Icon name="refresh" size={14} /> : null}
+            {badge === 'Volver a medir' ? <Icon name="refresh" size={14} /> : badge === 'En curso' ? <Icon name="clock" size={14} /> : null}
             {badge}
           </span>
           {due ? (
@@ -385,6 +444,30 @@ function TaskCard({
         <Icon name="chevronRight" className="shrink-0 text-ink-muted transition-transform group-hover:translate-x-0.5" />
       </Link>
     </li>
+  );
+}
+
+/** Aviso en Hoy si la semana anterior no está marcada como revisada por el responsable (fase 2). */
+function ReviewNotice({ review }: { review: TodayTasks['review'] }) {
+  const { path, readOnly } = useOrgContext();
+  if (!review || !review.due || review.verified) return null;
+  return (
+    <Callout
+      tone="info"
+      icon="shield"
+      title="La semana pasada está sin revisar"
+      action={
+        readOnly ? undefined : (
+          <LinkButton to={`${path('informes')}?revisar=semana-pasada`} size="md" variant="secondary" icon="check">
+            Revisar y marcar
+          </LinkButton>
+        )
+      }
+    >
+      <span data-testid="review-notice">
+        Del {formatLocalDate(review.from)} al {formatLocalDate(review.to)}. Revisa los registros y márcala como revisada: así consta en el PDF «Verificado por…».
+      </span>
+    </Callout>
   );
 }
 
@@ -459,9 +542,11 @@ function presetRange(preset: Preset, today: string): { from: string; to: string 
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
 
 export function ReportsPage() {
-  const { orgId, tz, org } = useOrgContext();
+  const { orgId, tz, org, readOnly } = useOrgContext();
   useDocumentTitle('Informes');
   const today = localDateIn(tz);
+  const [params, setParams] = useSearchParams();
+  const [reviewOpen, setReviewOpen] = useState(() => params.get('revisar') != null);
   const [preset, setPreset] = useState<Preset>('30');
   const [custom, setCustom] = useState(() => presetRange('30', today));
   const range = preset === 'custom' ? custom : presetRange(preset, today);
@@ -489,7 +574,8 @@ export function ReportsPage() {
   return (
     <>
       <PageHeader title="Informes" subtitle="Descarga tus registros para la inspección o para tu asesor. También funciona en modo solo lectura." />
-      <div className="grid gap-6 xl:grid-cols-[1fr_1.1fr]">
+      <div className="grid items-start gap-6 xl:grid-cols-[1fr_1.1fr]">
+        <div className="space-y-6">
         <Card>
           <h2 className="text-xl font-bold">1. Periodo</h2>
           <div className="mt-3 flex flex-wrap gap-2" role="radiogroup" aria-label="Periodo">
@@ -574,14 +660,29 @@ export function ReportsPage() {
             </DownloadButton>
           </div>
           <p className="mt-3 text-sm text-ink-muted">
-            El PDF incluye los datos de {org.name}, una tabla por tipo, lo que está fuera de rango señalado y las correcciones con su motivo. Si el periodo tiene demasiados registros para un PDF, acota las fechas o usa el CSV.
+            El PDF incluye una portada con los datos de {org.name} y un resumen del periodo, una tabla por tipo (agrupada por equipo, plan o registro), lo que está fuera de rango señalado, las correcciones con su motivo, las tareas sin registrar, la verificación del responsable y un espacio para su firma. Si el periodo tiene demasiados registros para un PDF, acota las fechas o usa el CSV.
           </p>
         </Card>
+        <ReviewCard
+          range={rangeError ? null : range}
+          today={today}
+          readOnly={readOnly}
+          open={reviewOpen}
+          initialChoice={params.get('revisar') === 'semana-pasada' ? 'week' : undefined}
+          onOpenChange={(v) => {
+            setReviewOpen(v);
+            if (!v && params.get('revisar') != null) {
+              params.delete('revisar');
+              setParams(params, { replace: true });
+            }
+          }}
+        />
+        </div>
         <Card>
           <h2 className="text-xl font-bold">Resumen de tareas hechas</h2>
           <p className="text-sm text-ink-muted">
-            Controles de temperatura y limpiezas previstos frente a hechos
-            {days > 92 && !rangeError ? ` (últimos 92 días del periodo: desde el ${formatLocalDate(compFrom)})` : ''}. Usa la configuración actual de equipos y planes.
+            Controles de temperatura, limpiezas y registros personalizados previstos frente a hechos
+            {days > 92 && !rangeError ? ` (últimos 92 días del periodo: desde el ${formatLocalDate(compFrom)})` : ''}. Cada día cuenta con la configuración que estaba vigente ese día.
           </p>
           <div className="mt-4">
             {rangeError ? (
@@ -591,12 +692,213 @@ export function ReportsPage() {
             ) : compliance.isError ? (
               <ErrorState error={compliance.error} onRetry={() => void compliance.refetch()} />
             ) : (
-              <ComplianceChart data={compliance.data} />
+              <>
+                <ComplianceChart data={compliance.data} />
+                <MissingByDay data={compliance.data} />
+              </>
             )}
           </div>
         </Card>
       </div>
     </>
+  );
+}
+
+/** Texto de una tarea sin registrar (el mismo que en el PDF). */
+export function missingLabel(m: MissingTask): { task: string; what: string } {
+  const kind = m.kind === 'temperatura' ? 'Temperatura' : m.kind === 'limpieza' ? 'Limpieza' : 'Registro';
+  const period = m.frequency === 'weekly' ? ' en toda la semana' : m.frequency === 'monthly' ? ' en todo el mes' : '';
+  const what =
+    m.kind === 'limpieza'
+      ? m.partial
+        ? 'Solo una limpieza parcial: falta completarla'
+        : `Sin registrar${period}`
+      : m.expected > 1
+        ? `${m.done} de ${m.expected} ${m.kind === 'temperatura' ? 'controles' : 'veces'}`
+        : `Sin registrar${period}`;
+  return { task: `${kind}: ${m.name}`, what };
+}
+
+/** Qué tarea faltó cada día (fase 2): días con huecos, desplegables. */
+export function MissingByDay({ data }: { data: Compliance }) {
+  const days = data.days.filter((d) => (d.missing?.length ?? 0) > 0).reverse();
+  return (
+    <section aria-labelledby="sin-registrar" className="mt-6 border-t border-line pt-4">
+      <h3 id="sin-registrar" className="text-lg font-bold">
+        Tareas sin registrar
+      </h3>
+      {days.length === 0 ? (
+        <p className="mt-1 text-ink-muted" data-testid="no-gaps">
+          No falta ninguna tarea exigible en este periodo.
+        </p>
+      ) : (
+        <>
+          <p className="mt-1 text-sm text-ink-muted">
+            {plural(days.length, 'día', 'días')} con alguna tarea sin registrar o incompleta. Toca un día para ver qué faltó.
+          </p>
+          <ul className="mt-2 max-h-[28rem] divide-y divide-line overflow-y-auto rounded-xl border border-line" data-testid="missing-days">
+            {days.map((d) => (
+              <li key={d.date}>
+                <details className="group">
+                  <summary className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-3 py-2 font-semibold [&::-webkit-details-marker]:hidden">
+                    <Icon name="chevronRight" size={18} className="shrink-0 transition-transform group-open:rotate-90" />
+                    <span className="flex-1 first-letter:uppercase">{formatLocalDate(d.date, { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                    <Badge tone="warn">{plural(d.missing!.length, 'tarea', 'tareas')}</Badge>
+                  </summary>
+                  <ul className="space-y-1.5 px-3 pb-3 pl-9">
+                    {d.missing!.map((m) => {
+                      const l = missingLabel(m);
+                      return (
+                        <li key={`${m.kind}-${m.id}`} className="text-sm">
+                          <span className="font-semibold [overflow-wrap:anywhere]">{l.task}</span> <span className={m.partial ? 'text-warn' : 'text-ink-muted'}>· {l.what}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </details>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Lunes de la semana de una fecha ISO. */
+const mondayOf = (iso: string) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  const wd = (d.getUTCDay() + 6) % 7;
+  return addDaysIso(iso, -wd);
+};
+const roleLabel = (r: string) => (r === 'owner' ? 'propietario/a' : 'encargado/a');
+
+/** Verificación del responsable (fase 2): quién revisó el periodo y «Marcar como revisado». */
+function ReviewCard({
+  range,
+  today,
+  readOnly,
+  open,
+  onOpenChange,
+  initialChoice,
+}: {
+  range: { from: string; to: string } | null;
+  today: string;
+  readOnly: boolean;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  initialChoice?: 'week';
+}) {
+  const { orgId, tz } = useOrgContext();
+  const q = useVerifications(orgId, range?.from ?? today, range?.to ?? today, !!range);
+  const lastMon = addDaysIso(mondayOf(today), -7);
+  const lastWeek = { from: lastMon, to: addDaysIso(lastMon, 6), kind: 'week' as const };
+  const firstThis = `${today.slice(0, 8)}01`;
+  const lastPrev = addDaysIso(firstThis, -1);
+  const lastMonth = { from: `${lastPrev.slice(0, 8)}01`, to: lastPrev, kind: 'month' as const };
+  const selected = range && range.to <= today ? { ...range, kind: 'custom' as const } : null;
+  const covers = (v: Verification) => range != null && v.from <= range.from && v.to >= range.to;
+  return (
+    <Card data-testid="review-card">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold">Revisión del responsable</h2>
+          <p className="text-sm text-ink-muted">
+            Un propietario o encargado revisa los registros de una semana o un mes y lo marca como revisado. Queda guardado (no se puede borrar ni cambiar; una revisión posterior se añade) y aparece en el PDF como «Verificado por… el…».
+          </p>
+        </div>
+        <Button icon="check" onClick={() => onOpenChange(true)} disabled={readOnly}>
+          Marcar como revisado
+        </Button>
+      </div>
+      <div className="mt-3">
+        {!range ? null : q.isPending ? (
+          <Skeleton className="h-16" />
+        ) : q.isError ? (
+          <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+        ) : q.data.length === 0 ? (
+          <p className="text-ink-muted" data-testid="no-verifications">
+            Nadie ha marcado como revisado ninguna parte de este periodo.
+          </p>
+        ) : (
+          <ul className="space-y-2" data-testid="verifications">
+            {q.data.map((v) => (
+              <li key={v.id} className="flex items-start gap-3 rounded-xl border border-line px-3 py-2">
+                <Icon name="shield" className="mt-0.5 shrink-0 text-ok" />
+                <span className="min-w-0">
+                  <span className="block font-semibold">
+                    Verificado por {v.user.name} ({roleLabel(v.user.role)}) el {formatLocalDate(localDateIn(tz, new Date(v.createdAt)))} a las {formatTime(v.createdAt, tz)}
+                  </span>
+                  <span className="block text-sm text-ink-muted">
+                    {v.kind === 'week' ? 'Semana' : v.kind === 'month' ? 'Mes' : 'Periodo'} del {formatLocalDate(v.from)} al {formatLocalDate(v.to)}
+                    {covers(v) ? ' · cubre todo el periodo elegido' : ' · cubre parte del periodo elegido'}
+                  </span>
+                  {v.comment ? <span className="mt-0.5 block text-sm [overflow-wrap:anywhere]">«{v.comment}»</span> : null}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {open ? <ReviewDialog options={[lastWeek, lastMonth, ...(selected ? [selected] : [])]} initial={initialChoice === 'week' ? 0 : undefined} onClose={() => onOpenChange(false)} /> : null}
+    </Card>
+  );
+}
+
+function ReviewDialog({ options, initial, onClose }: { options: { from: string; to: string; kind: 'week' | 'month' | 'custom' }[]; initial?: number; onClose: () => void }) {
+  const { orgId } = useOrgContext();
+  const toast = useToast();
+  const [choice, setChoice] = useState<string | null>(initial != null ? String(initial) : null);
+  const [comment, setComment] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const m = useOrgMutation(orgId, (body: { from: string; to: string; kind: string; comment: string | null }) => api.post(`${orgApi(orgId).base}/verifications`, body), [['verifications'], ['today']]);
+  const label = (o: { from: string; to: string; kind: string }) =>
+    `${o.kind === 'week' ? 'La semana pasada' : o.kind === 'month' ? 'El mes pasado' : 'El periodo elegido'} (del ${formatLocalDate(o.from)} al ${formatLocalDate(o.to)})`;
+  const save = async () => {
+    if (choice == null) return setError('Elige qué periodo has revisado');
+    const o = options[Number(choice)]!;
+    try {
+      await m.mutateAsync({ from: o.from, to: o.to, kind: o.kind, comment: comment.trim() || null });
+      toast.show('Periodo marcado como revisado');
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Marcar como revisado"
+      description="Confirma que has revisado los registros de ese periodo (temperaturas, limpiezas, alertas y sus acciones correctoras). Queda a tu nombre, con la fecha y la hora, y no se puede deshacer."
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button icon="check" loading={m.isPending} onClick={() => void save()}>
+            Marcar como revisado
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <ChoiceGroup
+          legend="¿Qué periodo has revisado?"
+          value={choice}
+          onChange={(v) => {
+            setChoice(v);
+            setError(null);
+          }}
+          columns={2}
+          error={error}
+          options={options.map((o, i) => ({ value: String(i), label: label(o) }))}
+        />
+        <Field label="Comentario" optional hint="Por ejemplo: revisadas las alertas de la cámara con el equipo.">
+          <Textarea value={comment} onChange={(e) => setComment(e.target.value)} maxLength={1000} rows={2} />
+        </Field>
+      </div>
+    </Dialog>
   );
 }
 

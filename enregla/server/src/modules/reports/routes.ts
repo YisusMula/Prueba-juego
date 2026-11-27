@@ -3,17 +3,43 @@ import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import * as S from '../../schemas/index.js';
 import { parse } from '../../http/validation.js';
-import { orgCtx } from '../../http/guards.js';
+import { orgCtx, requireUser } from '../../http/guards.js';
 import { AppError, badRequest, rateLimited } from '../../lib/errors.js';
 import { enforce } from '../../lib/rate-limit.js';
 import { audit } from '../../lib/audit.js';
-import { diffDays } from '../../lib/dates.js';
+import { diffDays, localDate } from '../../lib/dates.js';
 import type { DB } from '../../db/index.js';
 import type { Organization } from '../../db/types.js';
 import { amendedBySelect } from '../records/routes.js';
 import { CSV_HEADERS, csvLine, csvRow, type ReportRecord } from './format.js';
 import { MAX_PDF_BYTES, renderPdfInProcess, renderPdfInWorker, type PdfJob } from './pdf-render.js';
 import { computeCompliance } from '../tasks/service.js';
+import { verificationsOverlapping } from '../verifications/routes.js';
+import { establishmentView } from '../views.js';
+import type { PdfSummary } from './pdf.js';
+
+/**
+ * Resumen del periodo para la portada del PDF (fase 2, 2A), sobre TODOS los tipos de registro (no solo
+ * los incluidos): alertas vigentes y cuántas tienen acción correctora, e incidencias del periodo que
+ * siguen abiertas. Un registro sustituido por una corrección no cuenta (cuenta su corrección).
+ */
+export async function periodAlertSummary(db: DB, org: Organization, from: string, to: string) {
+  const tz = org.timezone;
+  const r = await sql<{ alerts: number; with_action: number; open_incidents: number }>`
+    SELECT
+      count(*) FILTER (WHERE r.alert AND r.type <> 'incidencia')::int AS alerts,
+      count(*) FILTER (WHERE r.alert AND r.type <> 'incidencia' AND (
+        coalesce(btrim(r.data->>'correctiveAction'), '') <> ''
+        OR (r.type = 'recepcion' AND r.data->>'accepted' = 'false' AND coalesce(btrim(r.data->>'rejectionReason'), '') <> '')
+        OR (r.type = 'plagas' AND coalesce(btrim(r.data->>'action'), '') <> '')))::int AS with_action,
+      count(*) FILTER (WHERE r.type = 'incidencia' AND (r.data->>'closed')::boolean IS NOT TRUE)::int AS open_incidents
+    FROM records r
+    WHERE r.organization_id = ${org.id}
+      AND r.effective_at >= (${from}::date)::timestamp AT TIME ZONE ${tz}
+      AND r.effective_at < (${to}::date + 1)::timestamp AT TIME ZONE ${tz}
+      AND NOT EXISTS (SELECT 1 FROM records a WHERE a.amends_record_id = r.id)`.execute(db);
+  return r.rows[0] ?? { alerts: 0, with_action: 0, open_incidents: 0 };
+}
 import { guardSlowDownload } from '../../http/slow-download.js';
 
 export const MAX_REPORT_DAYS = 366;
@@ -57,6 +83,9 @@ export async function* iterateRecords(db: DB, org: Organization, from: string, t
       // Autor de la corrección: el usuario que la hizo en la web o, desde la tablet, el empleado.
       .select(sql<string | null>`(SELECT coalesce(a.user_name, a.staff_name) FROM records a WHERE a.amends_record_id = r.id)`.as('amended_by_name'))
       .select(sql<string | null>`(SELECT coalesce(o.staff_name, o.user_name) FROM records o WHERE o.id = r.amends_record_id)`.as('amends_signer'))
+      // Inicio de un enfriamiento: su cierre (si lo hay).
+      .select(sql<string | null>`(SELECT c.id FROM records c WHERE c.related_record_id = r.id AND c.amends_record_id IS NULL)`.as('closed_by'))
+      .select(sql<Date | null>`(SELECT c.created_at FROM records c WHERE c.related_record_id = r.id AND c.amends_record_id IS NULL)`.as('closed_at'))
       .where('r.organization_id', '=', org.id)
       .where('r.type', 'in', types)
       .where('r.effective_at', '>=', sql<Date>`(${from}::date)::timestamp AT TIME ZONE ${tz}`)
@@ -182,8 +211,39 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       }
       const compliance = await computeCompliance(db, ctx.org, q.from, q.to, app.deps.now());
       const dayNotes = compliance.days.filter((d) => d.correctedLater > 0);
+      const alertSummary = await periodAlertSummary(db, ctx.org, q.from, q.to);
+      const verifications = await verificationsOverlapping(db, ctx.org.id, q.from, q.to);
+      const summary: PdfSummary = {
+        compliancePercent: compliance.overall.percent,
+        expected: compliance.overall.expected,
+        done: compliance.overall.done,
+        alerts: alertSummary.alerts,
+        alertsWithAction: alertSummary.with_action,
+        openIncidents: alertSummary.open_incidents,
+        daysWithGaps: compliance.overall.daysWithGaps,
+        daysEvaluated: compliance.days.length,
+        // Días y tareas sin registrar, con un tope (el PDF dice cuántas faltan si se supera).
+        missingDays: compliance.days.filter((d) => d.missing.length > 0).map((d) => ({ date: d.date, items: d.missing })),
+      };
       await audit(db, { event: 'report.generated', organizationId: ctx.org.id, userId: ctx.userId, ip: req.ip, metadata: { format: 'pdf', from: q.from, to: q.to, types: q.types } });
-      const job: PdfJob = { appName: config.appName, org: ctx.org, from: q.from, to: q.to, types: q.types, records, maxRows, dayNotes, maxBytes: MAX_PDF_BYTES, deletionGraceDays: config.orgDeletionGraceDays };
+      const job: PdfJob = {
+        appName: config.appName,
+        org: ctx.org,
+        from: q.from,
+        to: q.to,
+        types: q.types,
+        records,
+        maxRows,
+        dayNotes,
+        maxBytes: MAX_PDF_BYTES,
+        deletionGraceDays: config.orgDeletionGraceDays,
+        generatedBy: requireUser(req).user.name,
+        generatedAt: app.deps.now().toISOString(),
+        today: localDate(app.deps.now(), ctx.org.timezone),
+        establishment: establishmentView(ctx.org),
+        summary,
+        verifications: verifications.map((v) => ({ from: v.period_from, to: v.period_to, kind: v.period_kind, comment: v.comment, userName: v.user_name, userRole: v.user_role, createdAt: v.created_at.toISOString() })),
+      };
       const t0 = performance.now();
       let pdf: Buffer;
       try {

@@ -88,6 +88,7 @@ export const routes: RouteObject[] = [
               { path: 'ajustes/equipos', element: page(settings, 'EquipmentSettingsPage') },
               { path: 'ajustes/limpieza', element: page(settings, 'CleaningSettingsPage') },
               { path: 'ajustes/proveedores', element: page(settings, 'SuppliersSettingsPage') },
+              { path: 'ajustes/registros', element: page(() => import('@/pages/settings/CustomTemplatesPage'), 'CustomTemplatesPage') },
               { path: 'ajustes/personal', element: page(settings, 'StaffSettingsPage') },
               { path: 'ajustes/cocina', element: page(settings, 'DevicesSettingsPage') },
               { path: 'ajustes/equipo', element: page(settings, 'TeamSettingsPage') },

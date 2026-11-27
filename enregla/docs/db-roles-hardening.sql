@@ -58,6 +58,14 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO enregla_app;
 -- trigger `records_immutable` solo lo deja pasar cuando la organización ya no existe.
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON records FROM enregla_app;
 
+-- Fase 2 (0011): verificaciones del responsable solo leer y añadir; registros personalizados sin
+-- borrar (se desactivan) y sin cambiar su fecha de alta ni su tipo; su historial solo lectura.
+-- (Referencia: `migrate` aplica esto y el resto de permisos completos con server/src/db/privileges.ts.)
+REVOKE UPDATE, DELETE, TRUNCATE ON responsible_verifications FROM enregla_app;
+REVOKE DELETE, UPDATE, TRUNCATE ON custom_record_templates FROM enregla_app;
+GRANT UPDATE (name, items, unit, min_value, max_value, frequency, times_per_day, weekday, month_day, instructions, active, updated_at) ON custom_record_templates TO enregla_app;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON custom_template_config_history FROM enregla_app;
+
 -- La tabla de control de migraciones solo la toca el rol de migraciones.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON schema_migrations FROM enregla_app;
 

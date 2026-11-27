@@ -3,7 +3,7 @@ import { AppError } from '../../lib/errors.js';
 import type { RecordType } from '../../schemas/index.js';
 import type { Organization } from '../../db/types.js';
 import type { ReportRecord } from './format.js';
-import { createReportPdf, type DayNote } from './pdf.js';
+import { createReportPdf, type DayNote, type PdfEstablishment, type PdfSummary, type PdfVerification } from './pdf.js';
 
 /** Tope defensivo de tamaño de un PDF en memoria (5.000 filas ocupan bastante menos). */
 export const MAX_PDF_BYTES = 64 * 1024 * 1024;
@@ -23,6 +23,13 @@ export interface PdfJob {
   maxBytes: number;
   /** Días que se conserva un local pendiente de eliminación (para la nota del PDF). */
   deletionGraceDays?: number;
+  /** Fase 2 (2A): portada, resumen, verificaciones y huecos. */
+  generatedBy?: string;
+  generatedAt?: string;
+  establishment?: PdfEstablishment;
+  summary?: PdfSummary;
+  verifications?: PdfVerification[];
+  today?: string;
 }
 
 export type PdfWorkerReply = { ok: true; pdf: Uint8Array } | { ok: false; tooLarge: boolean; message: string };
@@ -58,6 +65,12 @@ export function renderPdfInProcess(job: PdfJob, signal?: AbortSignal): Promise<B
         maxRows: job.maxRows,
         dayNotes: job.dayNotes,
         deletionGraceDays: job.deletionGraceDays,
+        generatedBy: job.generatedBy,
+        generatedAt: job.generatedAt,
+        establishment: job.establishment,
+        summary: job.summary,
+        verifications: job.verifications,
+        today: job.today,
       },
       () => undefined,
     );

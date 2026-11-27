@@ -1,3 +1,5 @@
+import { customTemplateRoutes } from './modules/custom-templates/routes.js';
+import { verificationRoutes } from './modules/verifications/routes.js';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -279,6 +281,8 @@ export async function buildApp(deps: AppDeps, opts: { logger?: FastifyServerOpti
       await scope.register(dishRoutes);
       await scope.register(taskRoutes, { prefix: '/tasks' });
       await scope.register(reportRoutes, { prefix: '/reports' });
+      await scope.register(customTemplateRoutes, { prefix: '/custom-templates' });
+      await scope.register(verificationRoutes, { prefix: '/verifications' });
       await scope.register(billingRoutes, { prefix: '/billing' });
     },
     { prefix: '/api/orgs/:orgId' },

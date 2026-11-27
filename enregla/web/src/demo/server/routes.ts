@@ -12,8 +12,8 @@ import { newDeviceToken, newSlug, uuid } from './ids';
 import { createOrganization } from './orgs';
 import { createRecord } from './records';
 import { computeCompliance, computeToday } from './tasks';
-import { dayStart, diffDays, iso, addDays } from './time';
-import { cleaningPlanView, deviceView, dishView, equipmentView, isWritable, orgView, recordView, staffView, subscriptionView, supplierView } from './views';
+import { dayStart, diffDays, iso, addDays, isoWeekday, localDate, startOfMonth } from './time';
+import { cleaningPlanView, customTemplateView, deviceView, dishView, equipmentView, isWritable, orgView, recordView, staffView, subscriptionView, supplierView, verificationView } from './views';
 
 export type DemoRequest = { method: string; path: string; query: URLSearchParams; body: unknown; headers: Headers; params: Record<string, string> };
 export type DemoResponse = { status: number; json?: unknown; text?: string; contentType?: string; headers?: Record<string, string> };
@@ -170,6 +170,7 @@ export function reportRecords(db: DemoState, org: DOrg, from: string, to: string
     .map((r) => {
       const amendment = db.records.find((x) => x.amendsRecordId === r.id);
       const previous = r.amendsRecordId ? db.records.find((x) => x.id === r.amendsRecordId) : undefined;
+      const closer = r.type === 'enfriamiento' ? db.records.find((x) => x.relatedRecordId === r.id && !x.amendsRecordId) : undefined;
       return {
         id: r.id,
         organization_id: r.orgId,
@@ -182,6 +183,8 @@ export function reportRecords(db: DemoState, org: DOrg, from: string, to: string
         device_id: r.deviceId,
         equipment_id: r.equipmentId,
         cleaning_plan_id: r.cleaningPlanId,
+        custom_template_id: r.customTemplateId ?? null,
+        related_record_id: r.relatedRecordId ?? null,
         amends_record_id: r.amendsRecordId,
         amendment_reason: r.amendmentReason,
         alert: r.alert,
@@ -192,6 +195,8 @@ export function reportRecords(db: DemoState, org: DOrg, from: string, to: string
         // Autor de la corrección: el usuario (web) o, desde la tablet, el empleado.
         amended_by_name: amendment ? (amendment.userName ?? amendment.staffName) : null,
         amends_signer: previous ? (previous.staffName ?? previous.userName) : null,
+        closed_by: closer?.id ?? null,
+        closed_at: closer ? new Date(closer.createdAt) : null,
       };
     });
 }
@@ -428,7 +433,26 @@ route('PATCH', ORG, (db, req) => {
   if (b.timezone !== undefined) c.org.timezone = b.timezone;
   if (b.reminderEnabled !== undefined) c.org.reminderEnabled = b.reminderEnabled;
   if (b.reminderHour !== undefined) c.org.reminderHour = b.reminderHour;
-  audit(db, c.org.id, 'org.updated', c.user.id, { fields: Object.keys(b) });
+  // Fase 2: datos del establecimiento y valores de referencia (como el servidor).
+  const est = { legal_name: 'legalName', tax_id: 'taxId', address: 'address', postal_code: 'postalCode', city: 'city', province: 'province', sanitary_registry: 'sanitaryRegistry' } as const;
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const [col, k] of Object.entries(est)) {
+    const v = b[k];
+    if (v === undefined) continue;
+    const prev = c.org[k] ?? null;
+    if (v !== prev) changes[col] = { from: prev, to: v };
+    c.org[k] = v;
+  }
+  if (b.referenceValues !== undefined) {
+    const merged: Record<string, number> = { ...(c.org.referenceValues ?? {}) };
+    for (const [k, v] of Object.entries(b.referenceValues)) {
+      if (v == null) delete merged[k];
+      else merged[k] = v;
+    }
+    changes.reference_values = { from: c.org.referenceValues ?? null, to: merged };
+    c.org.referenceValues = Object.keys(merged).length ? merged : null;
+  }
+  audit(db, c.org.id, 'org.updated', c.user.id, { fields: Object.keys(b), ...(Object.keys(changes).length ? { changes } : {}) });
   return ok({ organization: orgView(c.org, c.role) });
 });
 route('DELETE', ORG, (db, req) => {
@@ -471,13 +495,155 @@ route('DELETE', `${ORG}/permanent`, (db, req) => {
 route('GET', `${ORG}/membership`, (db, req) => {
   const c = orgCtx(db, req);
   const m = db.memberships.find((x) => x.orgId === c.org.id && x.userId === c.user.id)!;
-  return ok({ role: m.role, dailyReminder: m.dailyReminder });
+  return ok({ role: m.role, dailyReminder: m.dailyReminder, weeklyReviewReminder: m.weeklyReviewReminder !== false });
 });
 route('PATCH', `${ORG}/membership`, (db, req) => {
   const c = orgCtx(db, req);
   const b = parse(S.membershipPrefsBody, req.body);
-  db.memberships.find((x) => x.orgId === c.org.id && x.userId === c.user.id)!.dailyReminder = b.dailyReminder;
-  return ok({ dailyReminder: b.dailyReminder });
+  const m = db.memberships.find((x) => x.orgId === c.org.id && x.userId === c.user.id)!;
+  if (b.dailyReminder !== undefined) m.dailyReminder = b.dailyReminder;
+  if (b.weeklyReviewReminder !== undefined) m.weeklyReviewReminder = b.weeklyReviewReminder;
+  return ok({ dailyReminder: m.dailyReminder, weeklyReviewReminder: m.weeklyReviewReminder !== false });
+});
+
+// --- Registros personalizados (fase 2) ----------------------------------------------------
+function tplItems(items: { id?: string; label: string }[], previous: { id: string }[] = []) {
+  const known = new Set(previous.map((i) => i.id));
+  const used = new Set<string>();
+  return items.map((i) => {
+    const id = i.id && known.has(i.id) && !used.has(i.id) ? i.id : uuid();
+    used.add(id);
+    return { id, label: i.label };
+  });
+}
+route('GET', `${ORG}/custom-templates`, (db, req) => {
+  const c = orgCtx(db, req);
+  const mine = db.templates.filter((t) => t.orgId === c.org.id).sort(byCreated);
+  return ok({ items: mine.map(customTemplateView), suggestions: S.SUGGESTED_TEMPLATES.map((t) => ({ ...t, activated: mine.some((x) => x.suggestionKey === t.key && x.active) })) });
+});
+route('POST', `${ORG}/custom-templates`, (db, req) => {
+  const c = requireWritable(orgCtx(db, req));
+  const b = parse(S.createCustomTemplateBody, req.body);
+  const now = Date.now();
+  const freq = { frequency: b.frequency, timesPerDay: b.frequency === 'daily' ? b.timesPerDay : 1, weekday: b.frequency === 'weekly' ? b.weekday : null, monthDay: b.frequency === 'monthly' ? b.monthDay : null };
+  const t = {
+    id: uuid(),
+    orgId: c.org.id,
+    name: b.name,
+    kind: b.kind,
+    items: b.kind === 'checklist' ? tplItems(b.items) : [],
+    unit: b.kind === 'numeric' ? b.unit : null,
+    min: b.kind === 'numeric' ? b.min : null,
+    max: b.kind === 'numeric' ? b.max : null,
+    ...freq,
+    instructions: b.instructions,
+    suggestionKey: null,
+    source: null,
+    active: b.active,
+    createdAt: now,
+    history: [{ validFrom: now, ...freq, active: b.active }],
+  };
+  db.templates.push(t);
+  audit(db, c.org.id, 'custom_template.created', c.user.id, { templateId: t.id, name: t.name });
+  return ok({ template: customTemplateView(t) }, 201);
+});
+route('POST', `${ORG}/custom-templates/suggestions`, (db, req) => {
+  const c = requireWritable(orgCtx(db, req));
+  const b = parse(S.activateSuggestionBody, req.body);
+  const sug = S.SUGGESTED_TEMPLATES.find((t) => t.key === b.key);
+  if (!sug) throw notFound('Plantilla sugerida');
+  const now = Date.now();
+  const existing = db.templates.find((t) => t.orgId === c.org.id && t.suggestionKey === sug.key);
+  if (existing) {
+    if (!existing.active) {
+      existing.active = true;
+      existing.history.push({ validFrom: now, frequency: existing.frequency, timesPerDay: existing.timesPerDay, weekday: existing.weekday, monthDay: existing.monthDay, active: true });
+      audit(db, c.org.id, 'custom_template.updated', c.user.id, { templateId: existing.id, fields: ['active'], suggestion: sug.key });
+    }
+    return ok({ template: customTemplateView(existing) });
+  }
+  const freq = { frequency: sug.frequency, timesPerDay: sug.timesPerDay ?? 1, weekday: sug.weekday ?? null, monthDay: sug.monthDay ?? null };
+  const t = {
+    id: uuid(),
+    orgId: c.org.id,
+    name: sug.name,
+    kind: sug.kind,
+    items: sug.kind === 'checklist' ? tplItems((sug.items ?? []).map((label) => ({ label }))) : [],
+    unit: sug.unit ?? null,
+    min: sug.min ?? null,
+    max: sug.max ?? null,
+    ...freq,
+    instructions: sug.instructions,
+    suggestionKey: sug.key,
+    source: sug.source,
+    active: true,
+    createdAt: now,
+    history: [{ validFrom: now, ...freq, active: true }],
+  };
+  db.templates.push(t);
+  audit(db, c.org.id, 'custom_template.created', c.user.id, { templateId: t.id, name: t.name, suggestion: sug.key });
+  return ok({ template: customTemplateView(t) }, 201);
+});
+route('PATCH', `${ORG}/custom-templates/:templateId`, (db, req) => {
+  const c = requireWritable(orgCtx(db, req));
+  const id = idParam(req.params.templateId, 'Registro personalizado');
+  const b = parse(S.updateCustomTemplateBody, req.body);
+  const t = db.templates.find((x) => x.id === id && x.orgId === c.org.id);
+  if (!t) throw notFound('Registro personalizado');
+  const frequency = b.frequency ?? t.frequency;
+  const weekday = b.weekday !== undefined ? b.weekday : t.weekday;
+  const monthDay = b.monthDay !== undefined ? b.monthDay : t.monthDay;
+  if (frequency === 'weekly' && weekday == null) throw validationError('weekday', 'Indica el día de la semana');
+  if (frequency === 'monthly' && monthDay == null) throw validationError('monthDay', 'Indica el día del mes');
+  if (b.name !== undefined) t.name = b.name;
+  if (b.items !== undefined && t.kind === 'checklist') {
+    if (b.items.length === 0) throw validationError('items', 'Añade al menos un punto a comprobar');
+    t.items = tplItems(b.items, t.items);
+  }
+  if (t.kind === 'numeric') {
+    if (b.unit !== undefined) t.unit = b.unit;
+    if (b.min !== undefined) t.min = b.min;
+    if (b.max !== undefined) t.max = b.max;
+    if (t.min != null && t.max != null && t.min > t.max) throw validationError('min', 'El mínimo no puede ser mayor que el máximo');
+  }
+  if (b.instructions !== undefined) t.instructions = b.instructions;
+  const before = JSON.stringify([t.frequency, t.timesPerDay, t.weekday, t.monthDay, t.active]);
+  t.frequency = frequency;
+  t.timesPerDay = frequency === 'daily' ? (b.timesPerDay ?? t.timesPerDay) : 1;
+  t.weekday = frequency === 'weekly' ? weekday : null;
+  t.monthDay = frequency === 'monthly' ? monthDay : null;
+  if (b.active !== undefined) t.active = b.active;
+  if (JSON.stringify([t.frequency, t.timesPerDay, t.weekday, t.monthDay, t.active]) !== before) {
+    t.history.push({ validFrom: Date.now(), frequency: t.frequency, timesPerDay: t.timesPerDay, weekday: t.weekday, monthDay: t.monthDay, active: t.active });
+  }
+  audit(db, c.org.id, 'custom_template.updated', c.user.id, { templateId: id, fields: Object.keys(b) });
+  return ok({ template: customTemplateView(t) });
+});
+
+// --- Verificación del responsable (fase 2) -------------------------------------------------
+route('GET', `${ORG}/verifications`, (db, req) => {
+  const c = orgCtx(db, req);
+  const q = parse(S.dateRangeQuery, Object.fromEntries(req.query));
+  const items = db.verifications
+    .filter((v) => v.orgId === c.org.id && v.from <= q.to && v.to >= q.from)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map(verificationView);
+  return ok({ items });
+});
+route('POST', `${ORG}/verifications`, (db, req) => {
+  const c = requireWritable(orgCtx(db, req));
+  const b = parse(S.createVerificationBody, req.body);
+  const today = localDate(new Date(), c.org.timezone);
+  if (b.to > today) throw validationError('to', 'No se puede marcar como revisado un periodo que aún no ha terminado: elige fechas hasta hoy');
+  if (diffDays(b.from, b.to) + 1 > 366) throw validationError('from', 'El periodo máximo es de un año');
+  if (b.kind === 'week' && (isoWeekday(b.from) !== 1 || b.to !== addDays(b.from, 6))) throw validationError('from', 'Una semana va de lunes a domingo');
+  if (b.kind === 'month' && (b.from !== startOfMonth(b.from) || addDays(b.to, 1).slice(8) !== '01' || b.to.slice(0, 7) !== b.from.slice(0, 7))) {
+    throw validationError('from', 'Un mes va del día 1 al último día del mes');
+  }
+  const v = { id: uuid(), orgId: c.org.id, from: b.from, to: b.to, kind: b.kind, comment: b.comment, userId: c.user.id, userName: c.user.name, userRole: c.role, createdAt: Date.now() };
+  db.verifications.push(v);
+  audit(db, c.org.id, 'report.verified', c.user.id, { verificationId: v.id, from: b.from, to: b.to, kind: b.kind, hasComment: b.comment != null });
+  return ok({ verification: verificationView(v) }, 201);
 });
 route('GET', `${ORG}/export`, (db, req) => {
   const c = requireOwner(orgCtx(db, req));
@@ -990,6 +1156,8 @@ route('GET', '/api/kiosk/context', (db, req) => {
       .filter((s) => s.orgId === org.id)
       .sort(byName)
       .map((s) => ({ id: s.id, name: s.name, products: s.products, defaultCategory: s.defaultCategory ?? null, receptionLimit: s.receptionLimit ?? null })),
+    customTemplates: db.templates.filter((t) => t.orgId === org.id && t.active).sort(byCreated).map(customTemplateView),
+    referenceValues: S.effectiveReferenceValues(org.referenceValues),
   });
 });
 route('GET', '/api/kiosk/tasks/today', (db, req) => ok(computeToday(db, deviceCtx(db, req).org)));

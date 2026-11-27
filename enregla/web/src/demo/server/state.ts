@@ -3,7 +3,7 @@
  * del servidor real (fechas como milisegundos). Se guarda en localStorage si se puede; si no, vive
  * solo en memoria hasta recargar.
  */
-import type { AllergenMap, BusinessType, CleaningItem, EquipmentType, Frequency, RecordType, Role } from '@/api/types';
+import type { AllergenMap, BusinessType, CleaningItem, CustomFrequency, CustomKind, EquipmentType, Frequency, RecordType, ReferenceValues, Role } from '@/api/types';
 
 export type DUser = { id: string; email: string; name: string; password: string; createdAt: number; trialEndsAt: number };
 export type DOrg = {
@@ -20,9 +20,51 @@ export type DOrg = {
   deletionScheduledAt: number | null;
   /** El titular pidió la eliminación inmediata: el «mantenimiento» la ejecuta en la próxima hora. */
   purgeRequestedAt?: number | null;
+  /** Fase 2: datos del establecimiento (portada del PDF) y valores de referencia propios. */
+  legalName?: string | null;
+  taxId?: string | null;
+  address?: string | null;
+  postalCode?: string | null;
+  city?: string | null;
+  province?: string | null;
+  sanitaryRegistry?: string | null;
+  referenceValues?: Partial<ReferenceValues> | null;
   createdAt: number;
 };
-export type DMembership = { orgId: string; userId: string; role: Role; dailyReminder: boolean; createdAt: number };
+export type DMembership = { orgId: string; userId: string; role: Role; dailyReminder: boolean; weeklyReviewReminder?: boolean; createdAt: number };
+export type TemplateState = { validFrom: number; frequency: CustomFrequency; timesPerDay: number; weekday: number | null; monthDay: number | null; active: boolean };
+export type DTemplate = {
+  id: string;
+  orgId: string;
+  name: string;
+  kind: CustomKind;
+  items: { id: string; label: string }[];
+  unit: string | null;
+  min: number | null;
+  max: number | null;
+  frequency: CustomFrequency;
+  timesPerDay: number;
+  weekday: number | null;
+  monthDay: number | null;
+  instructions: string | null;
+  suggestionKey: string | null;
+  source: string | null;
+  active: boolean;
+  createdAt: number;
+  history: TemplateState[];
+};
+export type DVerification = {
+  id: string;
+  orgId: string;
+  from: string;
+  to: string;
+  kind: 'week' | 'month' | 'custom';
+  comment: string | null;
+  userId: string;
+  userName: string;
+  userRole: Role;
+  createdAt: number;
+};
 export type DStaff = { id: string; orgId: string; name: string; pin: string | null; active: boolean; failed: number; lockedUntil: number | null; createdAt: number; /** Bloqueo progresivo (R7). */ lockLevel?: number };
 export type DDevice = { id: string; orgId: string; name: string; token: string; createdBy: string | null; createdAt: number; lastUsedAt: number | null; revokedAt: number | null };
 export type EquipmentState = { validFrom: number; checksPerDay: number; active: boolean };
@@ -91,6 +133,9 @@ export type DRecord = {
   deviceId: string | null;
   equipmentId: string | null;
   cleaningPlanId: string | null;
+  /** Fase 2: plantilla de un registro personalizado y, en el cierre de un enfriamiento, su inicio. */
+  customTemplateId?: string | null;
+  relatedRecordId?: string | null;
   amendsRecordId: string | null;
   amendmentReason: string | null;
   alert: boolean;
@@ -116,6 +161,8 @@ export type DemoState = {
   suppliers: DSupplier[];
   dishes: DDish[];
   records: DRecord[];
+  templates: DTemplate[];
+  verifications: DVerification[];
   invitations: DInvitation[];
   audit: DAudit[];
   auditSeq: number;
@@ -125,5 +172,5 @@ export type DemoState = {
   pinFailsByDevice: Record<string, number[]>;
 };
 
-/** 2: categoría de proveedor y de recepción, firma «anotado por», correcciones desde la tablet (fase 1). */
-export const STATE_VERSION = 2;
+/** 2: categoría de proveedor y de recepción, firma «anotado por», correcciones desde la tablet (fase 1). 3: fase 2 (registros nuevos, verificaciones, datos del establecimiento). */
+export const STATE_VERSION = 3;

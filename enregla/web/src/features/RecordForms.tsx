@@ -23,9 +23,18 @@ import {
   recepcionData,
   temperaturaData,
   EQUIPMENT_TYPE_LABELS,
+  COOKING_PROCESS_LABELS,
+  REFERENCE_DEFAULTS,
+  REFERENCE_SOURCES,
+  cocinadoData,
+  enfriamientoData,
+  personalizadoData,
+  type CookingProcess,
+  type ReferenceValues,
 } from '@shared/schemas';
 import type { z } from 'zod';
-import type { CleaningItem, Frequency, RecordDataMap, RecordType, EquipmentType } from '@/api/types';
+import type { CleaningItem, CustomTemplate, Frequency, OpenCooling, RecordDataMap, RecordType, EquipmentType } from '@/api/types';
+import { Keypad } from '@/components/ui/Keypad';
 import { TemperatureInput } from '@/components/ui/TemperatureInput';
 import { ApiError, errorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
@@ -43,6 +52,10 @@ export type FormContext = {
   suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null; receptionLimit?: number | null }[];
   staff: { id: string; name: string; active?: boolean }[];
   timezone: string;
+  /** Fase 2: registros personalizados activos, valores de referencia del local y enfriamientos en curso. */
+  customTemplates?: CustomTemplate[];
+  referenceValues?: ReferenceValues;
+  coolings?: OpenCooling[];
 };
 
 type Props<T extends RecordType> = {
@@ -839,6 +852,449 @@ export function FormacionForm(p: Props<'formacion'>) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Fase 2: campo de valor (teclado grande con ± en la tablet; «±» junto al campo en la web)
+// ---------------------------------------------------------------------------
+export function ValueField({
+  label,
+  value,
+  onChange,
+  large,
+  unit = '°C',
+  error,
+  hint,
+  temperature = true,
+  name,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  large?: boolean;
+  unit?: string;
+  error?: string | null;
+  hint?: string;
+  temperature?: boolean;
+  name: string;
+}) {
+  if (large) {
+    // Tablet: el mismo teclado grande que la temperatura de los equipos (± y coma), sin teclado del sistema.
+    const id = `kv-${name}`;
+    return (
+      <div className="space-y-2">
+        <p id={`${id}-label`} className="font-semibold">
+          {label}
+        </p>
+        <output
+          aria-labelledby={`${id}-label`}
+          aria-live="polite"
+          data-testid={`value-${name}`}
+          className="block min-h-20 rounded-2xl border-2 border-line bg-surface-2 px-4 py-2 font-display text-5xl font-extrabold tabular"
+        >
+          {value ? value.replace('-', '−') : '—'} <span className="text-2xl text-ink-muted">{unit}</span>
+        </output>
+        {hint ? <p className="text-ink-muted">{hint}</p> : null}
+        {error ? (
+          <p role="alert" className="font-semibold text-bad">
+            {error}
+          </p>
+        ) : null}
+        <Keypad value={value.replace('−', '-')} onChange={(v) => onChange(v.replace('-', '−'))} mode="decimal" maxLength={temperature ? 4 : 6} className="max-w-md" />
+      </div>
+    );
+  }
+  return (
+    <Field label={`${label} (${unit})`} error={error} hint={hint}>
+      {temperature ? (
+        <TemperatureInput value={value} onChange={onChange} name={name} large className="max-w-72" inputClassName="min-h-14 font-display text-2xl font-bold tabular" />
+      ) : (
+        <Input inputMode="decimal" name={name} value={value} onChange={(e) => onChange(e.target.value.replace('.', ','))} maxLength={12} className="max-w-72 font-display text-2xl font-bold tabular" />
+      )}
+    </Field>
+  );
+}
+
+const refs = (ctx: FormContext): ReferenceValues => ctx.referenceValues ?? REFERENCE_DEFAULTS;
+
+// ---------------------------------------------------------------------------
+// Cocinado y regeneración
+// ---------------------------------------------------------------------------
+export const COOK_ACTIONS = ['Se prolongó la cocción hasta alcanzar la temperatura', 'Se volvió a calentar y a medir', 'Producto desechado', 'Avisado el responsable'];
+
+export function CocinadoForm(p: Props<'cocinado'>) {
+  const [product, setProduct] = useState(p.initial?.product ?? '');
+  const [process, setProcess] = useState<CookingProcess | null>(p.initial?.process ?? null);
+  const [value, setValue] = useState(numText(p.initial?.coreTemp));
+  const [minutes, setMinutes] = useState(p.initial?.minutes != null ? String(p.initial.minutes) : '');
+  const [action, setAction] = useState(p.initial?.correctiveAction ?? '');
+  const { errors, submit } = useValidated(cocinadoData, p.onSubmit);
+  const server = fieldErrorsFrom(p.serverError);
+  const r = refs(p.ctx);
+  const reference = process === 'regeneracion' ? r.reheatMinTemp : r.cookingMinTemp;
+  const num = parseDecimal(value);
+  const valid = physicallyValidTemp(num);
+  const liveError = value.trim() === '' || value.trim() === '−' ? null : num == null ? (p.large ? null : 'Escribe la temperatura con números (por ejemplo 72,5)') : !valid ? TEMP_RANGE_MESSAGE : null;
+  const low = process != null && valid && num! < reference;
+  const minutesError = minutes.trim() && !/^\d{1,4}$/.test(minutes.trim()) ? 'Escribe los minutos sin decimales' : null;
+  return (
+    <FormShell
+      {...p}
+      danger={low}
+      disabled={!!liveError || !!minutesError}
+      submitLabel={p.submitLabel ?? (low ? 'Guardar con acción correctora' : 'Guardar')}
+      onSubmit={(e) => {
+        e.preventDefault();
+        const extra: Record<string, string> = {};
+        if (!process) extra.process = 'Elige si es cocinado o regeneración';
+        if (num == null) extra.coreTemp = 'Escribe la temperatura en el centro del producto';
+        if (low && !action.trim()) extra.correctiveAction = 'No llega a la temperatura de referencia: indica qué has hecho';
+        submit({ product: product.trim(), process: process ?? undefined, coreTemp: num ?? Number.NaN, minutes: minutes.trim() ? Number(minutes) : null, correctiveAction: action.trim() || null }, extra);
+      }}
+    >
+      <Field label="Producto" error={errors.product || server.product}>
+        <Input value={product} onChange={(e) => setProduct(e.target.value)} maxLength={200} placeholder="Ej.: pollo asado, lentejas" className={cn(p.large && 'min-h-16 text-xl')} />
+      </Field>
+      <ChoiceGroup
+        legend="Proceso"
+        value={process}
+        onChange={setProcess}
+        error={errors.process || server.process}
+        size={p.large ? 'xl' : 'md'}
+        options={(['cocinado', 'regeneracion'] as const).map((v) => ({
+          value: v,
+          label: COOKING_PROCESS_LABELS[v],
+          description: `Referencia: ${formatTemp(v === 'cocinado' ? r.cookingMinTemp : r.reheatMinTemp)} o más en el centro`,
+        }))}
+      />
+      <ValueField
+        name="coreTemp"
+        label="Temperatura en el centro del producto"
+        value={value}
+        onChange={setValue}
+        large={p.large}
+        error={liveError || errors.coreTemp || server.coreTemp}
+        hint={process ? `Valor de referencia orientativo: ${formatTemp(reference)} o más. ${REFERENCE_SOURCES[process === 'regeneracion' ? 'reheatMinTemp' : 'cookingMinTemp']}` : 'Mide con la sonda en la parte más gruesa del producto.'}
+      />
+      {process && valid ? (
+        low ? (
+          <Callout tone="bad" title={`${formatTemp(num!)}: no llega a ${formatTemp(reference)}`} live="polite">
+            Sigue cocinando o calentando hasta alcanzarla y anota qué has hecho.
+          </Callout>
+        ) : (
+          <Callout tone="ok" title={`${formatTemp(num!)}: alcanza la referencia`} live="polite" />
+        )
+      ) : null}
+      <Field label="Tiempo del tratamiento (minutos)" optional error={minutesError || errors.minutes || server.minutes} hint="Si aplica (por ejemplo, horneado de 45 minutos).">
+        <Input inputMode="numeric" value={minutes} onChange={(e) => setMinutes(e.target.value)} maxLength={4} className="max-w-40" />
+      </Field>
+      {low ? <CorrectiveAction value={action} onChange={setAction} suggestions={COOK_ACTIONS} error={errors.correctiveAction || server.correctiveAction} large={p.large} /> : null}
+    </FormShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Enfriamiento rápido: inicio y cierre (dos registros)
+// ---------------------------------------------------------------------------
+export const COOL_ACTIONS = ['Producto regenerado y consumido en el día', 'Producto desechado', 'Abatidor revisado: estaba sobrecargado', 'Avisado el servicio técnico'];
+
+/** Minutos desde un instante ISO hasta ahora. */
+const minutesSince = (iso: string, now = Date.now()) => Math.max(0, Math.floor((now - new Date(iso).getTime()) / 60_000));
+
+export function EnfriamientoForm(p: Props<'enfriamiento'>) {
+  const init = p.initial;
+  const open = p.ctx.coolings ?? [];
+  const presetStart = p.preset?.startRecordId;
+  const [mode, setMode] = useState<'inicio' | 'fin' | null>(init ? init.phase : presetStart ? 'fin' : open.length === 0 ? 'inicio' : null);
+  const [startId, setStartId] = useState(init?.phase === 'fin' ? init.startRecordId : (presetStart ?? (open.length === 1 ? open[0]!.recordId : '')));
+  const [product, setProduct] = useState(init?.phase === 'inicio' ? init.product : '');
+  const [value, setValue] = useState(init ? numText(init.phase === 'inicio' ? init.startTemp : init.endTemp) : '');
+  const [notes, setNotes] = useState(init?.phase === 'inicio' ? (init.notes ?? '') : '');
+  const [discarded, setDiscarded] = useState(init?.phase === 'fin' ? init.discarded : false);
+  const [action, setAction] = useState(init?.phase === 'fin' ? (init.correctiveAction ?? '') : '');
+  const { errors, submit } = useValidated(enfriamientoData, p.onSubmit);
+  const server = fieldErrorsFrom(p.serverError);
+  const r = refs(p.ctx);
+  const cooling = open.find((c) => c.recordId === startId);
+  const num = parseDecimal(value);
+  const valid = physicallyValidTemp(num);
+  const liveError = value.trim() === '' || value.trim() === '−' ? null : num == null ? (p.large ? null : 'Escribe la temperatura con números (por ejemplo 8 o 3,5)') : !valid ? TEMP_RANGE_MESSAGE : null;
+  // Criterio al cerrar: en una corrección, el aplicado al cerrar; si no, el del local.
+  const target = init?.phase === 'fin' ? init.targetTemp : (cooling?.targetTemp ?? r.coolingTargetTemp);
+  const maxMin = init?.phase === 'fin' ? init.maxMinutes : (cooling?.maxMinutes ?? r.coolingMaxMinutes);
+  const elapsed = init?.phase === 'fin' ? init.minutes : cooling ? minutesSince(cooling.startedAt) : null;
+  const overTime = elapsed != null && elapsed > maxMin;
+  const overTemp = !discarded && valid && num! > target;
+  const bad = mode === 'fin' && (discarded || overTemp || overTime);
+
+  if (mode === null) {
+    return (
+      <div className="space-y-4">
+        <ChoiceGroup
+          legend="¿Qué quieres hacer?"
+          value={null as 'inicio' | 'fin' | null}
+          onChange={setMode}
+          size={p.large ? 'xl' : 'md'}
+          options={[
+            { value: 'fin', label: open.length === 1 ? 'Terminar el enfriamiento en curso' : `Terminar uno de los ${open.length} en curso`, tone: 'warn', description: 'Anota la temperatura final' },
+            { value: 'inicio', label: 'Empezar un enfriamiento nuevo', description: 'Producto y temperatura al meterlo en el abatidor' },
+          ]}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <FormShell
+      {...p}
+      danger={bad}
+      disabled={!!liveError}
+      submitLabel={p.submitLabel ?? (mode === 'inicio' ? 'Empezar el enfriamiento' : bad ? 'Terminar con acción correctora' : 'Terminar el enfriamiento')}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (mode === 'inicio') {
+          submit({ phase: 'inicio', product: product.trim(), startTemp: num ?? Number.NaN, notes: notes.trim() || null }, num == null ? { startTemp: 'Escribe la temperatura al empezar' } : {});
+          return;
+        }
+        const extra: Record<string, string> = {};
+        if (!startId) extra.startRecordId = 'Elige el enfriamiento que terminas';
+        if (!discarded && num == null) extra.endTemp = 'Escribe la temperatura al terminar';
+        if (bad && !action.trim()) extra.correctiveAction = discarded ? 'Indica qué se ha hecho con el producto' : 'No cumple el criterio: indica qué has hecho';
+        submit({ phase: 'fin', startRecordId: startId, endTemp: num, discarded, correctiveAction: action.trim() || null }, extra);
+      }}
+    >
+      {!init && open.length > 0 ? (
+        <button type="button" onClick={() => setMode(mode === 'inicio' ? 'fin' : 'inicio')} className="min-h-11 font-semibold text-brand-strong underline underline-offset-4 dark:text-brand">
+          {mode === 'inicio' ? 'No, quiero terminar uno en curso' : 'No, quiero empezar uno nuevo'}
+        </button>
+      ) : null}
+      {mode === 'inicio' ? (
+        <>
+          <Field label="Producto" error={errors.product || server.product}>
+            <Input value={product} onChange={(e) => setProduct(e.target.value)} maxLength={200} placeholder="Ej.: caldo, arroz, salsa" className={cn(p.large && 'min-h-16 text-xl')} />
+          </Field>
+          <ValueField
+            name="startTemp"
+            label="Temperatura al empezar"
+            value={value}
+            onChange={setValue}
+            large={p.large}
+            error={liveError || errors.startTemp || server.startTemp}
+            hint={`Criterio orientativo del local: ${formatTemp(r.coolingTargetTemp)} o menos en ${r.coolingMaxMinutes} minutos o menos. ${REFERENCE_SOURCES.coolingMaxMinutes}`}
+          />
+          <Field label="Notas" optional>
+            <Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={500} placeholder="Ej.: en abatidor, en bandejas de 5 cm" />
+          </Field>
+        </>
+      ) : (
+        <>
+          {init?.phase === 'fin' ? (
+            <p className="text-ink-muted">
+              Enfriamiento de <strong>{init.product}</strong>: {init.minutes} minutos (criterio: {formatTemp(init.targetTemp)} o menos en {init.maxMinutes} min).
+            </p>
+          ) : (
+            <fieldset>
+              <legend className="mb-1.5 font-semibold">Enfriamiento en curso</legend>
+              <div className="grid gap-2">
+                {open.map((c) => (
+                  <label
+                    key={c.recordId}
+                    className={cn(
+                      'flex min-h-16 cursor-pointer items-center gap-3 rounded-xl border-2 px-4 py-2 has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-focus',
+                      startId === c.recordId ? 'border-brand bg-brand-soft' : 'border-line bg-surface hover:border-line-strong',
+                      p.large && 'min-h-20 text-xl',
+                    )}
+                  >
+                    <input type="radio" name="cooling" className="sr-only" checked={startId === c.recordId} onChange={() => setStartId(c.recordId)} />
+                    <Icon name="snowflake" size={24} className="shrink-0 text-brand" />
+                    <span className="min-w-0">
+                      <span className="block font-semibold [overflow-wrap:anywhere]">{c.product}</span>
+                      <span className={cn('block text-sm', c.overdue ? 'font-semibold text-bad' : 'text-ink-muted')}>
+                        Empezó a {formatTemp(c.startTemp)} · hace {minutesSince(c.startedAt)} min{c.overdue ? ` · supera los ${c.maxMinutes} min` : ''}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {errors.startRecordId || server.startRecordId ? (
+                <p className="mt-1.5 text-sm font-semibold text-bad" role="alert">
+                  {errors.startRecordId || server.startRecordId}
+                </p>
+              ) : null}
+            </fieldset>
+          )}
+          {!discarded ? (
+            <ValueField
+              name="endTemp"
+              label="Temperatura al terminar"
+              value={value}
+              onChange={setValue}
+              large={p.large}
+              error={liveError || errors.endTemp || server.endTemp}
+              hint={`Criterio orientativo: ${formatTemp(target)} o menos en ${maxMin} minutos o menos.`}
+            />
+          ) : null}
+          <Checkbox checked={discarded} onChange={setDiscarded} label="No se ha podido medir: el producto se ha desechado" />
+          {startId || init ? (
+            bad ? (
+              <Callout tone="bad" title={discarded ? 'Producto desechado' : overTime ? `Han pasado ${elapsed} min: supera los ${maxMin} min` : `${formatTemp(num!)}: por encima de ${formatTemp(target)}`} live="polite">
+                Anota qué has hecho con el producto.
+              </Callout>
+            ) : valid ? (
+              <Callout tone="ok" title={`${formatTemp(num!)} en ${elapsed ?? '—'} min: cumple el criterio`} live="polite" />
+            ) : null
+          ) : null}
+          {bad ? <CorrectiveAction value={action} onChange={setAction} suggestions={COOL_ACTIONS} error={errors.correctiveAction || server.correctiveAction} large={p.large} /> : null}
+        </>
+      )}
+    </FormShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Registros personalizados (lista de comprobación, valor con número o sí/no)
+// ---------------------------------------------------------------------------
+export const CUSTOM_ACTIONS = ['Corregido en el momento', 'Avisado el responsable', 'Avisado el servicio técnico', 'Se repetirá el control'];
+
+export function PersonalizadoForm(p: Props<'personalizado'>) {
+  const templates = (p.ctx.customTemplates ?? []).filter((t) => t.active || t.id === p.initial?.templateId);
+  const [templateId, setTemplateId] = useState(p.initial?.templateId ?? p.preset?.templateId ?? (templates.length === 1 ? templates[0]!.id : ''));
+  const tpl = templates.find((t) => t.id === templateId);
+  const [answers, setAnswers] = useState<Record<string, boolean>>(() => Object.fromEntries((p.initial?.items ?? []).map((i) => [i.itemId, i.ok])));
+  const [reading, setReading] = useState(numText(p.initial?.reading));
+  const [answer, setAnswer] = useState<'si' | 'no' | null>(p.initial?.answer === true ? 'si' : p.initial?.answer === false ? 'no' : null);
+  const [notes, setNotes] = useState(p.initial?.notes ?? '');
+  const [action, setAction] = useState(p.initial?.correctiveAction ?? '');
+  const { errors, submit } = useValidated(personalizadoData, p.onSubmit);
+  const server = fieldErrorsFrom(p.serverError);
+  const num = parseDecimal(reading);
+  const readingError = reading.trim() === '' || reading.trim() === '−' ? null : num == null ? (p.large ? null : 'Escribe el valor con números (por ejemplo 0,5)') : null;
+  const failed = tpl?.kind === 'checklist' ? tpl.items.filter((i) => answers[i.id] === false).length : 0;
+  const bad =
+    tpl?.kind === 'checklist' ? failed > 0 : tpl?.kind === 'numeric' ? num != null && isOutOfRange(num, tpl.min, tpl.max) : tpl?.kind === 'yesno' ? answer === 'no' : false;
+
+  if (templates.length === 0) {
+    return (
+      <Callout tone="info" title="Aún no hay registros personalizados">
+        Créalos en Ajustes → Registros personalizados (o activa uno sugerido: cloro del agua, termómetros, mantenimiento…).
+      </Callout>
+    );
+  }
+  const rangeText = (t: CustomTemplate) =>
+    t.min != null && t.max != null ? `entre ${numText(t.min)} y ${numText(t.max)}` : t.min != null ? `${numText(t.min)} o más` : t.max != null ? `${numText(t.max)} o menos` : '';
+
+  return (
+    <FormShell
+      {...p}
+      danger={bad}
+      disabled={!!readingError || !tpl}
+      submitLabel={p.submitLabel ?? (bad ? 'Guardar con acción correctora' : 'Guardar')}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!tpl) return;
+        const extra: Record<string, string> = {};
+        if (tpl.kind === 'checklist' && tpl.items.some((i) => answers[i.id] === undefined)) extra.items = 'Marca cada punto como correcto o no';
+        if (tpl.kind === 'numeric' && num == null) extra.reading = 'Escribe el valor';
+        if (tpl.kind === 'yesno' && !answer) extra.answer = 'Responde sí o no';
+        if (bad && !action.trim()) extra.correctiveAction = 'Indica la acción correctora';
+        submit(
+          {
+            templateId: tpl.id,
+            items: tpl.kind === 'checklist' ? tpl.items.filter((i) => answers[i.id] !== undefined).map((i) => ({ itemId: i.id, ok: answers[i.id] })) : null,
+            reading: tpl.kind === 'numeric' ? num : null,
+            answer: tpl.kind === 'yesno' ? answer === 'si' : null,
+            notes: notes.trim() || null,
+            correctiveAction: action.trim() || null,
+          },
+          extra,
+        );
+      }}
+    >
+      {p.initial ? null : (
+        <Field label="Registro" error={errors.templateId || server.templateId}>
+          <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={cn(p.large && 'min-h-16 text-xl')}>
+            <option value="">Elige…</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
+      {tpl ? (
+        <>
+          {tpl.instructions ? <Callout tone="info" title={tpl.name}>{tpl.instructions}</Callout> : null}
+          {tpl.kind === 'checklist' ? (
+            <fieldset className="space-y-2">
+              <legend className="mb-1.5 font-semibold">Puntos a comprobar</legend>
+              {tpl.items.map((it) => (
+                <div key={it.id} className={cn('flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2', answers[it.id] === false ? 'border-bad/50 bg-bad-soft/60' : 'border-line')}>
+                  <span className={cn('min-w-44 flex-1 font-semibold [overflow-wrap:anywhere]', p.large && 'text-xl')}>{it.label}</span>
+                  <div role="group" aria-label={it.label} className="flex gap-2">
+                    {([true, false] as const).map((ok) => (
+                      <button
+                        key={String(ok)}
+                        type="button"
+                        aria-pressed={answers[it.id] === ok}
+                        onClick={() => setAnswers((a) => ({ ...a, [it.id]: ok }))}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-full border-2 px-4 font-semibold',
+                          p.large ? 'min-h-14 text-lg' : 'min-h-11',
+                          answers[it.id] === ok ? (ok ? 'border-ok-solid bg-ok-soft text-ok' : 'border-bad-solid bg-bad-soft text-bad') : 'border-line-strong bg-surface',
+                        )}
+                      >
+                        {answers[it.id] === ok ? <Icon name={ok ? 'check' : 'x'} size={16} strokeWidth={3} /> : null}
+                        {ok ? 'Correcto' : 'No'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {errors.items || server.items ? (
+                <p className="text-sm font-semibold text-bad" role="alert">
+                  {errors.items || server.items}
+                </p>
+              ) : null}
+            </fieldset>
+          ) : tpl.kind === 'numeric' ? (
+            <ValueField
+              name="reading"
+              label="Valor"
+              unit={tpl.unit ?? ''}
+              temperature={false}
+              value={reading}
+              onChange={setReading}
+              large={p.large}
+              error={readingError || errors.reading || server.reading}
+              hint={rangeText(tpl) ? `Rango correcto: ${rangeText(tpl)}${tpl.unit ? ` ${tpl.unit}` : ''}` : undefined}
+            />
+          ) : (
+            <ChoiceGroup
+              legend={tpl.name}
+              value={answer}
+              onChange={setAnswer}
+              error={errors.answer || server.answer}
+              size={p.large ? 'xl' : 'md'}
+              options={[
+                { value: 'si', label: 'Sí', tone: 'ok' },
+                { value: 'no', label: 'No', tone: 'bad' },
+              ]}
+            />
+          )}
+          {bad ? (
+            <Callout tone="bad" title={tpl.kind === 'checklist' ? `${failed} ${failed === 1 ? 'punto no se cumple' : 'puntos no se cumplen'}` : tpl.kind === 'numeric' ? 'Fuera del rango correcto' : 'Respuesta «No»'} live="polite">
+              Anota qué has hecho.
+            </Callout>
+          ) : null}
+          <Field label="Observaciones" optional>
+            <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={1000} rows={2} />
+          </Field>
+          {bad ? <CorrectiveAction value={action} onChange={setAction} suggestions={CUSTOM_ACTIONS} error={errors.correctiveAction || server.correctiveAction} large={p.large} /> : null}
+        </>
+      ) : null}
+    </FormShell>
+  );
+}
+
 /** Selecciona el formulario según el tipo. */
 export function RecordForm({ type, ...props }: { type: RecordType } & Props<RecordType> & { forceClosed?: boolean }) {
   switch (type) {
@@ -856,5 +1312,11 @@ export function RecordForm({ type, ...props }: { type: RecordType } & Props<Reco
       return <IncidenciaForm {...(props as Props<'incidencia'>)} />;
     case 'formacion':
       return <FormacionForm {...(props as Props<'formacion'>)} />;
+    case 'cocinado':
+      return <CocinadoForm {...(props as Props<'cocinado'>)} />;
+    case 'enfriamiento':
+      return <EnfriamientoForm {...(props as Props<'enfriamiento'>)} />;
+    case 'personalizado':
+      return <PersonalizadoForm {...(props as Props<'personalizado'>)} />;
   }
 }

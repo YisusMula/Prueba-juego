@@ -3,10 +3,10 @@
  * se importan directamente de `@shared/schemas` (enregla/server/src/schemas) para usar
  * exactamente las mismas reglas que el servidor.
  */
-import type { AllergenId, ReceptionCategory, RecordType } from '@shared/schemas';
+import type { AllergenId, CookingProcess, CustomFrequency, CustomKind, ReceptionCategory, RecordType, ReferenceValues, SuggestedTemplate, VerificationKind } from '@shared/schemas';
 import type { BUSINESS_TYPES, EQUIPMENT_TYPES } from '@shared/schemas';
 
-export type { AllergenId, ReceptionCategory, RecordType };
+export type { AllergenId, ReceptionCategory, RecordType, ReferenceValues, CustomKind, CustomFrequency };
 export type BusinessType = (typeof BUSINESS_TYPES)[number];
 export type EquipmentType = (typeof EQUIPMENT_TYPES)[number];
 export type Role = 'owner' | 'manager';
@@ -66,7 +66,76 @@ export type Organization = {
   deletionScheduledAt: string | null;
   /** El titular confirmó la eliminación inmediata: el mantenimiento la ejecuta en la próxima hora. */
   purgeRequestedAt: string | null;
+  /** Datos del establecimiento para la portada del PDF (fase 2). */
+  establishment?: Establishment;
+  /** Valores de referencia vigentes (los del local o los orientativos). */
+  referenceValues?: ReferenceValues;
+  /** Valores que el local ha cambiado. */
+  referenceValuesCustom?: Partial<ReferenceValues>;
   createdAt: string;
+};
+
+export type Establishment = {
+  legalName: string | null;
+  taxId: string | null;
+  address: string | null;
+  postalCode: string | null;
+  city: string | null;
+  province: string | null;
+  sanitaryRegistry: string | null;
+  sanitaryRegistryFormatOk: boolean;
+};
+
+export type CustomTemplate = {
+  id: string;
+  name: string;
+  kind: CustomKind;
+  items: { id: string; label: string }[];
+  unit: string | null;
+  min: number | null;
+  max: number | null;
+  frequency: CustomFrequency;
+  timesPerDay: number;
+  weekday: number | null;
+  monthDay: number | null;
+  instructions: string | null;
+  suggestionKey: string | null;
+  source: string | null;
+  active: boolean;
+  createdAt: string;
+};
+export type TemplateSuggestion = SuggestedTemplate & { activated: boolean };
+
+export type Verification = {
+  id: string;
+  from: string;
+  to: string;
+  kind: VerificationKind;
+  comment: string | null;
+  user: { id: string; name: string; role: Role };
+  createdAt: string;
+};
+
+export type OpenCooling = {
+  recordId: string;
+  product: string;
+  startTemp: number | null;
+  startedAt: string;
+  deadline: string;
+  minutesElapsed: number;
+  overdue: boolean;
+  targetTemp: number;
+  maxMinutes: number;
+};
+
+export type MissingTask = {
+  kind: 'temperatura' | 'limpieza' | 'personalizado';
+  id: string;
+  name: string;
+  expected: number;
+  done: number;
+  partial?: boolean;
+  frequency: string;
 };
 
 export type Member = { userId: string; name: string; email: string; role: Role; joinedAt: string };
@@ -185,6 +254,50 @@ export type FormacionStored = {
   hours: number | null;
 };
 
+export type CocinadoStored = {
+  product: string;
+  process: CookingProcess;
+  coreTemp: number;
+  minutes: number | null;
+  referenceTemp: number;
+  outOfRange: boolean;
+  correctiveAction: string | null;
+};
+export type EnfriamientoStored =
+  | { phase: 'inicio'; product: string; startTemp: number; notes: string | null }
+  | {
+      phase: 'fin';
+      startRecordId: string;
+      product: string | null;
+      startTemp: number | null;
+      startedAt: string | null;
+      endedAt: string | null;
+      endTemp: number | null;
+      minutes: number;
+      targetTemp: number;
+      maxMinutes: number;
+      overTemp: boolean;
+      overTime: boolean;
+      discarded: boolean;
+      outOfRange: boolean;
+      correctiveAction: string | null;
+    };
+export type PersonalizadoStored = {
+  templateId: string;
+  templateName: string;
+  kind: CustomKind;
+  notes: string | null;
+  items?: { itemId: string; label: string; ok: boolean }[];
+  failed?: number;
+  reading?: number;
+  unit?: string | null;
+  min?: number | null;
+  max?: number | null;
+  outOfRange?: boolean;
+  answer?: boolean;
+  correctiveAction: string | null;
+};
+
 export type RecordDataMap = {
   temperatura: TemperaturaStored;
   limpieza: LimpiezaStored;
@@ -193,6 +306,9 @@ export type RecordDataMap = {
   plagas: PlagasStored;
   incidencia: IncidenciaStored;
   formacion: FormacionStored;
+  cocinado: CocinadoStored;
+  enfriamiento: EnfriamientoStored;
+  personalizado: PersonalizadoStored;
 };
 
 type RecordBase = {
@@ -253,7 +369,11 @@ export type AlertKind =
   | 'recepcion_rechazada'
   | 'recepcion_con_incidencia'
   | 'plagas_con_indicios'
-  | 'incidencia_abierta';
+  | 'incidencia_abierta'
+  | 'cocinado_por_debajo'
+  | 'enfriamiento_fuera_de_criterio'
+  | 'enfriamiento_sin_cerrar'
+  | 'registro_personalizado_no_conforme';
 
 export type TodayTasks = {
   date: string;
@@ -291,6 +411,23 @@ export type TodayTasks = {
     /** Última limpieza PARCIAL del periodo (no cuenta como hecha). */
     partial?: { done: number; total: number; at: string; recordId: string } | null;
   }[];
+  /** Registros personalizados que tocan hoy (fase 2). */
+  custom?: {
+    templateId: string;
+    name: string;
+    kind: CustomKind;
+    frequency: CustomFrequency;
+    required: number;
+    done: number;
+    status: 'done' | 'pending';
+    countsToday: boolean;
+    withAlert: boolean;
+    lastAt: string | null;
+  }[];
+  /** Enfriamientos empezados y sin cerrar. */
+  coolings?: OpenCooling[];
+  /** Semana anterior: ¿está marcada como revisada? (`due`: el local ya existía al terminar esa semana). */
+  review?: { from: string; to: string; due: boolean; verified: boolean };
   summary: { total: number; done: number; pending: number; percent: number; correctedLater?: number; doneWithAlert?: number; remeasure?: number };
   alerts: { kind: AlertKind; recordId: string; message: string; createdAt: string }[];
 };
@@ -298,8 +435,8 @@ export type TodayTasks = {
 export type Compliance = {
   from: string;
   to: string;
-  days: { date: string; expected: number; done: number; percent: number | null; correctedLater?: number }[];
-  overall: { expected: number; done: number; percent: number | null; correctedLater?: number };
+  days: { date: string; expected: number; done: number; percent: number | null; correctedLater?: number; missing?: MissingTask[] }[];
+  overall: { expected: number; done: number; percent: number | null; correctedLater?: number; daysWithGaps?: number };
 };
 
 export type Billing = {
@@ -319,4 +456,6 @@ export type KioskContext = {
   equipment: { id: string; name: string; type: EquipmentType; minTemp: number | null; maxTemp: number | null; checksPerDay: number }[];
   cleaningPlans: { id: string; name: string; frequency: Frequency; weekday: number | null; monthDay: number | null; items: CleaningItem[] }[];
   suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null; receptionLimit?: number | null }[];
+  customTemplates?: CustomTemplate[];
+  referenceValues?: ReferenceValues;
 };

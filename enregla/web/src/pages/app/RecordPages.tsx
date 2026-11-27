@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { RECORD_TYPES } from '@shared/schemas';
-import { useCleaningPlans, useEquipment, useStaff, useSuppliers, orgApi } from '@/api/queries';
+import { useCleaningPlans, useCustomTemplates, useEquipment, useStaff, useSuppliers, useToday, orgApi } from '@/api/queries';
 import type { AppRecord } from '@/api/types';
 import { useOrgContext } from '@/hooks/useOrgContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
@@ -55,16 +55,32 @@ export function RegisterHubPage() {
 
 /** Carga equipos, planes, proveedores y personal para los formularios. */
 export function useFormContext(): { ctx: FormContext | null; error: unknown; retry: () => void } {
-  const { orgId, tz } = useOrgContext();
+  const { orgId, tz, org } = useOrgContext();
   const eq = useEquipment(orgId);
   const plans = useCleaningPlans(orgId);
   const sup = useSuppliers(orgId);
   const staff = useStaff(orgId);
-  const all = [eq, plans, sup, staff];
+  const tpl = useCustomTemplates(orgId);
+  // Enfriamientos en curso (para cerrarlos): salen de «Hoy».
+  const today = useToday(orgId);
+  const all = [eq, plans, sup, staff, tpl];
   const error = all.find((q) => q.isError)?.error ?? null;
   const retry = () => all.forEach((q) => void q.refetch());
-  if (!eq.data || !plans.data || !sup.data || !staff.data) return { ctx: null, error, retry };
-  return { ctx: { equipment: eq.data, cleaningPlans: plans.data, suppliers: sup.data, staff: staff.data, timezone: tz }, error, retry };
+  if (!eq.data || !plans.data || !sup.data || !staff.data || !tpl.data) return { ctx: null, error, retry };
+  return {
+    ctx: {
+      equipment: eq.data,
+      cleaningPlans: plans.data,
+      suppliers: sup.data,
+      staff: staff.data,
+      timezone: tz,
+      customTemplates: tpl.data.items,
+      referenceValues: org.referenceValues,
+      coolings: today.data?.coolings ?? [],
+    },
+    error,
+    retry,
+  };
 }
 
 export function RegisterTypePage() {
@@ -88,8 +104,12 @@ export function RegisterTypePage() {
   const preset: Record<string, string> = {};
   const eqParam = params.get('equipo');
   const planParam = params.get('plan');
+  const tplParam = params.get('registro');
+  const coolParam = params.get('enfriamiento');
   if (eqParam) preset.equipmentId = eqParam;
   if (planParam) preset.cleaningPlanId = planParam;
+  if (tplParam) preset.templateId = tplParam;
+  if (coolParam) preset.startRecordId = coolParam;
 
   const submit = async (data: unknown) => {
     setSaving(true);
@@ -132,7 +152,7 @@ export function RegisterTypePage() {
           onAnother={() => {
             setSaved(null);
             setFormKey((k) => k + 1);
-            if (eqParam || planParam) navigate(path(`registrar/${type}`), { replace: true });
+            if (eqParam || planParam || tplParam || coolParam) navigate(path(`registrar/${type}`), { replace: true });
           }}
         />
       ) : error ? (
@@ -196,10 +216,21 @@ function SavedPanel({ record, onAnother }: { record: AppRecord; onAnother: () =>
         <Icon name={record.alert ? 'alert' : partial ? 'clock' : 'check'} size={44} strokeWidth={3} />
       </span>
       <h2 className="mt-5 text-3xl font-extrabold">
-        {record.alert ? 'Guardado, con alerta' : record.type === 'limpieza' && !record.data.completed ? 'Guardado como parcial' : 'Hecho'}
+        {record.alert
+          ? 'Guardado, con alerta'
+          : record.type === 'limpieza' && !record.data.completed
+            ? 'Guardado como parcial'
+            : record.type === 'enfriamiento' && record.data.phase === 'inicio'
+              ? 'Enfriamiento empezado'
+              : 'Hecho'}
       </h2>
       <p className="mt-2 text-lg font-semibold">{s.title}</p>
       <p className="text-ink-muted">{s.detail}</p>
+      {record.type === 'enfriamiento' && record.data.phase === 'inicio' ? (
+        <p className="mt-2 font-semibold" data-testid="cooling-started">
+          Queda «en curso» en Hoy y en la tablet: ciérralo cuando termine con la temperatura final.
+        </p>
+      ) : null}
       <div className="mx-auto mt-7 grid max-w-md gap-3 sm:grid-cols-2">
         <Button size="lg" icon="plus" onClick={onAnother}>
           Registrar otro

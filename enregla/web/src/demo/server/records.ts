@@ -15,9 +15,33 @@ export type Actor = { userId: string | null; userName: string | null; staffId: s
 
 const isOutOfRange = (value: number, min: number | null, max: number | null) => (min != null && value < min) || (max != null && value > max);
 
-type Prepared = { data: Record<string, unknown>; alert: boolean; equipmentId: string | null; cleaningPlanId: string | null };
+type Prepared = { data: Record<string, unknown>; alert: boolean; equipmentId: string | null; cleaningPlanId: string | null; customTemplateId?: string | null; relatedRecordId?: string | null };
 
-function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, today: string, previous?: { data: Record<string, unknown> }): Prepared {
+/** Como el servidor (A3): nombre de proveedor comparable sin tildes, mayúsculas, espacios dobles ni puntuación final. */
+export function supplierKey(name: string): string {
+  return name
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[\s\u00A0\u2000-\u200B\u202F\u205F\u3000\uFEFF]+/g, ' ')
+    .trim()
+    .replace(/^[\s.,;:!¡?¿'"«»()\-–—]+|[\s.,;:!¡?¿'"«»()\-–—]+$/g, '');
+}
+
+/** Raíz de una cadena de correcciones y su versión vigente. */
+function chainRoot(db: DemoState, orgId: string, id: string): DRecord | undefined {
+  let r = db.records.find((x) => x.id === id && x.orgId === orgId);
+  while (r?.amendsRecordId) r = db.records.find((x) => x.id === r!.amendsRecordId);
+  return r;
+}
+export function latestVersion(db: DemoState, rootId: string): DRecord | undefined {
+  let r = db.records.find((x) => x.id === rootId);
+  for (let next = r ? db.records.find((x) => x.amendsRecordId === r!.id) : undefined; next; next = db.records.find((x) => x.amendsRecordId === r!.id)) r = next;
+  return r;
+}
+
+function prepare(db: DemoState, org: DOrg, type: RecordType, raw: unknown, today: string, now: number, previous?: DRecord): Prepared {
+  const orgId = org.id;
   switch (type) {
     case 'temperatura': {
       const d = parse(S.temperaturaData, raw, ['data']);
@@ -62,7 +86,8 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
         supplier = { defaultCategory: s.defaultCategory ?? null, receptionLimit: s.receptionLimit ?? null };
       } else if (supplierName) {
         // Como el servidor (R6): un nombre escrito a mano que coincide con un proveedor ES ese proveedor.
-        const s = db.suppliers.find((x) => x.orgId === orgId && x.name.trim().toLowerCase() === supplierName!.trim().toLowerCase());
+        const wanted = supplierKey(supplierName);
+        const s = wanted ? db.suppliers.find((x) => x.orgId === orgId && supplierKey(x.name) === wanted) : undefined;
         if (s) {
           supplierId = s.id;
           supplierName = s.name;
@@ -154,6 +179,106 @@ function prepare(db: DemoState, orgId: string, type: RecordType, raw: unknown, t
         cleaningPlanId: null,
       };
     }
+    case 'cocinado': {
+      const d = parse(S.cocinadoData, raw, ['data']);
+      const refs = S.effectiveReferenceValues(org.referenceValues);
+      const referenceTemp = d.process === 'cocinado' ? refs.cookingMinTemp : refs.reheatMinTemp;
+      const outOfRange = d.coreTemp < referenceTemp;
+      if (outOfRange && !d.correctiveAction) throw validationError('data.correctiveAction', `No llega a la temperatura de referencia (${S.esNumber(referenceTemp)} °C en el centro): indica la acción correctora`);
+      return {
+        data: { product: d.product, process: d.process, coreTemp: d.coreTemp, minutes: d.minutes ?? null, referenceTemp, outOfRange, correctiveAction: d.correctiveAction },
+        alert: outOfRange,
+        equipmentId: null,
+        cleaningPlanId: null,
+      };
+    }
+    case 'enfriamiento': {
+      const d = parse(S.enfriamientoData, raw, ['data']);
+      const prevPhase = previous?.data.phase;
+      if (previous && prevPhase !== d.phase) throw validationError('data.phase', d.phase === 'fin' ? 'Este registro es el inicio de un enfriamiento: corrige el inicio, no lo cierres aquí' : 'Este registro es el cierre de un enfriamiento: corrige el cierre');
+      if (d.phase === 'inicio') return { data: { phase: 'inicio', product: d.product, startTemp: d.startTemp, notes: d.notes }, alert: false, equipmentId: null, cleaningPlanId: null };
+      const root = chainRoot(db, orgId, d.startRecordId);
+      if (!root || root.type !== 'enfriamiento' || root.data.phase !== 'inicio') throw notFound('Enfriamiento');
+      if (previous && previous.relatedRecordId !== root.id) throw validationError('data.startRecordId', 'Una corrección del cierre no puede cambiar de enfriamiento');
+      if (!previous && db.records.some((r) => r.relatedRecordId === root.id && !r.amendsRecordId)) throw conflict('Este enfriamiento ya está cerrado');
+      const start = latestVersion(db, root.id) ?? root;
+      const prev = previous?.data as { minutes?: number; endedAt?: string; targetTemp?: number; maxMinutes?: number } | undefined;
+      const refs = S.effectiveReferenceValues(org.referenceValues);
+      const endedAt = prev?.endedAt ? Date.parse(prev.endedAt) : now;
+      const minutes = prev?.minutes ?? Math.max(0, Math.round((endedAt - root.effectiveAt) / 60_000));
+      const targetTemp = prev?.targetTemp ?? refs.coolingTargetTemp;
+      const maxMinutes = prev?.maxMinutes ?? refs.coolingMaxMinutes;
+      const discarded = d.discarded === true;
+      if (!discarded && d.endTemp == null) throw validationError('data.endTemp', 'Escribe la temperatura al terminar el enfriamiento');
+      const overTemp = !discarded && d.endTemp != null && d.endTemp > targetTemp;
+      const overTime = minutes > maxMinutes;
+      const outOfRange = discarded || overTemp || overTime;
+      if (outOfRange && !d.correctiveAction) {
+        throw validationError(
+          'data.correctiveAction',
+          discarded ? 'Indica qué se ha hecho con el producto (por ejemplo, «Desechado»)' : `No cumple el criterio de referencia (${S.esNumber(targetTemp)} °C o menos en ${maxMinutes} minutos o menos): indica la acción correctora`,
+        );
+      }
+      return {
+        data: {
+          phase: 'fin',
+          startRecordId: root.id,
+          product: start.data.product ?? null,
+          startTemp: start.data.startTemp ?? null,
+          startedAt: new Date(root.effectiveAt).toISOString(),
+          endedAt: new Date(endedAt).toISOString(),
+          endTemp: d.endTemp ?? null,
+          minutes,
+          targetTemp,
+          maxMinutes,
+          overTemp,
+          overTime,
+          discarded,
+          outOfRange,
+          correctiveAction: d.correctiveAction,
+        },
+        alert: outOfRange,
+        equipmentId: null,
+        cleaningPlanId: null,
+        relatedRecordId: root.id,
+      };
+    }
+    case 'personalizado': {
+      const d = parse(S.personalizadoData, raw, ['data']);
+      const tpl = db.templates.find((t) => t.id === d.templateId && t.orgId === orgId);
+      if (!tpl) throw notFound('Registro personalizado');
+      if (!tpl.active && !previous) throw validationError('data.templateId', 'Este registro personalizado está desactivado');
+      if (previous && previous.data.templateId !== tpl.id) throw validationError('data.templateId', 'Una corrección no puede cambiar de registro personalizado');
+      const base = { templateId: tpl.id, templateName: tpl.name, kind: tpl.kind, notes: d.notes };
+      let alert: boolean;
+      let data: Record<string, unknown>;
+      if (tpl.kind === 'checklist') {
+        const answers = new Map((d.items ?? []).map((i) => [i.itemId, i.ok]));
+        for (const id of answers.keys()) if (!tpl.items.some((i) => i.id === id)) throw validationError('data.items', 'Hay puntos que no pertenecen a este registro');
+        const missing = tpl.items.filter((i) => !answers.has(i.id));
+        if (missing.length > 0) throw validationError('data.items', `Marca todos los puntos (falta: ${missing[0]!.label})`);
+        const items = tpl.items.map((i) => ({ itemId: i.id, label: i.label, ok: answers.get(i.id) === true }));
+        const failed = items.filter((i) => !i.ok).length;
+        alert = failed > 0;
+        data = { ...base, items, failed };
+      } else if (tpl.kind === 'numeric') {
+        if (d.reading == null) throw validationError('data.reading', 'Escribe el valor');
+        const outOfRange = isOutOfRange(d.reading, tpl.min, tpl.max);
+        alert = outOfRange;
+        data = { ...base, reading: d.reading, unit: tpl.unit, min: tpl.min, max: tpl.max, outOfRange };
+      } else {
+        if (d.answer == null) throw validationError('data.answer', 'Responde sí o no');
+        alert = d.answer === false;
+        data = { ...base, answer: d.answer };
+      }
+      if (alert && !d.correctiveAction) {
+        throw validationError(
+          'data.correctiveAction',
+          tpl.kind === 'checklist' ? 'Hay puntos que no se cumplen: indica la acción correctora' : tpl.kind === 'numeric' ? 'El valor está fuera del rango: indica la acción correctora' : 'La respuesta es «No»: indica la acción correctora',
+        );
+      }
+      return { data: { ...data, correctiveAction: d.correctiveAction }, alert, equipmentId: null, cleaningPlanId: null, customTemplateId: tpl.id };
+    }
   }
 }
 
@@ -185,7 +310,7 @@ export function createRecord(
     type = original.type;
     if (db.records.some((r) => r.amendsRecordId === original!.id)) throw conflict('Este registro ya tiene una enmienda: enmienda la versión más reciente');
   }
-  const prepared = prepare(db, org.id, type, rawData, localDate(new Date(now), org.timezone), original ? { data: original.data } : undefined);
+  const prepared = prepare(db, org, type, rawData, localDate(new Date(now), org.timezone), now, original);
   const staffId = actor.staffId === undefined ? (original?.staffId ?? null) : actor.staffId;
   let staffName: string | null = null;
   if (staffId && original && staffId === original.staffId) staffName = original.staffName;
@@ -203,6 +328,8 @@ export function createRecord(
     deviceId: actor.deviceId,
     equipmentId: prepared.equipmentId,
     cleaningPlanId: prepared.cleaningPlanId,
+    customTemplateId: prepared.customTemplateId ?? null,
+    relatedRecordId: prepared.relatedRecordId ?? null,
     amendsRecordId: original?.id ?? null,
     amendmentReason: amendment?.reason ?? null,
     alert: prepared.alert,

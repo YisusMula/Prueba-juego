@@ -2,9 +2,21 @@
  * Plantillas de alta ORIENTATIVAS por tipo de negocio. No constituyen un plan de
  * autocontrol: cada local debe revisarlas y adaptarlas a su actividad. Todo es editable.
  *
- * Referencias de temperatura usadas como valores iniciales (art. 30 del RD 1086/2020,
- * modificado por el RD 1021/2022): refrigeración ≤ 4 °C (comidas refrigeradas de consumo
- * en menos de 24 h: ≤ 8 °C), congelación ≤ −18 °C, mantenimiento en caliente ≥ 63 °C.
+ * Revisadas el 27/11/2026 contra la normativa vigente (detalle en docs/VALORES-DE-REFERENCIA.md):
+ *  - Refrigeración ≤ 4 °C: RD 1086/2020, art. 30.3 (texto consolidado; el RD 1021/2022 solo modificó
+ *    su apartado 11): comidas preparadas con vida útil > 24 h ≤ 4 °C; < 24 h ≤ 8 °C. Se usa 4 °C, el
+ *    más prudente. El plan genérico de hostelería del Gobierno Vasco admite cámaras a ≤ 6 °C y la guía
+ *    valenciana fija valores por producto (carne picada ≤ 2 °C, vísceras ≤ 3 °C…): cada local ajusta.
+ *    https://www.boe.es/buscar/act.php?id=BOE-A-2020-15872
+ *  - Congelación ≤ −18 °C: RD 1086/2020, art. 30.4 (igual en las guías vasca y valenciana).
+ *  - Mantenimiento en caliente ≥ 63 °C: RD 1086/2020, art. 30.2 (y Comunidad de Madrid). Las guías
+ *    vasca y valenciana piden ≥ 65 °C: se puede subir el mínimo del equipo.
+ *  - Freidoras: sin control de temperatura; el aceite se registra aparte (compuestos polares < 25 %:
+ *    plan genérico vasco y criterios de la Comunitat Valenciana; ver POLAR_COMPOUNDS_LIMIT).
+ *  - Nº de controles al día (2 en cámaras, 1 en congeladores, 3 en mantenimiento en caliente) y
+ *    frecuencias de limpieza: criterio práctico, no normativo. El plan vasco pide controlar las
+ *    cámaras a diario y el mantenimiento en caliente antes de cada turno; la limpieza la decide el
+ *    plan de limpieza y desinfección del local.
  * Los límites pueden ser solo máximo, solo mínimo o ambos.
  */
 import { REFERENCE_TEMPS, type BUSINESS_TYPES, type EQUIPMENT_TYPES } from '../../schemas/index.js';

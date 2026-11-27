@@ -38,15 +38,15 @@ test('registro → verificación por email → login → alta guiada del local',
   await page.getByRole('button', { name: 'Entrar', exact: true }).click();
 
   await expect(page).toHaveURL(/\/nuevo-local/);
-  await expect(page.getByText('Son 4 pasos')).toBeVisible();
-  await expect(page.locator('ol[aria-label="Pasos del alta"] > li')).toHaveCount(4);
+  await expect(page.getByText('Son 5 pasos')).toBeVisible();
+  await expect(page.locator('ol[aria-label="Pasos del alta"] > li')).toHaveCount(5);
   await page.getByLabel('Nombre del local').fill('Bar E2E');
   await page.getByText('Bar', { exact: true }).click();
   await page.getByRole('button', { name: 'Crear local y continuar' }).click();
   await expect(page.getByRole('heading', { name: 'Revisa tus equipos' })).toBeVisible();
   // El segundo paso es paso=2 en la URL.
   await expect(page).toHaveURL(/paso=2/);
-  await expect(page.getByText('Paso 2 de 4')).toBeVisible();
+  await expect(page.getByText('Paso 2 de 5')).toBeVisible();
   await expect(page.getByText(/Cámara|Congelador|Vitrina/).first()).toBeVisible();
   await page.getByRole('button', { name: 'Siguiente' }).click();
   await expect(page.getByRole('heading', { name: 'Revisa la limpieza' })).toBeVisible();
@@ -58,7 +58,17 @@ test('registro → verificación por email → login → alta guiada del local',
   await dlg.getByLabel('PIN', { exact: true }).fill('4321');
   await dlg.getByRole('button', { name: 'Guardar' }).click();
   await expect(page.getByText('Pepa Ruiz', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Terminar' }).click();
+  await page.getByRole('button', { name: 'Siguiente' }).click();
+  // Paso 5 (opcional): datos del establecimiento para el PDF. El NIF se comprueba con su letra.
+  await expect(page.getByRole('heading', { name: /Datos para la inspección/ })).toBeVisible();
+  await page.getByLabel('NIF / CIF').fill('B12345675');
+  await page.getByRole('button', { name: 'Guardar y terminar' }).click();
+  await expect(page.getByText('El carácter de control del CIF no es correcto')).toBeVisible();
+  await page.getByLabel('NIF / CIF').fill('B12345674');
+  await page.getByLabel('Razón social').fill('Bar E2E S.L.');
+  await page.getByLabel(/Registro Sanitario/).fill('Autorización 12/AB');
+  await expect(page.getByText('No parece un número de RGSEAA')).toBeVisible();
+  await page.getByRole('button', { name: 'Guardar y terminar' }).click();
   await expect(page.getByRole('heading', { name: '¡Tu local está listo!' })).toBeVisible();
   await page.getByRole('button', { name: 'Ir al panel de hoy' }).click();
   await expect(page).toHaveURL(/\/locales\/[0-9a-f-]+\/hoy/);

@@ -3,10 +3,10 @@
  * proveedores, platos y 30 días de registros generados con el mismo PRNG determinista), calculados
  * con la fecha actual del navegador.
  */
-import { ALLERGENS } from '@shared/schemas';
+import { ALLERGENS, REFERENCE_DEFAULTS, SUGGESTED_TEMPLATES } from '@shared/schemas';
 import { correctiveActionsFor } from '../../../../server/src/scripts/seed-actions';
 import type { AllergenMap, RecordType } from '@/api/types';
-import { STATE_VERSION, type DemoState, type DRecord, type DStaff } from './state';
+import { STATE_VERSION, type DemoState, type DRecord, type DStaff, type DTemplate } from './state';
 import { createOrganization } from './orgs';
 import { isDue } from './tasks';
 import { newDeviceToken, uuid } from './ids';
@@ -34,6 +34,8 @@ export function emptyState(seededOn: string): DemoState {
     suppliers: [],
     dishes: [],
     records: [],
+    templates: [],
+    verifications: [],
     invitations: [],
     audit: [],
     auditSeq: 0,
@@ -67,6 +69,39 @@ export function seedDemo(nowMs = Date.now()): DemoState {
   // Suscripción activa (sin Stripe), carta pública activada y configuración «antigua» para que cuenten los 30 días.
   org.subscriptionStatus = 'active';
   org.publicMenuEnabled = true;
+  // Fase 2: datos del establecimiento (ficticios) para la portada del PDF, como el seed del servidor.
+  Object.assign(org, {
+    legalName: 'Restauración La Demo S.L.',
+    taxId: 'B12345674',
+    address: 'Calle Mayor 12',
+    postalCode: '28013',
+    city: 'Madrid',
+    province: 'Madrid',
+    sanitaryRegistry: '26.012345/M',
+  });
+  // Registros personalizados sugeridos: cloro del agua, verificación de termómetros y buenas prácticas.
+  const templates: DTemplate[] = ['agua_cloro', 'termometros', 'buenas_practicas'].map((key) => {
+    const t = SUGGESTED_TEMPLATES.find((x) => x.key === key)!;
+    const freq = { frequency: t.frequency, timesPerDay: t.timesPerDay ?? 1, weekday: t.weekday ?? null, monthDay: t.monthDay ?? null };
+    return {
+      id: uuid(),
+      orgId: org.id,
+      name: t.name,
+      kind: t.kind,
+      items: (t.items ?? []).map((label) => ({ id: uuid(), label })),
+      unit: t.unit ?? null,
+      min: t.min ?? null,
+      max: t.max ?? null,
+      ...freq,
+      instructions: t.instructions,
+      suggestionKey: t.key,
+      source: t.source,
+      active: true,
+      createdAt: startTs,
+      history: [{ validFrom: startTs, ...freq, active: true }],
+    };
+  });
+  db.templates.push(...templates);
 
   const staff: DStaff[] = [
     { name: 'Ana Martín', pin: '1234' },
@@ -215,6 +250,107 @@ export function seedDemo(nowMs = Date.now()): DemoState {
         { equipmentId: fryer.id, alert: overLimit },
       );
     }
+    // Fase 2 — cocinado y regeneración, enfriamiento rápido en dos registros y registros personalizados.
+    const lowCook = i === 9;
+    push(date, 13, 'cocinado', {
+      product: pick(['Pollo asado', 'Albóndigas en salsa', 'Merluza al horno', 'Hamburguesa de ternera', 'Tortilla de patata']),
+      process: 'cocinado',
+      coreTemp: lowCook ? 61.5 : round1(70 + rand() * 12),
+      minutes: 20 + Math.floor(rand() * 40),
+      referenceTemp: REFERENCE_DEFAULTS.cookingMinTemp,
+      outOfRange: lowCook,
+      correctiveAction: lowCook ? 'Se prolongó la cocción hasta superar 70 °C en el centro' : null,
+    }, { alert: lowCook });
+    if (i % 2 === 0) {
+      const lowReheat = i === 16;
+      push(date, 20, 'cocinado', {
+        product: pick(['Lentejas estofadas', 'Crema de verduras', 'Callos a la madrileña']),
+        process: 'regeneracion',
+        coreTemp: lowReheat ? 68 : round1(75 + rand() * 8),
+        minutes: null,
+        referenceTemp: REFERENCE_DEFAULTS.reheatMinTemp,
+        outOfRange: lowReheat,
+        correctiveAction: lowReheat ? 'Se volvió a calentar hasta 78 °C antes de servir' : null,
+      }, { alert: lowReheat });
+    }
+    if (i % 3 === 1 || date === today) {
+      const product = pick(['Caldo de ave', 'Fondo oscuro', 'Arroz para ensalada', 'Salsa de tomate']);
+      const startTemp = round1(68 + rand() * 12);
+      const startHour = date === today ? Math.max(0, nowHour - 1) : 16;
+      const before = rows.length;
+      push(date, startHour, 'enfriamiento', { phase: 'inicio', product, startTemp, notes: 'En abatidor' });
+      if (rows.length > before && date !== today) {
+        const st = rows[rows.length - 1]!;
+        const slow = i === 13;
+        const minutes = slow ? 150 : 85 + Math.floor(rand() * 30);
+        const endedAt = st.createdAt + minutes * 60_000;
+        rows.push({
+          ...st,
+          id: uuid(),
+          data: {
+            phase: 'fin',
+            startRecordId: st.id,
+            product,
+            startTemp,
+            startedAt: new Date(st.createdAt).toISOString(),
+            endedAt: new Date(endedAt).toISOString(),
+            endTemp: slow ? 9 : round1(3 + rand() * 5),
+            minutes,
+            targetTemp: REFERENCE_DEFAULTS.coolingTargetTemp,
+            maxMinutes: REFERENCE_DEFAULTS.coolingMaxMinutes,
+            overTemp: false,
+            overTime: slow,
+            discarded: false,
+            outOfRange: slow,
+            correctiveAction: slow ? 'El abatidor iba sobrecargado: producto regenerado y consumido en el día' : null,
+          },
+          relatedRecordId: st.id,
+          alert: slow,
+          createdAt: endedAt,
+          effectiveAt: endedAt,
+        });
+      }
+    }
+    const chlorine = templates[0]!;
+    if (rand() > 0.1) {
+      const low = i === 21;
+      push(date, 9, 'personalizado', {
+        templateId: chlorine.id,
+        templateName: chlorine.name,
+        kind: 'numeric',
+        notes: null,
+        reading: low ? 0.1 : round1(0.3 + rand() * 0.5),
+        unit: chlorine.unit,
+        min: chlorine.min,
+        max: chlorine.max,
+        outOfRange: low,
+        correctiveAction: low ? 'Recloración del depósito y nueva medición a la hora: 0,4 mg/l' : null,
+      }, { customTemplateId: chlorine.id, alert: low });
+    }
+    if (date.endsWith('-01')) {
+      const bp = templates[2]!;
+      push(date, 11, 'personalizado', {
+        templateId: bp.id,
+        templateName: bp.name,
+        kind: 'checklist',
+        notes: null,
+        items: bp.items.map((it, n) => ({ itemId: it.id, label: it.label, ok: n !== 4 })),
+        failed: 1,
+        correctiveAction: 'Retiradas las cajas de cartón de la zona de elaboración y recordado al equipo',
+      }, { customTemplateId: bp.id, alert: true });
+    }
+    if (i === 10) {
+      const th = templates[1]!;
+      push(date, 12, 'personalizado', {
+        templateId: th.id,
+        templateName: th.name,
+        kind: 'checklist',
+        notes: 'Comparado con el termómetro de referencia en agua con hielo',
+        items: th.items.map((it) => ({ itemId: it.id, label: it.label, ok: true })),
+        failed: 0,
+        correctiveAction: null,
+      }, { customTemplateId: th.id });
+    }
     if (isoWeekday(date) === 1) {
       mondays += 1;
       const signs = mondays === 3;
@@ -292,7 +428,27 @@ export function seedDemo(nowMs = Date.now()): DemoState {
       effectiveAt: bad.effectiveAt,
     });
   }
-  db.records = rows;
+  // Los cierres de enfriamiento se añadieron tras su inicio, pero el orden de inserción es el de su hora.
+  db.records = rows.sort((a, b) => a.createdAt - b.createdAt);
+  // Verificación del responsable de las semanas anteriores (la última semana queda sin revisar).
+  const thisMonday = addDays(today, 1 - isoWeekday(today));
+  for (let w = 2; w <= 4; w++) {
+    const from = addDays(thisMonday, -7 * w);
+    const to = addDays(from, 6);
+    if (from < start) continue;
+    db.verifications.push({
+      id: uuid(),
+      orgId: org.id,
+      from,
+      to,
+      kind: 'week',
+      comment: w === 3 ? 'Revisadas las alertas de la cámara de carnes con el equipo' : null,
+      userId: user.id,
+      userName: user.name,
+      userRole: 'owner',
+      createdAt: localInstant(addDays(to, 1), TZ, 10, 15),
+    });
+  }
   device.lastUsedAt = rows.filter((r) => r.deviceId === device.id).reduce((m, r) => Math.max(m, r.createdAt), 0) || null;
 
   // Actividad de ejemplo para el registro de auditoría.

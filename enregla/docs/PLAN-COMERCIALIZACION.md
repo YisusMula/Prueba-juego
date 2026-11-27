@@ -86,6 +86,8 @@ Son los fallos que dañarían la confianza de un inspector o pondrían en riesgo
 
 ### 2A. El PDF como documento de inspección (4–5 días)
 
+> **Estado: hecho el 27 de noviembre de 2026** (migración 0011): datos del establecimiento en Ajustes y en el alta guiada, portada y resumen, tareas sin registrar por día (PDF e Informes), limpiezas parciales señaladas, agrupación por equipo, plan y registro, «Página X de Y» y verificación del responsable inmutable con espacio de firma. Pendiente de la evaluación independiente de la fase 2.
+
 Es lo que el cliente enseña. Hoy obtiene un 5,5.
 
 - Portada con datos del establecimiento: razón social, NIF, dirección y número de Registro Sanitario (RGSEAA), configurables en Ajustes.
@@ -98,6 +100,8 @@ Es lo que el cliente enseña. Hoy obtiene un 5,5.
 - En Informes, poder ver qué tarea faltó cada día (hoy hay que deducirlo desde el Historial).
 
 ### 2B. Registros que piden las guías oficiales (4–6 días)
+
+> **Estado: hecho el 27 de noviembre de 2026**: cocinado y regeneración, enfriamiento rápido en dos registros (en curso hasta cerrarlo), registros personalizados con vigencia histórica y cuatro sugeridos, también en la tablet y en la demo; valores orientativos y configurables, revisados con su fuente en [`VALORES-DE-REFERENCIA.md`](VALORES-DE-REFERENCIA.md) (RD 1086/2020 art. 30, RD 3/2023 y guías del País Vasco, la Comunitat Valenciana y la Comunidad de Madrid). Las guías de otras comunidades no se han revisado fila a fila. Pendiente de la evaluación independiente de la fase 2.
 
 - **Cocinado y regeneración**: temperatura en el centro del producto (≥ 70 °C para regenerar según el plan genérico vasco; usar los valores de la normativa vigente y dejarlos configurables).
 - **Enfriamiento rápido**: hora y temperatura de inicio y fin.

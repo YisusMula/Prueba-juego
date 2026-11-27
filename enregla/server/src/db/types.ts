@@ -75,6 +75,16 @@ export interface OrganizationsTable {
   stripe_checkout_session_id: string | null;
   /** Desde cuándo la suscripción está en `past_due` (null si no lo está). */
   past_due_since: TimestampNullable;
+  /** Datos del establecimiento (0011): portada del PDF. */
+  legal_name: string | null;
+  tax_id: string | null;
+  address: string | null;
+  postal_code: string | null;
+  city: string | null;
+  province: string | null;
+  sanitary_registry: string | null;
+  /** Valores de referencia propios del local (0011); null = los de referencia. */
+  reference_values: Json<Record<string, unknown> | null> | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -86,6 +96,8 @@ export interface MembershipsTable {
   user_id: string;
   role: Role;
   daily_reminder: Generated<boolean>;
+  /** Aviso semanal de periodo sin revisar (0011). */
+  weekly_review_reminder: Generated<boolean>;
   created_at: Timestamp;
 }
 
@@ -191,6 +203,10 @@ export interface RecordsTable {
   cleaning_plan_id: string | null;
   amends_record_id: string | null;
   amendment_reason: string | null;
+  /** Plantilla de un registro personalizado (0011). */
+  custom_template_id: string | null;
+  /** Cierre de un enfriamiento: el registro de inicio (raíz) al que cierra (0011). */
+  related_record_id: string | null;
   alert: Generated<boolean>;
   created_at: Timestamp;
   /** Fecha del hecho: la del registro raíz en una enmienda. La rellena un trigger. */
@@ -283,6 +299,57 @@ export interface EmailOutboxTable {
   sent_at: TimestampNullable;
 }
 
+export interface CustomTemplateItem {
+  id: string;
+  label: string;
+}
+
+export interface CustomRecordTemplatesTable {
+  id: Generated<string>;
+  organization_id: string;
+  name: string;
+  kind: 'checklist' | 'numeric' | 'yesno';
+  items: Json<CustomTemplateItem[]>;
+  unit: string | null;
+  min_value: number | null;
+  max_value: number | null;
+  frequency: 'daily' | 'weekly' | 'monthly' | 'on_demand';
+  times_per_day: number;
+  weekday: number | null;
+  month_day: number | null;
+  instructions: string | null;
+  suggestion_key: string | null;
+  source: string | null;
+  active: Generated<boolean>;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface CustomTemplateConfigHistoryTable {
+  id: Generated<string>;
+  template_id: string;
+  organization_id: string;
+  valid_from: Timestamp;
+  frequency: 'daily' | 'weekly' | 'monthly' | 'on_demand';
+  times_per_day: number;
+  weekday: number | null;
+  month_day: number | null;
+  active: boolean;
+}
+
+export interface ResponsibleVerificationsTable {
+  id: Generated<string>;
+  organization_id: string;
+  period_from: ColumnType<string, string, never>;
+  period_to: ColumnType<string, string, never>;
+  period_kind: 'week' | 'month' | 'custom';
+  comment: string | null;
+  user_id: string;
+  user_name: string;
+  user_role: Role;
+  created_at: Timestamp;
+}
+
 export interface Database {
   users: UsersTable;
   sessions: SessionsTable;
@@ -305,6 +372,9 @@ export interface Database {
   cleaning_plan_config_history: CleaningPlanConfigHistoryTable;
   idempotency_keys: IdempotencyKeysTable;
   email_outbox: EmailOutboxTable;
+  custom_record_templates: CustomRecordTemplatesTable;
+  custom_template_config_history: CustomTemplateConfigHistoryTable;
+  responsible_verifications: ResponsibleVerificationsTable;
 }
 
 export type User = Selectable<UsersTable>;
@@ -313,5 +383,7 @@ export type Staff = Selectable<StaffTable>;
 export type Equipment = Selectable<EquipmentTable>;
 export type CleaningPlan = Selectable<CleaningPlansTable>;
 export type RecordRow = Selectable<RecordsTable>;
+export type CustomTemplate = Selectable<CustomRecordTemplatesTable>;
+export type Verification = Selectable<ResponsibleVerificationsTable>;
 export type NewRecord = Insertable<RecordsTable>;
 export type OrganizationUpdate = Updateable<OrganizationsTable>;

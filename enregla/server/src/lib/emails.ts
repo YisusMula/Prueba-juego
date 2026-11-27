@@ -124,13 +124,26 @@ export const emails = {
       `${userText(inviterName)} te ha invitado a colaborar en el local ${userText(orgName)} en ${ctx.appName} con el rol de ${role === 'owner' ? 'propietario' : 'encargado'}.`,
       'La invitación caduca en 7 días. Si no tienes cuenta, podrás crearla con este mismo email. Si no conoces a quien te invita, ignora este mensaje.',
     ], { url: linkWithToken(ctx, '/invitacion', token), label: 'Ver la invitación' }),
-  dailyReminder: (ctx: Ctx, to: string, orgName: string, pending: string[]) =>
-    layout(ctx, to, 'Registros pendientes hoy', [
-      `Quedan registros pendientes hoy en el local ${userText(orgName)}:`,
-      ...pending.slice(0, 20).map((p) => `• ${p}`),
-      ...(pending.length > 20 ? [`… y ${pending.length - 20} más.`] : []),
-      'Puedes desactivar este recordatorio en los ajustes del local.',
-    ], { url: `${ctx.appOrigin}/`, label: 'Abrir tareas de hoy' }),
+  /**
+   * Recordatorio diario (tareas pendientes) y, el lunes, aviso de que la semana anterior no está
+   * marcada como revisada (fase 2; cada persona puede desactivar cualquiera de los dos).
+   */
+  dailyReminder: (ctx: Ctx, to: string, orgName: string, pending: string[], review: { from: string; to: string } | null = null, orgId?: string) =>
+    layout(ctx, to, pending.length > 0 ? 'Registros pendientes hoy' : 'Revisión semanal pendiente', [
+      ...(pending.length > 0
+        ? [
+            `Quedan registros pendientes hoy en el local ${userText(orgName)}:`,
+            ...pending.slice(0, 20).map((p) => `• ${p}`),
+            ...(pending.length > 20 ? [`… y ${pending.length - 20} más.`] : []),
+          ]
+        : []),
+      ...(review
+        ? [
+            `${pending.length > 0 ? 'Además, la' : 'La'} semana pasada (del ${review.from} al ${review.to}) del local ${userText(orgName)} no está marcada como revisada. Revisa sus registros y márcala en Informes → «Marcar como revisado»: así constará en el PDF.`,
+          ]
+        : []),
+      'Puedes desactivar estos avisos en los ajustes del local.',
+    ], pending.length === 0 && review && orgId ? { url: `${ctx.appOrigin}/locales/${orgId}/informes`, label: 'Abrir informes' } : { url: `${ctx.appOrigin}/`, label: 'Abrir tareas de hoy' }),
   /** Aviso de fin de prueba (3 días antes). Sin presión: informa y enlaza a facturación. */
   trialEndingSoon: (ctx: Ctx, to: string, orgName: string, orgId: string, endsOn: string, daysLeft: number) =>
     layout(ctx, to, 'Tu prueba gratuita termina pronto', [

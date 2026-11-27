@@ -1,4 +1,4 @@
-import { RECORD_TYPES, RECORD_TYPE_LABELS, recordCorrector, recordSignature } from '@shared/schemas';
+import { COOKING_PROCESS_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS, recordCorrector, recordSignature } from '@shared/schemas';
 import type { IconName } from '@/components/icons/Icon';
 import type { AlertKind, AppRecord, RecordType } from '@/api/types';
 import { formatLocalDate, formatPercent, formatTemp } from '@/lib/format';
@@ -20,6 +20,9 @@ export const RECORD_SHORT: Record<RecordType, string> = {
   plagas: 'Plagas',
   incidencia: 'Incidencia',
   formacion: 'Formación',
+  cocinado: 'Cocinado',
+  enfriamiento: 'Enfriamiento',
+  personalizado: 'Otros controles',
 };
 
 export const RECORD_HELP: Record<RecordType, string> = {
@@ -30,6 +33,9 @@ export const RECORD_HELP: Record<RecordType, string> = {
   plagas: 'Revisión de cebos, trampas e indicios',
   incidencia: 'Algo que ha ido mal y qué se ha hecho',
   formacion: 'Cursos y formación del personal',
+  cocinado: 'Temperatura en el centro al cocinar o regenerar',
+  enfriamiento: 'Abatidor: empieza y, al terminar, ciérralo',
+  personalizado: 'Agua, termómetros, mantenimiento y tus propios controles',
 };
 
 export const RECORD_ICON: Record<RecordType, IconName> = {
@@ -40,6 +46,9 @@ export const RECORD_ICON: Record<RecordType, IconName> = {
   plagas: 'bug',
   incidencia: 'alert',
   formacion: 'graduation',
+  cocinado: 'flame',
+  enfriamiento: 'snowflake',
+  personalizado: 'clipboard',
 };
 
 /** Clases del "chip" de icono de cada tipo (tono propio, independiente del semáforo). */
@@ -51,6 +60,9 @@ export const RECORD_TINT: Record<RecordType, string> = {
   plagas: 'bg-[#efe9e1] text-[#6b4f2d] dark:bg-[#33281b] dark:text-[#dcc19a]',
   incidencia: 'bg-[#fde6e2] text-[#a3281a] dark:bg-[#3e1915] dark:text-[#ff9f92]',
   formacion: 'bg-[#e6ecfb] text-[#2f4fa8] dark:bg-[#1c2647] dark:text-[#a8bdf5]',
+  cocinado: 'bg-[#fde8d7] text-[#9a3d06] dark:bg-[#3d2110] dark:text-[#ffb98a]',
+  enfriamiento: 'bg-[#dff3f8] text-[#0b6577] dark:bg-[#0f3540] dark:text-[#8ee0f0]',
+  personalizado: 'bg-[#eef0f3] text-[#3f4a5a] dark:bg-[#262c35] dark:text-[#c5cdd8]',
 };
 
 export const isRecordType = (v: string | undefined): v is RecordType => !!v && (RECORD_TYPES as readonly string[]).includes(v);
@@ -62,7 +74,25 @@ export const ALERT_LABELS: Record<AlertKind, string> = {
   recepcion_con_incidencia: 'Mercancía aceptada con incidencia',
   plagas_con_indicios: 'Indicios de plagas',
   incidencia_abierta: 'Incidencia abierta',
+  cocinado_por_debajo: 'Cocinado por debajo de la referencia',
+  enfriamiento_fuera_de_criterio: 'Enfriamiento fuera de criterio',
+  enfriamiento_sin_cerrar: 'Enfriamiento sin cerrar a tiempo',
+  registro_personalizado_no_conforme: 'Control no conforme',
 };
+
+/** «Todo correcto (3 de 3)» / «No conforme (2 de 3)» / «0,4 mg/l» / «Sí»: resultado de un registro personalizado. */
+export function customResult(d: { kind: string; items?: { ok: boolean }[]; reading?: number; unit?: string | null; outOfRange?: boolean; answer?: boolean }): string {
+  if (d.kind === 'checklist') {
+    const items = d.items ?? [];
+    const ok = items.filter((i) => i.ok).length;
+    return ok === items.length ? `Todo correcto (${ok} de ${items.length})` : `No conforme (${ok} de ${items.length} correctos)`;
+  }
+  if (d.kind === 'numeric') return `${formatNumber(d.reading)}${d.unit ? ` ${d.unit}` : ''}${d.outOfRange ? ' · fuera de rango' : ''}`;
+  return d.answer === true ? 'Sí' : d.answer === false ? 'No' : '';
+}
+
+/** Número con coma decimal y signo menos tipográfico. */
+export const formatNumber = (n: number | null | undefined) => (n == null ? '—' : String(n).replace('.', ',').replace('-', '−'));
 
 /** Resumen de una línea de un registro (título + detalle), en lenguaje llano. */
 export function recordSummary(r: AppRecord): { title: string; detail: string } {
@@ -111,6 +141,22 @@ export function recordSummary(r: AppRecord): { title: string; detail: string } {
       return { title: r.data.description, detail: r.data.closed ? 'Cerrada' : 'Abierta' };
     case 'formacion':
       return { title: `${r.data.traineeName}: ${r.data.course}`, detail: formatLocalDate(r.data.trainingDate) };
+    case 'cocinado':
+      return {
+        title: `${r.data.product}: ${formatTemp(r.data.coreTemp)} en el centro`,
+        detail: `${COOKING_PROCESS_LABELS[r.data.process]} · ${r.data.outOfRange ? `por debajo de ${formatTemp(r.data.referenceTemp)}` : `referencia ${formatTemp(r.data.referenceTemp)}`}${r.data.correctiveAction ? ` · ${r.data.correctiveAction}` : ''}`,
+      };
+    case 'enfriamiento':
+      return r.data.phase === 'inicio'
+        ? { title: `Enfriamiento de ${r.data.product}: inicio`, detail: `Empieza a ${formatTemp(r.data.startTemp)}` }
+        : {
+            title: `Enfriamiento de ${r.data.product ?? '—'}: fin`,
+            detail: r.data.discarded
+              ? `Producto desechado${r.data.correctiveAction ? ` · ${r.data.correctiveAction}` : ''}`
+              : `${r.data.startTemp != null ? `${formatTemp(r.data.startTemp)} → ` : ''}${formatTemp(r.data.endTemp ?? 0)} en ${r.data.minutes} min${r.data.outOfRange ? ' · fuera de criterio' : ''}`,
+          };
+    case 'personalizado':
+      return { title: r.data.templateName, detail: customResult(r.data) };
   }
 }
 

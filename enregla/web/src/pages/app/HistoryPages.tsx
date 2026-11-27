@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { RECEPTION_CATEGORY_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
+import { COOKING_PROCESS_LABELS, RECEPTION_CATEGORY_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
 import { orgApi, useRecord, useRecords, type RecordFilters } from '@/api/queries';
 import { isApiError } from '@/api/client';
 import type { AppRecord, RecordType } from '@/api/types';
@@ -12,7 +12,7 @@ import { Badge, Callout, EmptyState, ErrorState, LoadingBlock } from '@/componen
 import { Card, DetailList, PageHeader } from '@/components/ui/Layout';
 import { Field, Input, Select, Switch, Textarea } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
-import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, cleaningResult, corrector, isRecordType, recordSummary, signer } from '@/features/recordMeta';
+import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, cleaningResult, corrector, customResult, formatNumber, isRecordType, recordSummary, signer } from '@/features/recordMeta';
 import { RecordForm } from '@/features/RecordForms';
 import { WriteGuard } from '@/features/SubscriptionBanner';
 import { useFormContext } from './RecordPages';
@@ -171,6 +171,7 @@ function RecordRow({ record: r, tz, to }: { record: AppRecord; tz: string; to: s
 // DETALLE
 // ===========================================================================
 function RecordDetails({ record: r }: { record: AppRecord }) {
+  const { path } = useOrgContext();
   const items: { label: ReactNode; value: ReactNode }[] = [];
   switch (r.type) {
     case 'temperatura':
@@ -278,6 +279,73 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
         { label: 'Fecha', value: formatLocalDate(r.data.trainingDate) },
         { label: 'Formador', value: r.data.trainer ?? '—' },
         { label: 'Horas', value: r.data.hours != null ? formatDecimal(r.data.hours) : '—' },
+      );
+      break;
+    case 'cocinado':
+      items.push(
+        { label: 'Producto', value: r.data.product },
+        { label: 'Proceso', value: COOKING_PROCESS_LABELS[r.data.process] },
+        { label: 'Temperatura en el centro', value: <span className="font-display text-2xl tabular">{formatTemp(r.data.coreTemp)}</span> },
+        { label: 'Referencia aplicada', value: `${formatTemp(r.data.referenceTemp)} o más (orientativa, configurable en Ajustes)` },
+        { label: 'Tiempo', value: r.data.minutes != null ? `${r.data.minutes} min` : '—' },
+        { label: 'Resultado', value: r.data.outOfRange ? <Badge tone="bad" icon="alert">No llega a la referencia</Badge> : <Badge tone="ok" icon="check">Alcanza la referencia</Badge> },
+        { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+      );
+      break;
+    case 'enfriamiento':
+      if (r.data.phase === 'inicio') {
+        items.push(
+          { label: 'Fase', value: 'Inicio del enfriamiento' },
+          { label: 'Producto', value: r.data.product },
+          { label: 'Temperatura al empezar', value: <span className="font-display text-2xl tabular">{formatTemp(r.data.startTemp)}</span> },
+          { label: 'Notas', value: r.data.notes ?? '—' },
+        );
+      } else {
+        items.push(
+          { label: 'Fase', value: 'Fin del enfriamiento' },
+          { label: 'Producto', value: r.data.product ?? '—' },
+          { label: 'Temperaturas', value: `${formatTemp(r.data.startTemp)} → ${r.data.discarded && r.data.endTemp == null ? 'desechado sin medir' : formatTemp(r.data.endTemp)}` },
+          { label: 'Tiempo', value: `${r.data.minutes} min` },
+          { label: 'Criterio aplicado', value: `${formatTemp(r.data.targetTemp)} o menos en ${r.data.maxMinutes} min o menos (orientativo)` },
+          {
+            label: 'Resultado',
+            value: r.data.outOfRange ? (
+              <Badge tone="bad" icon="alert">{r.data.discarded ? 'Desechado' : r.data.overTime ? 'Fuera de tiempo' : 'Por encima de la temperatura'}</Badge>
+            ) : (
+              <Badge tone="ok" icon="check">Cumple el criterio</Badge>
+            ),
+          },
+          { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+          { label: 'Inicio', value: <Link className="font-semibold underline underline-offset-4" to={path(`historial/${r.data.startRecordId}`)}>Ver el registro de inicio</Link> },
+        );
+      }
+      break;
+    case 'personalizado':
+      items.push(
+        { label: 'Registro', value: r.data.templateName },
+        { label: 'Resultado', value: r.alert ? <Badge tone="bad" icon="alert">{customResult(r.data)}</Badge> : <Badge tone="ok" icon="check">{customResult(r.data)}</Badge> },
+        ...(r.data.kind === 'checklist'
+          ? [
+              {
+                label: 'Puntos',
+                value: (
+                  <ul className="space-y-1 font-normal">
+                    {(r.data.items ?? []).map((i) => (
+                      <li key={i.itemId} className="flex items-center gap-2">
+                        <Icon name={i.ok ? 'check' : 'x'} size={18} className={i.ok ? 'text-ok' : 'text-bad'} strokeWidth={2.5} />
+                        {i.label}
+                        <span className="sr-only">{i.ok ? 'correcto' : 'no se cumple'}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ),
+              },
+            ]
+          : r.data.kind === 'numeric'
+            ? [{ label: 'Rango', value: r.data.min != null || r.data.max != null ? `${formatNumber(r.data.min)} a ${formatNumber(r.data.max)}${r.data.unit ? ` ${r.data.unit}` : ''}` : 'Sin rango' }]
+            : []),
+        { label: 'Observaciones', value: r.data.notes ?? '—' },
+        { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
       );
       break;
   }

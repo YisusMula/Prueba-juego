@@ -2,7 +2,7 @@ import { sql } from 'kysely';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AppDeps } from '../../http/context.js';
 import { emails, mailCtxFrom } from '../../lib/emails.js';
-import { diffDays, formatDateEs, localDate } from '../../lib/dates.js';
+import { diffDays, formatDateEs, isoWeekday, localDate } from '../../lib/dates.js';
 import { enqueueEmail, processOutbox, purgeOutbox } from '../../lib/outbox.js';
 import { audit } from '../../lib/audit.js';
 import { IDEMPOTENCY_RETENTION_DAYS } from '../records/idempotency.js';
@@ -62,16 +62,23 @@ export async function runReminderTick(deps: AppDeps, now = deps.now()): Promise<
       if (!isWritable(org, now)) continue;
       const tasks = await computeToday(trx, org, now);
       const pending = pendingLabels(tasks);
-      if (pending.length === 0) continue;
+      // Fase 2: el lunes, aviso (en el mismo email) si la semana anterior no está marcada como revisada.
+      const review = isoWeekday(today) === 1 && tasks.review.due && !tasks.review.verified ? { from: formatDateEs(tasks.review.from), to: formatDateEs(tasks.review.to) } : null;
+      if (pending.length === 0 && !review) continue;
       const recipients = await trx
         .selectFrom('memberships as m')
         .innerJoin('users as u', 'u.id', 'm.user_id')
-        .select(['u.email'])
+        .select(['u.email', 'm.daily_reminder', 'm.weekly_review_reminder'])
         .where('m.organization_id', '=', org.id)
-        .where('m.daily_reminder', '=', true)
+        .where((eb) => eb.or([eb('m.daily_reminder', '=', true), eb('m.weekly_review_reminder', '=', true)]))
         .where('u.email_verified_at', 'is not', null)
         .execute();
-      for (const r of recipients) queued.push(await enqueueEmail(trx, emails.dailyReminder(mailCtx(deps), r.email, org.name, pending)));
+      for (const r of recipients) {
+        const mine = r.daily_reminder ? pending : [];
+        const myReview = r.weekly_review_reminder ? review : null;
+        if (mine.length === 0 && !myReview) continue;
+        queued.push(await enqueueEmail(trx, emails.dailyReminder(mailCtx(deps), r.email, org.name, mine, myReview, org.id)));
+      }
     }
     return { ran: true, organizationsChecked: orgs.length };
   });

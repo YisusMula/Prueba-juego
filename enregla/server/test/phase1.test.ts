@@ -458,7 +458,8 @@ describe('CSV: columnas nuevas al final', () => {
     const prev = ['estado_limpieza', 'temperatura_maxima_c', 'caducada'];
     const idx = CSV_HEADERS.indexOf('caducada');
     expect(CSV_HEADERS.slice(idx - 2, idx + 1)).toEqual(prev);
-    expect(CSV_HEADERS.slice(idx + 1)).toEqual(['firma', 'corregido_por_nombre', 'firmante_anterior', 'categoria_producto', 'temperatura_minima_c', 'limite_del_proveedor']);
+    // Las columnas de la fase 2 van después (también al final).
+    expect(CSV_HEADERS.slice(idx + 1, idx + 7)).toEqual(['firma', 'corregido_por_nombre', 'firmante_anterior', 'categoria_producto', 'temperatura_minima_c', 'limite_del_proveedor']);
   });
 });
 
