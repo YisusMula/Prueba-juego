@@ -15,31 +15,10 @@ import { CSV_HEADERS, csvLine, csvRow, type ReportRecord } from './format.js';
 import { MAX_PDF_BYTES, renderPdfInProcess, renderPdfInWorker, type PdfJob } from './pdf-render.js';
 import { computeCompliance } from '../tasks/service.js';
 import { verificationsOverlapping } from '../verifications/routes.js';
+import { periodAlertSummary, recordsAddedAfter } from './summary.js';
 import { establishmentView } from '../views.js';
 import type { PdfSummary } from './pdf.js';
 
-/**
- * Resumen del periodo para la portada del PDF (fase 2, 2A), sobre TODOS los tipos de registro (no solo
- * los incluidos): alertas vigentes y cuántas tienen acción correctora, e incidencias del periodo que
- * siguen abiertas. Un registro sustituido por una corrección no cuenta (cuenta su corrección).
- */
-export async function periodAlertSummary(db: DB, org: Organization, from: string, to: string) {
-  const tz = org.timezone;
-  const r = await sql<{ alerts: number; with_action: number; open_incidents: number }>`
-    SELECT
-      count(*) FILTER (WHERE r.alert AND r.type <> 'incidencia')::int AS alerts,
-      count(*) FILTER (WHERE r.alert AND r.type <> 'incidencia' AND (
-        coalesce(btrim(r.data->>'correctiveAction'), '') <> ''
-        OR (r.type = 'recepcion' AND r.data->>'accepted' = 'false' AND coalesce(btrim(r.data->>'rejectionReason'), '') <> '')
-        OR (r.type = 'plagas' AND coalesce(btrim(r.data->>'action'), '') <> '')))::int AS with_action,
-      count(*) FILTER (WHERE r.type = 'incidencia' AND (r.data->>'closed')::boolean IS NOT TRUE)::int AS open_incidents
-    FROM records r
-    WHERE r.organization_id = ${org.id}
-      AND r.effective_at >= (${from}::date)::timestamp AT TIME ZONE ${tz}
-      AND r.effective_at < (${to}::date + 1)::timestamp AT TIME ZONE ${tz}
-      AND NOT EXISTS (SELECT 1 FROM records a WHERE a.amends_record_id = r.id)`.execute(db);
-  return r.rows[0] ?? { alerts: 0, with_action: 0, open_incidents: 0 };
-}
 import { guardSlowDownload } from '../../http/slow-download.js';
 
 export const MAX_REPORT_DAYS = 366;
@@ -213,15 +192,18 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       const dayNotes = compliance.days.filter((d) => d.correctedLater > 0);
       const alertSummary = await periodAlertSummary(db, ctx.org, q.from, q.to);
       const verifications = await verificationsOverlapping(db, ctx.org.id, q.from, q.to);
+      // H-A3: un enfriamiento sin cerrar pasado su tiempo máximo es una alerta sin acción correctora.
+      const openCoolings = compliance.days.reduce((n, d) => n + d.missing.filter((m) => m.kind === 'enfriamiento').length, 0);
       const summary: PdfSummary = {
         compliancePercent: compliance.overall.percent,
         expected: compliance.overall.expected,
         done: compliance.overall.done,
-        alerts: alertSummary.alerts,
+        alerts: alertSummary.alerts + openCoolings,
         alertsWithAction: alertSummary.with_action,
+        openCoolings,
         openIncidents: alertSummary.open_incidents,
         daysWithGaps: compliance.overall.daysWithGaps,
-        daysEvaluated: compliance.days.length,
+        daysEvaluated: compliance.overall.daysEvaluated,
         // Días y tareas sin registrar, con un tope (el PDF dice cuántas faltan si se supera).
         missingDays: compliance.days.filter((d) => d.missing.length > 0).map((d) => ({ date: d.date, items: d.missing })),
       };
@@ -242,7 +224,20 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
         today: localDate(app.deps.now(), ctx.org.timezone),
         establishment: establishmentView(ctx.org),
         summary,
-        verifications: verifications.map((v) => ({ from: v.period_from, to: v.period_to, kind: v.period_kind, comment: v.comment, userName: v.user_name, userRole: v.user_role, createdAt: v.created_at.toISOString() })),
+        verifications: await Promise.all(
+          verifications.map(async (v) => ({
+            from: v.period_from,
+            to: v.period_to,
+            kind: v.period_kind,
+            comment: v.comment,
+            userName: v.user_name,
+            userRole: v.user_role,
+            createdAt: v.created_at.toISOString(),
+            snapshot: v.snapshot ?? null,
+            addedAfter: await recordsAddedAfter(db, ctx.org, v.period_from, v.period_to, v.created_at),
+          })),
+        ),
+        coolingMaxMinutes: S.effectiveReferenceValues(ctx.org.reference_values).coolingMaxMinutes,
       };
       const t0 = performance.now();
       let pdf: Buffer;

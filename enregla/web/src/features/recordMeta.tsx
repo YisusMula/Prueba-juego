@@ -78,6 +78,7 @@ export const ALERT_LABELS: Record<AlertKind, string> = {
   enfriamiento_fuera_de_criterio: 'Enfriamiento fuera de criterio',
   enfriamiento_sin_cerrar: 'Enfriamiento sin cerrar a tiempo',
   registro_personalizado_no_conforme: 'Control no conforme',
+  registro_personalizado_vencido: 'Control periódico vencido',
 };
 
 /** «Todo correcto (3 de 3)» / «No conforme (2 de 3)» / «0,4 mg/l» / «Sí»: resultado de un registro personalizado. */
@@ -148,7 +149,7 @@ export function recordSummary(r: AppRecord): { title: string; detail: string } {
       };
     case 'enfriamiento':
       return r.data.phase === 'inicio'
-        ? { title: `Enfriamiento de ${r.data.product}: inicio`, detail: `Empieza a ${formatTemp(r.data.startTemp)}` }
+        ? { title: `Enfriamiento de ${r.data.product}: inicio`, detail: `Empieza a ${formatTemp(r.data.startTemp)}${r.data.belowStartReference ? ` · por debajo de ${formatTemp(r.data.startReferenceTemp ?? null)}: ${r.data.startReason ?? ''}` : ''}` }
         : {
             title: `Enfriamiento de ${r.data.product ?? '—'}: fin`,
             detail: r.data.discarded

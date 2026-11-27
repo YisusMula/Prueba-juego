@@ -64,6 +64,8 @@ REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON records FROM enregla_app
 REVOKE UPDATE, DELETE, TRUNCATE ON responsible_verifications FROM enregla_app;
 REVOKE DELETE, UPDATE, TRUNCATE ON custom_record_templates FROM enregla_app;
 GRANT UPDATE (name, items, unit, min_value, max_value, frequency, times_per_day, weekday, month_day, instructions, active, updated_at) ON custom_record_templates TO enregla_app;
+-- 0012: aviso «cada N meses».
+GRANT UPDATE (reminder_months) ON custom_record_templates TO enregla_app;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON custom_template_config_history FROM enregla_app;
 
 -- La tabla de control de migraciones solo la toca el rol de migraciones.

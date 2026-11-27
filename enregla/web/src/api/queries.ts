@@ -23,6 +23,7 @@ import type {
   TemplateSuggestion,
   TodayTasks,
   Verification,
+  VerificationSnapshot,
 } from './types';
 
 export const keys = {
@@ -145,6 +146,15 @@ export function useVerifications(orgId: string, from: string, to: string, enable
   return useQuery({
     queryKey: keys.orgScoped(orgId, 'verifications', from, to),
     queryFn: () => api.get<{ items: Verification[] }>(`${base(orgId)}/verifications${qs({ from, to })}`).then((r) => r.items),
+    enabled,
+  });
+}
+
+/** Foto del periodo antes de verificarlo (H-M1): huecos, alertas sin acción, enfriamientos sin cerrar. */
+export function useVerificationPreview(orgId: string, from: string, to: string, enabled = true) {
+  return useQuery({
+    queryKey: keys.orgScoped(orgId, 'verifications', 'preview', from, to),
+    queryFn: () => api.get<VerificationSnapshot>(`${base(orgId)}/verifications/preview${qs({ from, to })}`),
     enabled,
   });
 }

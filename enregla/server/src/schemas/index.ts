@@ -525,6 +525,8 @@ export const cocinadoData = z.object({
   coreTemp: temperature(),
   /** Tiempo del tratamiento en minutos, si aplica. */
   minutes: z.number().int('Escribe los minutos sin decimales').min(0, 'Los minutos no pueden ser negativos').max(1440, 'Como máximo 1440 minutos').optional().nullable(),
+  /** Plato con huevo fresco: la referencia sube (75 °C por defecto, guía de Andalucía). */
+  freshEgg: z.boolean().optional().default(false),
   /** Obligatoria si no alcanza la temperatura de referencia del local (lo comprueba el servidor). */
   correctiveAction: optionalText(1000),
 });
@@ -538,6 +540,8 @@ export const enfriamientoInicioData = z.object({
   phase: z.literal('inicio'),
   product: text(LIMITS.product),
   startTemp: temperature(),
+  /** Obligatorio si empieza por debajo de la temperatura de partida de referencia (60 °C por defecto). */
+  startReason: optionalText(300),
   notes: optionalText(500),
 });
 export const enfriamientoFinData = z.object({

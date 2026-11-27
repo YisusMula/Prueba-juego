@@ -71,6 +71,7 @@ export async function customTemplateRoutes(app: FastifyInstance): Promise<void> 
         weekday: body.frequency === 'weekly' ? body.weekday : null,
         month_day: body.frequency === 'monthly' ? body.monthDay : null,
         instructions: body.instructions,
+        reminder_months: body.reminderMonths,
         active: body.active,
       })
       .returningAll()
@@ -114,6 +115,7 @@ export async function customTemplateRoutes(app: FastifyInstance): Promise<void> 
         weekday: sug.weekday ?? null,
         month_day: sug.monthDay ?? null,
         instructions: sug.instructions,
+        reminder_months: sug.reminderMonths ?? null,
         suggestion_key: sug.key,
         source: sug.source,
       })
@@ -152,6 +154,7 @@ export async function customTemplateRoutes(app: FastifyInstance): Promise<void> 
         weekday: frequency === 'weekly' ? weekday : null,
         month_day: frequency === 'monthly' ? monthDay : null,
         ...(body.instructions !== undefined ? { instructions: body.instructions } : {}),
+        ...(body.reminderMonths !== undefined ? { reminder_months: body.reminderMonths } : {}),
         ...(body.active !== undefined ? { active: body.active } : {}),
         updated_at: sql<Date>`now()`,
       })

@@ -126,7 +126,10 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     requireRole(req, 'owner');
     const ctx = requireWritable(req);
     const body = parse(S.updateOrgBody, req.body);
-    const before = ctx.org;
+    // Un solo cambio a la vez por local (bajo): los valores de referencia se combinan con lo guardado
+    // y dos cambios simultáneos no deben pisarse. La fila se bloquea dentro de la transacción.
+    return db.transaction().execute(async (db) => {
+    const before = await db.selectFrom('organizations').selectAll().where('id', '=', ctx.org.id).forUpdate().executeTakeFirstOrThrow();
     // Valores de referencia: se combinan con los ya guardados; `null` devuelve uno al de referencia.
     let referenceValues: Record<string, number> | null | undefined;
     if (body.referenceValues !== undefined) {
@@ -171,6 +174,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     }
     await audit(db, { event: 'org.updated', organizationId: org.id, userId: ctx.userId, ip: req.ip, metadata: { fields: Object.keys(body), ...(Object.keys(changes).length ? { changes } : {}) } });
     return { organization: orgView(org, ctx.role) };
+    });
   });
 
   async function reauth(req: FastifyRequest, userId: string): Promise<void> {

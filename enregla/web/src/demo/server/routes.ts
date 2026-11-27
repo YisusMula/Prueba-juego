@@ -11,7 +11,7 @@ import { badRequest, conflict, DemoError, forbidden, idParam, invalidToken, notF
 import { newDeviceToken, newSlug, uuid } from './ids';
 import { createOrganization } from './orgs';
 import { createRecord } from './records';
-import { computeCompliance, computeToday } from './tasks';
+import { computeCompliance, computeToday, periodSnapshot } from './tasks';
 import { dayStart, diffDays, iso, addDays, isoWeekday, localDate, startOfMonth } from './time';
 import { cleaningPlanView, customTemplateView, deviceView, dishView, equipmentView, isWritable, orgView, recordView, staffView, subscriptionView, supplierView, verificationView } from './views';
 
@@ -537,11 +537,12 @@ route('POST', `${ORG}/custom-templates`, (db, req) => {
     max: b.kind === 'numeric' ? b.max : null,
     ...freq,
     instructions: b.instructions,
+    reminderMonths: b.reminderMonths ?? null,
     suggestionKey: null,
     source: null,
     active: b.active,
     createdAt: now,
-    history: [{ validFrom: now, ...freq, active: b.active }],
+    history: [{ validFrom: now, ...freq, active: b.active, name: b.name }],
   };
   db.templates.push(t);
   audit(db, c.org.id, 'custom_template.created', c.user.id, { templateId: t.id, name: t.name });
@@ -557,7 +558,7 @@ route('POST', `${ORG}/custom-templates/suggestions`, (db, req) => {
   if (existing) {
     if (!existing.active) {
       existing.active = true;
-      existing.history.push({ validFrom: now, frequency: existing.frequency, timesPerDay: existing.timesPerDay, weekday: existing.weekday, monthDay: existing.monthDay, active: true });
+      existing.history.push({ validFrom: now, frequency: existing.frequency, timesPerDay: existing.timesPerDay, weekday: existing.weekday, monthDay: existing.monthDay, active: true, name: existing.name });
       audit(db, c.org.id, 'custom_template.updated', c.user.id, { templateId: existing.id, fields: ['active'], suggestion: sug.key });
     }
     return ok({ template: customTemplateView(existing) });
@@ -574,11 +575,12 @@ route('POST', `${ORG}/custom-templates/suggestions`, (db, req) => {
     max: sug.max ?? null,
     ...freq,
     instructions: sug.instructions,
+    reminderMonths: sug.reminderMonths ?? null,
     suggestionKey: sug.key,
     source: sug.source,
     active: true,
     createdAt: now,
-    history: [{ validFrom: now, ...freq, active: true }],
+    history: [{ validFrom: now, ...freq, active: true, name: sug.name }],
   };
   db.templates.push(t);
   audit(db, c.org.id, 'custom_template.created', c.user.id, { templateId: t.id, name: t.name, suggestion: sug.key });
@@ -595,7 +597,9 @@ route('PATCH', `${ORG}/custom-templates/:templateId`, (db, req) => {
   const monthDay = b.monthDay !== undefined ? b.monthDay : t.monthDay;
   if (frequency === 'weekly' && weekday == null) throw validationError('weekday', 'Indica el día de la semana');
   if (frequency === 'monthly' && monthDay == null) throw validationError('monthDay', 'Indica el día del mes');
+  const before = JSON.stringify([t.frequency, t.timesPerDay, t.weekday, t.monthDay, t.active, t.name]);
   if (b.name !== undefined) t.name = b.name;
+  if (b.reminderMonths !== undefined) t.reminderMonths = b.reminderMonths;
   if (b.items !== undefined && t.kind === 'checklist') {
     if (b.items.length === 0) throw validationError('items', 'Añade al menos un punto a comprobar');
     t.items = tplItems(b.items, t.items);
@@ -607,14 +611,13 @@ route('PATCH', `${ORG}/custom-templates/:templateId`, (db, req) => {
     if (t.min != null && t.max != null && t.min > t.max) throw validationError('min', 'El mínimo no puede ser mayor que el máximo');
   }
   if (b.instructions !== undefined) t.instructions = b.instructions;
-  const before = JSON.stringify([t.frequency, t.timesPerDay, t.weekday, t.monthDay, t.active]);
   t.frequency = frequency;
   t.timesPerDay = frequency === 'daily' ? (b.timesPerDay ?? t.timesPerDay) : 1;
   t.weekday = frequency === 'weekly' ? weekday : null;
   t.monthDay = frequency === 'monthly' ? monthDay : null;
   if (b.active !== undefined) t.active = b.active;
-  if (JSON.stringify([t.frequency, t.timesPerDay, t.weekday, t.monthDay, t.active]) !== before) {
-    t.history.push({ validFrom: Date.now(), frequency: t.frequency, timesPerDay: t.timesPerDay, weekday: t.weekday, monthDay: t.monthDay, active: t.active });
+  if (JSON.stringify([t.frequency, t.timesPerDay, t.weekday, t.monthDay, t.active, t.name]) !== before) {
+    t.history.push({ validFrom: Date.now(), frequency: t.frequency, timesPerDay: t.timesPerDay, weekday: t.weekday, monthDay: t.monthDay, active: t.active, name: t.name });
   }
   audit(db, c.org.id, 'custom_template.updated', c.user.id, { templateId: id, fields: Object.keys(b) });
   return ok({ template: customTemplateView(t) });
@@ -630,17 +633,27 @@ route('GET', `${ORG}/verifications`, (db, req) => {
     .map(verificationView);
   return ok({ items });
 });
+/** H-M1: solo periodos ya terminados (como muy tarde, hasta ayer). */
+function checkVerifiedPeriod(org: DOrg, from: string, to: string) {
+  const today = localDate(new Date(), org.timezone);
+  if (to >= today) throw validationError('to', 'Solo se puede marcar como revisado un periodo ya terminado: elige fechas hasta ayer');
+  if (diffDays(from, to) + 1 > 366) throw validationError('from', 'El periodo máximo es de un año');
+}
+route('GET', `${ORG}/verifications/preview`, (db, req) => {
+  const c = orgCtx(db, req);
+  const q = parse(S.dateRangeQuery, Object.fromEntries(req.query));
+  checkVerifiedPeriod(c.org, q.from, q.to);
+  return ok(periodSnapshot(db, c.org, q.from, q.to));
+});
 route('POST', `${ORG}/verifications`, (db, req) => {
   const c = requireWritable(orgCtx(db, req));
   const b = parse(S.createVerificationBody, req.body);
-  const today = localDate(new Date(), c.org.timezone);
-  if (b.to > today) throw validationError('to', 'No se puede marcar como revisado un periodo que aún no ha terminado: elige fechas hasta hoy');
-  if (diffDays(b.from, b.to) + 1 > 366) throw validationError('from', 'El periodo máximo es de un año');
+  checkVerifiedPeriod(c.org, b.from, b.to);
   if (b.kind === 'week' && (isoWeekday(b.from) !== 1 || b.to !== addDays(b.from, 6))) throw validationError('from', 'Una semana va de lunes a domingo');
   if (b.kind === 'month' && (b.from !== startOfMonth(b.from) || addDays(b.to, 1).slice(8) !== '01' || b.to.slice(0, 7) !== b.from.slice(0, 7))) {
     throw validationError('from', 'Un mes va del día 1 al último día del mes');
   }
-  const v = { id: uuid(), orgId: c.org.id, from: b.from, to: b.to, kind: b.kind, comment: b.comment, userId: c.user.id, userName: c.user.name, userRole: c.role, createdAt: Date.now() };
+  const v = { id: uuid(), orgId: c.org.id, from: b.from, to: b.to, kind: b.kind, comment: b.comment, userId: c.user.id, userName: c.user.name, userRole: c.role, createdAt: Date.now(), snapshot: periodSnapshot(db, c.org, b.from, b.to) };
   db.verifications.push(v);
   audit(db, c.org.id, 'report.verified', c.user.id, { verificationId: v.id, from: b.from, to: b.to, kind: b.kind, hasComment: b.comment != null });
   return ok({ verification: verificationView(v) }, 201);
@@ -816,7 +829,7 @@ route('POST', `${ORG}/equipment`, (db, req) => {
   const c = requireWritable(orgCtx(db, req));
   const b = parse(S.createEquipmentBody, req.body);
   const now = Date.now();
-  const e = { id: uuid(), orgId: c.org.id, name: b.name, type: b.type, minTemp: b.minTemp, maxTemp: b.maxTemp, checksPerDay: b.checksPerDay, active: b.active, createdAt: now, history: [{ validFrom: now, checksPerDay: b.checksPerDay, active: b.active }] };
+  const e = { id: uuid(), orgId: c.org.id, name: b.name, type: b.type, minTemp: b.minTemp, maxTemp: b.maxTemp, checksPerDay: b.checksPerDay, active: b.active, createdAt: now, history: [{ validFrom: now, checksPerDay: b.checksPerDay, active: b.active, name: b.name }] };
   db.equipment.push(e);
   return ok({ equipment: equipmentView(e) }, 201);
 });
@@ -829,14 +842,14 @@ route('PATCH', `${ORG}/equipment/:equipmentId`, (db, req) => {
   const min = b.minTemp !== undefined ? b.minTemp : e.minTemp;
   const max = b.maxTemp !== undefined ? b.maxTemp : e.maxTemp;
   if (min != null && max != null && min > max) throw validationError('minTemp', 'La temperatura mínima no puede ser mayor que la máxima');
+  const before = `${e.checksPerDay}|${e.active}|${e.name}`;
   if (b.name !== undefined) e.name = b.name;
   if (b.type !== undefined) e.type = b.type;
   e.minTemp = min;
   e.maxTemp = max;
-  const before = `${e.checksPerDay}|${e.active}`;
   if (b.checksPerDay !== undefined) e.checksPerDay = b.checksPerDay;
   if (b.active !== undefined) e.active = b.active;
-  if (`${e.checksPerDay}|${e.active}` !== before) e.history.push({ validFrom: Date.now(), checksPerDay: e.checksPerDay, active: e.active });
+  if (`${e.checksPerDay}|${e.active}|${e.name}` !== before) e.history.push({ validFrom: Date.now(), checksPerDay: e.checksPerDay, active: e.active, name: e.name });
   return ok({ equipment: equipmentView(e) });
 });
 
@@ -880,7 +893,7 @@ route('POST', `${ORG}/cleaning-plans`, (db, req) => {
     items: normalizeItems(b.items),
     active: b.active,
     createdAt: now,
-    history: [{ validFrom: now, frequency: b.frequency, weekday, monthDay, active: b.active }],
+    history: [{ validFrom: now, frequency: b.frequency, weekday, monthDay, active: b.active, name: b.name }],
   };
   db.plans.push(p);
   return ok({ cleaningPlan: cleaningPlanView(p) }, 201);
@@ -896,15 +909,15 @@ route('PATCH', `${ORG}/cleaning-plans/:planId`, (db, req) => {
   const monthDay = b.monthDay !== undefined ? b.monthDay : p.monthDay;
   if (frequency === 'weekly' && weekday == null) throw validationError('weekday', 'Indica el día de la semana');
   if (frequency === 'monthly' && monthDay == null) throw validationError('monthDay', 'Indica el día del mes');
-  const before = JSON.stringify([p.frequency, p.weekday, p.monthDay, p.active]);
+  const before = JSON.stringify([p.frequency, p.weekday, p.monthDay, p.active, p.name]);
   if (b.name !== undefined) p.name = b.name;
   p.frequency = frequency;
   p.weekday = frequency === 'weekly' ? weekday : null;
   p.monthDay = frequency === 'monthly' ? monthDay : null;
   if (b.items !== undefined) p.items = normalizeItems(b.items, p.items);
   if (b.active !== undefined) p.active = b.active;
-  if (JSON.stringify([p.frequency, p.weekday, p.monthDay, p.active]) !== before) {
-    p.history.push({ validFrom: Date.now(), frequency: p.frequency, weekday: p.weekday, monthDay: p.monthDay, active: p.active });
+  if (JSON.stringify([p.frequency, p.weekday, p.monthDay, p.active, p.name]) !== before) {
+    p.history.push({ validFrom: Date.now(), frequency: p.frequency, weekday: p.weekday, monthDay: p.monthDay, active: p.active, name: p.name });
   }
   return ok({ cleaningPlan: cleaningPlanView(p) });
 });

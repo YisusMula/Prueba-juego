@@ -242,7 +242,9 @@ describe('H12 carrera del último propietario', () => {
         a.client.patch(`${a.base}/members/${b.user.id}`, { role: 'manager' }),
         b.client.patch(`${a.base}/members/${a.user.id}`, { role: 'manager' }),
       ]);
-      expect([r1.statusCode, r2.statusCode].sort()).toEqual([200, 409]);
+      // 409: la otra petición dejaría el local sin propietario. 403: llega cuando quien la hace ya ha
+      // sido degradado por la otra (el rol se lee antes de la transacción): también es correcto.
+      expect([[200, 409], [200, 403]]).toContainEqual([r1.statusCode, r2.statusCode].sort());
       expect(await ownerCount(a.org.id)).toBe(1);
     }
   });

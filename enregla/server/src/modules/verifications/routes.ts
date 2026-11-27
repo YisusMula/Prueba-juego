@@ -8,6 +8,8 @@ import { enforce } from '../../lib/rate-limit.js';
 import { addDays, diffDays, isoWeekday, localDate, startOfMonth } from '../../lib/dates.js';
 import type { DB } from '../../db/index.js';
 import { verificationView } from '../views.js';
+import { json } from '../../db/index.js';
+import { periodSnapshot } from '../reports/summary.js';
 
 const bad = (path: string, message: string) => new AppError(400, 'VALIDATION_ERROR', message, [{ path, message }]);
 
@@ -48,14 +50,29 @@ export async function verificationRoutes(app: FastifyInstance): Promise<void> {
     return { items: rows.map(verificationView) };
   });
 
+  /** H-M1: el periodo verificado debe haber terminado (como muy tarde, ayer). */
+  function checkPeriod(orgTz: string, from: string, to: string) {
+    const today = localDate(app.deps.now(), orgTz);
+    if (to >= today) throw bad('to', 'Solo se puede marcar como revisado un periodo ya terminado: elige fechas hasta ayer');
+    if (diffDays(from, to) + 1 > 366) throw bad('from', 'El periodo máximo es de un año');
+  }
+
+  /** Lo que hay en el periodo (se enseña antes de confirmar y se guarda con la verificación). */
+  app.get('/preview', async (req) => {
+    const ctx = orgCtx(req);
+    const q = parse(S.dateRangeQuery, req.query);
+    checkPeriod(ctx.org.timezone, q.from, q.to);
+    return periodSnapshot(db, ctx.org, q.from, q.to, app.deps.now());
+  });
+
   app.post('/', async (req, reply) => {
     const ctx = requireWritable(req);
     const auth = requireUser(req);
     const body = parse(S.createVerificationBody, req.body);
     await enforce(rateLimiter, `records:user:${auth.user.id}:org:${ctx.org.id}`, config.rateLimits.recordCreateUser, 'Demasiadas acciones seguidas. Espera un minuto.');
-    const today = localDate(app.deps.now(), ctx.org.timezone);
-    if (body.to > today) throw bad('to', 'No se puede marcar como revisado un periodo que aún no ha terminado: elige fechas hasta hoy');
-    if (diffDays(body.from, body.to) + 1 > 366) throw bad('from', 'El periodo máximo es de un año');
+    checkPeriod(ctx.org.timezone, body.from, body.to);
+    const now = app.deps.now();
+    const snapshot = await periodSnapshot(db, ctx.org, body.from, body.to, now);
     if (body.kind === 'week' && (isoWeekday(body.from) !== 1 || body.to !== addDays(body.from, 6))) throw bad('from', 'Una semana va de lunes a domingo');
     if (body.kind === 'month' && (body.from !== startOfMonth(body.from) || body.to !== endOfMonth(body.from))) throw bad('from', 'Un mes va del día 1 al último día del mes');
     const row = await db.transaction().execute(async (trx) => {
@@ -67,6 +84,9 @@ export async function verificationRoutes(app: FastifyInstance): Promise<void> {
           period_to: body.to,
           period_kind: body.kind,
           comment: body.comment,
+          snapshot: json(snapshot),
+          // Con el rol de la app la base de datos fuerza la hora real; se envía la del reloj del servidor.
+          created_at: now,
           user_id: auth.user.id,
           user_name: auth.user.name,
           user_role: ctx.role,

@@ -3,6 +3,7 @@
  * del servidor real (fechas como milisegundos). Se guarda en localStorage si se puede; si no, vive
  * solo en memoria hasta recargar.
  */
+import type { VerificationSnapshot } from '@/api/types';
 import type { AllergenMap, BusinessType, CleaningItem, CustomFrequency, CustomKind, EquipmentType, Frequency, RecordType, ReferenceValues, Role } from '@/api/types';
 
 export type DUser = { id: string; email: string; name: string; password: string; createdAt: number; trialEndsAt: number };
@@ -32,7 +33,8 @@ export type DOrg = {
   createdAt: number;
 };
 export type DMembership = { orgId: string; userId: string; role: Role; dailyReminder: boolean; weeklyReviewReminder?: boolean; createdAt: number };
-export type TemplateState = { validFrom: number; frequency: CustomFrequency; timesPerDay: number; weekday: number | null; monthDay: number | null; active: boolean };
+/** `name`: nombre vigente en ese tramo (H-M2; los tramos antiguos no lo tienen y usan el actual). */
+export type TemplateState = { validFrom: number; frequency: CustomFrequency; timesPerDay: number; weekday: number | null; monthDay: number | null; active: boolean; name?: string };
 export type DTemplate = {
   id: string;
   orgId: string;
@@ -47,6 +49,8 @@ export type DTemplate = {
   weekday: number | null;
   monthDay: number | null;
   instructions: string | null;
+  /** Aviso si pasan estos meses sin registrarlo. */
+  reminderMonths?: number | null;
   suggestionKey: string | null;
   source: string | null;
   active: boolean;
@@ -64,10 +68,12 @@ export type DVerification = {
   userName: string;
   userRole: Role;
   createdAt: number;
+  /** Foto del periodo al verificar (H-M1). */
+  snapshot?: VerificationSnapshot | null;
 };
 export type DStaff = { id: string; orgId: string; name: string; pin: string | null; active: boolean; failed: number; lockedUntil: number | null; createdAt: number; /** Bloqueo progresivo (R7). */ lockLevel?: number };
 export type DDevice = { id: string; orgId: string; name: string; token: string; createdBy: string | null; createdAt: number; lastUsedAt: number | null; revokedAt: number | null };
-export type EquipmentState = { validFrom: number; checksPerDay: number; active: boolean };
+export type EquipmentState = { validFrom: number; checksPerDay: number; active: boolean; name?: string };
 export type DEquipment = {
   id: string;
   orgId: string;
@@ -80,7 +86,7 @@ export type DEquipment = {
   createdAt: number;
   history: EquipmentState[];
 };
-export type PlanState = { validFrom: number; frequency: Frequency; weekday: number | null; monthDay: number | null; active: boolean };
+export type PlanState = { validFrom: number; frequency: Frequency; weekday: number | null; monthDay: number | null; active: boolean; name?: string };
 export type DPlan = {
   id: string;
   orgId: string;
@@ -172,5 +178,5 @@ export type DemoState = {
   pinFailsByDevice: Record<string, number[]>;
 };
 
-/** 2: categoría de proveedor y de recepción, firma «anotado por», correcciones desde la tablet (fase 1). 3: fase 2 (registros nuevos, verificaciones, datos del establecimiento). */
-export const STATE_VERSION = 3;
+/** 4: evaluación de la fase 2 (nombres en el historial, foto de la verificación, aviso cada N meses). 2: categoría de proveedor y de recepción, firma «anotado por», correcciones desde la tablet (fase 1). 3: fase 2 (registros nuevos, verificaciones, datos del establecimiento). */
+export const STATE_VERSION = 4;

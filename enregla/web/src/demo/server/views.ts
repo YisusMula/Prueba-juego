@@ -78,6 +78,7 @@ export const customTemplateView = (t: DTemplate): CustomTemplate => ({
   weekday: t.weekday,
   monthDay: t.monthDay,
   instructions: t.instructions,
+  reminderMonths: t.reminderMonths ?? null,
   suggestionKey: t.suggestionKey,
   source: t.source,
   active: t.active,
@@ -92,6 +93,7 @@ export const verificationView = (v: DVerification): Verification => ({
   comment: v.comment,
   user: { id: v.userId, name: v.userName, role: v.userRole },
   createdAt: iso(v.createdAt),
+  snapshot: v.snapshot ?? null,
 });
 
 export const staffView = (s: DStaff): Staff => ({

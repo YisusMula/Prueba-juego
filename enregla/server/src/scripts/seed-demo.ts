@@ -10,6 +10,7 @@ import { randomToken, sha256 } from '../lib/crypto.js';
 import { addDays, isoWeekday, localDate } from '../lib/dates.js';
 import { createOrganization } from '../modules/orgs/routes.js';
 import { isDue } from '../modules/tasks/service.js';
+import { periodSnapshot } from '../modules/reports/summary.js';
 import { ALLERGENS, REFERENCE_DEFAULTS, SUGGESTED_TEMPLATES } from '../schemas/index.js';
 import type { Database, Staff } from '../db/types.js';
 import { correctiveActionsFor } from './seed-actions.js';
@@ -177,6 +178,7 @@ try {
         weekday: t.weekday ?? null,
         month_day: t.monthDay ?? null,
         instructions: t.instructions,
+        reminder_months: t.reminderMonths ?? null,
         suggestion_key: t.key,
         source: t.source,
         created_at: startTs,
@@ -297,6 +299,7 @@ try {
     push(date, 13, 'cocinado', {
       product: pick(cookProducts),
       process: 'cocinado',
+      freshEgg: false,
       coreTemp: lowCook ? 61.5 : cookTemp,
       minutes: 20 + Math.floor(rand() * 40),
       referenceTemp: REFERENCE_DEFAULTS.cookingMinTemp,
@@ -319,11 +322,13 @@ try {
     if (i % 3 === 1 || date === today) {
       const startId = crypto.randomUUID();
       const product = pick(['Caldo de ave', 'Fondo oscuro', 'Arroz para ensalada', 'Salsa de tomate']);
-      const startTemp = round1(68 + rand() * 12);
+      // Un día empieza ya templado (por debajo de 60 °C): se anota el motivo (H-M3).
+      const warm = i === 7;
+      const startTemp = warm ? 52 : round1(68 + rand() * 12);
       const startHour = date === today ? Math.max(0, nowHour - 1) : 16;
       const beforeLen = rows.length;
       const startedAt = jsAt(date, startHour, 5 + Math.floor(rand() * 20));
-      push(date, startHour, 'enfriamiento', { phase: 'inicio', product, startTemp, notes: 'En abatidor' }, { id: startId, created_at: startedAt });
+      push(date, startHour, 'enfriamiento', { phase: 'inicio', product, startTemp, startReferenceTemp: REFERENCE_DEFAULTS.coolingStartTemp, belowStartReference: warm, startReason: warm ? 'Ya venía templado: sobrante del servicio de mediodía' : null, notes: 'En abatidor' }, { id: startId, created_at: startedAt });
       if (rows.length > beforeLen && date !== today) {
         const startRow = rows[rows.length - 1]!;
         const slow = i === 13;
@@ -469,10 +474,13 @@ try {
   // Fase 2: verificación del responsable de las semanas anteriores (la última semana queda sin revisar,
   // para que «Hoy» muestre el aviso).
   const thisMonday = addDays(today, 1 - isoWeekday(today));
+  const orgRow = await db.selectFrom('organizations').selectAll().where('id', '=', org.id).executeTakeFirstOrThrow();
   for (let w = 2; w <= 4; w++) {
     const from = addDays(thisMonday, -7 * w);
     const to = addDays(from, 6);
     if (from < start) continue;
+    // Foto del periodo en el momento de verificar (H-M1).
+    const snapshot = await periodSnapshot(db, orgRow, from, to, jsAt(addDays(to, 1), 10, 15));
     await db
       .insertInto('responsible_verifications')
       .values({
@@ -484,6 +492,7 @@ try {
         user_id: user.id,
         user_name: user.name,
         user_role: 'owner',
+        snapshot: json(snapshot),
         created_at: at(addDays(to, 1), 10, 15),
       })
       .execute();

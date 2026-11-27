@@ -2,9 +2,9 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
 import { useSearchParams } from 'react-router';
-import { orgApi, useCompliance, useOrgMutation, useToday, useVerifications } from '@/api/queries';
+import { orgApi, useCompliance, useOrgMutation, useToday, useVerificationPreview, useVerifications } from '@/api/queries';
 import { api, errorMessage } from '@/api/client';
-import type { Compliance, MissingTask, RecordType, TodayTasks, Verification } from '@/api/types';
+import type { Compliance, MissingTask, RecordType, TodayTasks, Verification, VerificationSnapshot } from '@/api/types';
 import { Dialog, useToast } from '@/components/ui/Overlay';
 import { ChoiceGroup, Textarea } from '@/components/ui/Form';
 import { useOrgContext } from '@/hooks/useOrgContext';
@@ -17,7 +17,7 @@ import { Checkbox, Field, Input } from '@/components/ui/Form';
 import { Icon } from '@/components/icons/Icon';
 import { ALERT_LABELS, RECORD_ICON, RECORD_TINT } from '@/features/recordMeta';
 import { DownloadButton } from '@/features/DownloadButton';
-import { plural, addDaysIso, formatLocalDate, formatLongDate, formatCompliance, formatRange, formatTemp, formatTime, localDateIn, relativeDays } from '@/lib/format';
+import { periodDueText, startedAtText, plural, addDaysIso, formatLocalDate, formatLongDate, formatCompliance, formatRange, formatTemp, formatTime, localDateIn, relativeDays } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { storage } from '@/lib/storage';
 
@@ -116,11 +116,15 @@ export const correctedLaterText = (n: number) => `${n} ${n === 1 ? 'completada' 
 
 function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const { path } = useOrgContext();
+  const today = data.date;
   // Lo dado de alta (o reactivado) hoy se muestra aparte: no es exigible hasta mañana ni cuenta en el progreso.
   const counted = { temps: data.temperatures.filter((t) => t.countsToday !== false), clean: data.cleaning.filter((c) => c.countsToday !== false) };
   const custom = data.custom ?? [];
   const coolings = data.coolings ?? [];
-  const pendingCustom = custom.filter((c) => c.countsToday !== false && c.status === 'pending');
+  // H-A2: las semanales y mensuales se ven todo su periodo; las que aún no tocan van aparte.
+  const later = (c: { dueToday?: boolean; dueDate?: string | null }) => c.dueToday === false && !!c.dueDate && c.dueDate > today;
+  const pendingCustom = custom.filter((c) => c.countsToday !== false && c.status === 'pending' && !later(c));
+  const laterCustom = custom.filter((c) => c.countsToday !== false && c.status === 'pending' && later(c));
   const doneCustom = custom.filter((c) => c.countsToday !== false && c.status === 'done');
   const notYetCustom = custom.filter((c) => c.countsToday === false);
   // 1.12: un equipo cuya última lectura de hoy está fuera de rango vuelve a «Pendiente» como «Volver a medir».
@@ -128,7 +132,8 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
   const now = useNow();
   const doneTemps = counted.temps.filter((t) => t.status === 'done');
   const remeasureCount = data.temperatures.filter((t) => t.remeasure).length;
-  const pendingClean = counted.clean.filter((c) => c.status === 'pending');
+  const pendingClean = counted.clean.filter((c) => c.status === 'pending' && !later(c));
+  const laterClean = counted.clean.filter((c) => c.status === 'pending' && later(c));
   const doneClean = counted.clean.filter((c) => c.status === 'done');
   const notYetTemps = data.temperatures.filter((t) => t.countsToday === false);
   const notYetClean = data.cleaning.filter((c) => c.countsToday === false);
@@ -198,10 +203,11 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                 to={path(`registrar/enfriamiento?enfriamiento=${c.recordId}`)}
                 type="enfriamiento"
                 title={c.product}
-                detail={`Empezó a las ${formatTime(c.startedAt, tz)} a ${formatTemp(c.startTemp)} · criterio ${formatTemp(c.targetTemp)} en ${c.maxMinutes} min`}
-                extra={c.overdue ? `Han pasado más de ${c.maxMinutes} min: termínalo y anota qué haces con el producto` : `Termina antes de las ${formatTime(c.deadline, tz)}`}
+                detail={`Empezó ${startedAtText(c.startedAt, tz)} a ${formatTemp(c.startTemp)} · criterio ${formatTemp(c.targetTemp)} en menos de ${c.maxMinutes} min`}
+                extra={c.overdue ? `Han pasado ${c.maxMinutes} min o más: termínalo y anota qué haces con el producto` : `Termina antes de las ${formatTime(c.deadline, tz)}`}
                 warn={c.overdue}
                 due={c.overdue}
+                dueLabel="Fuera de tiempo"
                 badge="En curso"
               />
             ))}
@@ -220,7 +226,7 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
             {data.alerts.map((a) => (
               <li key={`${a.kind}-${a.recordId}`}>
                 <Link
-                  to={path(`historial/${a.recordId}`)}
+                  to={path(a.kind === 'registro_personalizado_vencido' ? `registrar/personalizado?registro=${a.recordId}` : `historial/${a.recordId}`)}
                   className="flex items-center gap-3 rounded-2xl border-2 border-bad/40 bg-bad-soft p-4 transition-colors hover:border-bad"
                 >
                   <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-bad-solid text-white">
@@ -231,7 +237,13 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     {a.message.toLowerCase().startsWith(ALERT_LABELS[a.kind].toLowerCase()) ? null : <span className="sr-only">{ALERT_LABELS[a.kind]}: </span>}
                     <span className="block font-bold">{a.message}</span>
                     <span className="block text-sm text-ink-muted">
-                      {a.kind === 'incidencia_abierta' ? `Desde el ${formatLocalDate(localDateIn(tz, new Date(a.createdAt)))}` : `A las ${formatTime(a.createdAt, tz)}`}
+                      {a.kind === 'registro_personalizado_vencido'
+                        ? 'Toca para registrarlo'
+                        : a.kind === 'incidencia_abierta'
+                          ? `Desde el ${formatLocalDate(localDateIn(tz, new Date(a.createdAt)))}`
+                          : localDateIn(tz, new Date(a.createdAt)) === today
+                            ? `A las ${formatTime(a.createdAt, tz)}`
+                            : `El ${formatLocalDate(localDateIn(tz, new Date(a.createdAt)), { day: 'numeric', month: 'short' })} a las ${formatTime(a.createdAt, tz)}`}
                       {a.kind === 'incidencia_abierta' ? ' · toca para cerrarla' : ''}
                     </span>
                   </span>
@@ -290,8 +302,8 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     to={path(`registrar/limpieza?plan=${c.cleaningPlanId}`)}
                     type="limpieza"
                     title={c.name}
-                    detail={c.frequency === 'daily' ? 'Limpieza de hoy' : c.frequency === 'weekly' ? 'Toca esta semana' : 'Toca este mes'}
-                    extra={c.partial ? `Parcial (${c.partial.done} de ${c.partial.total}) a las ${formatTime(c.partial.at, tz)}: falta completarla` : undefined}
+                    detail={c.frequency === 'daily' ? 'Limpieza de hoy' : periodDueText(c.frequency, c.dueDate, today)}
+                    extra={c.partial ? `Parcial (${c.partial.done} de ${c.partial.total}) ${startedAtText(c.partial.at, tz)}: falta completarla` : undefined}
                     warn={!!c.partial}
                   />
                 ))}
@@ -301,12 +313,26 @@ function TodayContent({ data, tz }: { data: TodayTasks; tz: string }) {
                     to={path(`registrar/personalizado?registro=${c.templateId}`)}
                     type="personalizado"
                     title={c.name}
-                    detail={c.frequency === 'daily' ? `${c.done} de ${c.required} ${c.required === 1 ? 'vez' : 'veces'} hoy` : c.frequency === 'weekly' ? 'Toca esta semana' : 'Toca este mes'}
+                    detail={c.frequency === 'daily' ? `${c.done} de ${c.required} ${c.required === 1 ? 'vez' : 'veces'} hoy` : periodDueText(c.frequency, c.dueDate, today)}
                   />
                 ))}
               </ul>
             )}
           </section>
+          {laterClean.length + laterCustom.length > 0 ? (
+            <section aria-labelledby="mas-adelante">
+              <SectionTitle id="mas-adelante">Más adelante en la semana o el mes</SectionTitle>
+              <p className="-mt-2 mb-3 text-sm text-ink-muted">Cuenta si se hace cualquier día de su semana o su mes. Puedes adelantarlo.</p>
+              <ul className="grid gap-3 sm:grid-cols-2" data-testid="later-tasks">
+                {laterClean.map((c) => (
+                  <TaskCard key={c.cleaningPlanId} to={path(`registrar/limpieza?plan=${c.cleaningPlanId}`)} type="limpieza" title={c.name} detail={periodDueText(c.frequency, c.dueDate, today)} badge="Más adelante" />
+                ))}
+                {laterCustom.map((c) => (
+                  <TaskCard key={c.templateId} to={path(`registrar/personalizado?registro=${c.templateId}`)} type="personalizado" title={c.name} detail={periodDueText(c.frequency, c.dueDate, today)} badge="Más adelante" />
+                ))}
+              </ul>
+            </section>
+          ) : null}
           {doneTemps.length + doneClean.length + doneCustom.length > 0 ? (
             <section aria-labelledby="hechas">
               <SectionTitle id="hechas">Hecho</SectionTitle>
@@ -396,6 +422,7 @@ function TaskCard({
   warn,
   due,
   badge = 'Pendiente',
+  dueLabel = 'Ya toca',
 }: {
   to: string;
   type: RecordType;
@@ -405,7 +432,8 @@ function TaskCard({
   warn?: boolean;
   /** #14: ya ha llegado la hora de volver a medir (resaltado, sin notificación). */
   due?: boolean;
-  badge?: 'Pendiente' | 'Volver a medir' | 'Opcional hoy' | 'En curso';
+  badge?: 'Pendiente' | 'Volver a medir' | 'Opcional hoy' | 'En curso' | 'Más adelante';
+  dueLabel?: string;
 }) {
   const { readOnly } = useOrgContext();
   return (
@@ -437,7 +465,7 @@ function TaskCard({
           </span>
           {due ? (
             <span className="mt-1 ml-2 inline-flex items-center gap-1 rounded-full bg-bad-solid px-2.5 py-0.5 text-sm font-bold text-white" data-testid="remeasure-due">
-              <Icon name="clock" size={14} /> Ya toca
+              <Icon name="clock" size={14} /> {dueLabel}
             </span>
           ) : null}
         </span>
@@ -706,22 +734,31 @@ export function ReportsPage() {
 
 /** Texto de una tarea sin registrar (el mismo que en el PDF). */
 export function missingLabel(m: MissingTask): { task: string; what: string } {
-  const kind = m.kind === 'temperatura' ? 'Temperatura' : m.kind === 'limpieza' ? 'Limpieza' : 'Registro';
-  const period = m.frequency === 'weekly' ? ' en toda la semana' : m.frequency === 'monthly' ? ' en todo el mes' : '';
-  const what =
+  const kind = m.kind === 'temperatura' ? 'Temperatura' : m.kind === 'limpieza' ? 'Limpieza' : m.kind === 'enfriamiento' ? 'Enfriamiento' : 'Registro';
+  if (m.kind === 'enfriamiento') return { task: `${kind}: ${m.name}`, what: 'Sin cerrar: no consta el final ni la temperatura alcanzada' };
+  const periodic = m.frequency === 'weekly' || m.frequency === 'monthly';
+  // H-A2: mientras la semana o el mes no terminan, es «pendiente», nunca «no consta».
+  if (periodic && !m.partial) {
+    const what = m.pending
+      ? `Pendiente ${m.frequency === 'weekly' ? 'esta semana' : 'este mes'}`
+      : `No consta en ${m.frequency === 'weekly' ? 'toda la semana' : 'todo el mes'}${m.periodEnd ? ` (hasta el ${formatLocalDate(m.periodEnd, { day: 'numeric', month: 'long' })})` : ''}`;
+    return { task: `${kind}: ${m.name}`, what };
+  }
+  const base =
     m.kind === 'limpieza'
       ? m.partial
         ? 'Solo una limpieza parcial: falta completarla'
-        : `Sin registrar${period}`
+        : 'Sin registrar'
       : m.expected > 1
         ? `${m.done} de ${m.expected} ${m.kind === 'temperatura' ? 'controles' : 'veces'}`
-        : `Sin registrar${period}`;
-  return { task: `${kind}: ${m.name}`, what };
+        : 'Sin registrar';
+  return { task: `${kind}: ${m.name}`, what: m.pending && !periodic ? `${base} (pendiente: el día aún no ha terminado)` : base };
 }
 
 /** Qué tarea faltó cada día (fase 2): días con huecos, desplegables. */
 export function MissingByDay({ data }: { data: Compliance }) {
   const days = data.days.filter((d) => (d.missing?.length ?? 0) > 0).reverse();
+  const gapDays = days.filter((d) => d.missing!.some((m) => !m.pending)).length;
   return (
     <section aria-labelledby="sin-registrar" className="mt-6 border-t border-line pt-4">
       <h3 id="sin-registrar" className="text-lg font-bold">
@@ -734,7 +771,8 @@ export function MissingByDay({ data }: { data: Compliance }) {
       ) : (
         <>
           <p className="mt-1 text-sm text-ink-muted">
-            {plural(days.length, 'día', 'días')} con alguna tarea sin registrar o incompleta. Toca un día para ver qué faltó.
+            {gapDays > 0 ? `${plural(gapDays, 'día', 'días')} con alguna tarea sin registrar o incompleta. ` : 'Nada sin registrar en periodos ya terminados. '}
+            {gapDays < days.length ? 'Lo marcado como pendiente aún está a tiempo. ' : ''}Toca un día para ver qué falta.
           </p>
           <ul className="mt-2 max-h-[28rem] divide-y divide-line overflow-y-auto rounded-xl border border-line" data-testid="missing-days">
             {days.map((d) => (
@@ -743,14 +781,15 @@ export function MissingByDay({ data }: { data: Compliance }) {
                   <summary className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-3 py-2 font-semibold [&::-webkit-details-marker]:hidden">
                     <Icon name="chevronRight" size={18} className="shrink-0 transition-transform group-open:rotate-90" />
                     <span className="flex-1 first-letter:uppercase">{formatLocalDate(d.date, { weekday: 'long', day: 'numeric', month: 'long' })}</span>
-                    <Badge tone="warn">{plural(d.missing!.length, 'tarea', 'tareas')}</Badge>
+                    {d.missing!.some((m) => !m.pending) ? <Badge tone="warn">{plural(d.missing!.filter((m) => !m.pending).length, 'tarea', 'tareas')}</Badge> : null}
+                    {d.missing!.some((m) => m.pending) ? <Badge tone="info">{plural(d.missing!.filter((m) => m.pending).length, 'pendiente', 'pendientes')}</Badge> : null}
                   </summary>
                   <ul className="space-y-1.5 px-3 pb-3 pl-9">
                     {d.missing!.map((m) => {
                       const l = missingLabel(m);
                       return (
                         <li key={`${m.kind}-${m.id}`} className="text-sm">
-                          <span className="font-semibold [overflow-wrap:anywhere]">{l.task}</span> <span className={m.partial ? 'text-warn' : 'text-ink-muted'}>· {l.what}</span>
+                          <span className="font-semibold [overflow-wrap:anywhere]">{l.task}</span> <span className={m.partial || m.kind === 'enfriamiento' ? 'text-warn' : 'text-ink-muted'}>· {l.what}</span>
                         </li>
                       );
                     })}
@@ -796,7 +835,8 @@ function ReviewCard({
   const firstThis = `${today.slice(0, 8)}01`;
   const lastPrev = addDaysIso(firstThis, -1);
   const lastMonth = { from: `${lastPrev.slice(0, 8)}01`, to: lastPrev, kind: 'month' as const };
-  const selected = range && range.to <= today ? { ...range, kind: 'custom' as const } : null;
+  // H-M1: solo periodos ya terminados (como muy tarde, hasta ayer).
+  const selected = range && range.to < today ? { ...range, kind: 'custom' as const } : null;
   const covers = (v: Verification) => range != null && v.from <= range.from && v.to >= range.to;
   return (
     <Card data-testid="review-card">
@@ -833,6 +873,12 @@ function ReviewCard({
                     {v.kind === 'week' ? 'Semana' : v.kind === 'month' ? 'Mes' : 'Periodo'} del {formatLocalDate(v.from)} al {formatLocalDate(v.to)}
                     {covers(v) ? ' · cubre todo el periodo elegido' : ' · cubre parte del periodo elegido'}
                   </span>
+                  {v.snapshot ? (
+                    <span className="block text-sm text-ink-muted" data-testid="verification-snapshot">
+                      En ese momento: {plural(v.snapshot.gapTasks, 'tarea sin registrar', 'tareas sin registrar')}, {v.snapshot.alertsWithoutAction} {v.snapshot.alertsWithoutAction === 1 ? 'alerta' : 'alertas'} sin acción
+                      {v.snapshot.openCoolings > 0 ? `, ${plural(v.snapshot.openCoolings, 'enfriamiento sin cerrar', 'enfriamientos sin cerrar')}` : ''}
+                    </span>
+                  ) : null}
                   {v.comment ? <span className="mt-0.5 block text-sm [overflow-wrap:anywhere]">«{v.comment}»</span> : null}
                 </span>
               </li>
@@ -852,6 +898,8 @@ function ReviewDialog({ options, initial, onClose }: { options: { from: string; 
   const [comment, setComment] = useState('');
   const [error, setError] = useState<string | null>(null);
   const m = useOrgMutation(orgId, (body: { from: string; to: string; kind: string; comment: string | null }) => api.post(`${orgApi(orgId).base}/verifications`, body), [['verifications'], ['today']]);
+  const sel = choice != null ? options[Number(choice)] : undefined;
+  const preview = useVerificationPreview(orgId, sel?.from ?? '', sel?.to ?? '', !!sel);
   const label = (o: { from: string; to: string; kind: string }) =>
     `${o.kind === 'week' ? 'La semana pasada' : o.kind === 'month' ? 'El mes pasado' : 'El periodo elegido'} (del ${formatLocalDate(o.from)} al ${formatLocalDate(o.to)})`;
   const save = async () => {
@@ -894,11 +942,39 @@ function ReviewDialog({ options, initial, onClose }: { options: { from: string; 
           error={error}
           options={options.map((o, i) => ({ value: String(i), label: label(o) }))}
         />
+        {sel ? (
+          preview.isPending ? (
+            <Skeleton className="h-20" />
+          ) : preview.isError ? (
+            <ErrorState error={preview.error} onRetry={() => void preview.refetch()} />
+          ) : (
+            <SnapshotSummary s={preview.data} />
+          )
+        ) : null}
         <Field label="Comentario" optional hint="Por ejemplo: revisadas las alertas de la cámara con el equipo.">
           <Textarea value={comment} onChange={(e) => setComment(e.target.value)} maxLength={1000} rows={2} />
         </Field>
       </div>
     </Dialog>
+  );
+}
+
+/** Lo que hay en el periodo antes de confirmar (y lo que se guarda con la verificación). */
+function SnapshotSummary({ s }: { s: VerificationSnapshot }) {
+  const clean = s.gapTasks === 0 && s.alertsWithoutAction === 0 && s.openCoolings === 0;
+  return (
+    <Callout tone={clean ? 'ok' : 'warn'} title={clean ? 'Sin huecos ni alertas pendientes' : 'Antes de confirmar, revisa esto'} live="polite">
+      <ul className="mt-1 space-y-0.5" data-testid="review-snapshot">
+        <li>{s.gapTasks === 0 ? 'Ninguna tarea sin registrar' : `${plural(s.gapTasks, 'tarea sin registrar', 'tareas sin registrar')} (en ${plural(s.gapDays, 'día', 'días')})`}</li>
+        <li>
+          {plural(s.alerts, 'alerta', 'alertas')}
+          {s.alerts > 0 ? `, ${s.alertsWithoutAction === 0 ? 'todas con acción correctora' : `${s.alertsWithoutAction} sin acción correctora`}` : ''}
+        </li>
+        {s.openCoolings > 0 ? <li>{plural(s.openCoolings, 'enfriamiento sin cerrar', 'enfriamientos sin cerrar')}</li> : null}
+        <li>{plural(s.records, 'registro', 'registros')} en el periodo</li>
+      </ul>
+      <p className="mt-1 text-sm">Estos recuentos se guardan con tu verificación y salen en el PDF. Lo que se añada o corrija después también constará.</p>
+    </Callout>
   );
 }
 

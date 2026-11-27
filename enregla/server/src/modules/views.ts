@@ -56,6 +56,7 @@ export function customTemplateView(t: CustomTemplate) {
     weekday: t.weekday,
     monthDay: t.month_day,
     instructions: t.instructions,
+    reminderMonths: t.reminder_months,
     suggestionKey: t.suggestion_key,
     source: t.source,
     active: t.active,
@@ -71,6 +72,8 @@ export function verificationView(v: Verification) {
     kind: v.period_kind,
     comment: v.comment,
     user: { id: v.user_id, name: v.user_name, role: v.user_role },
+    /** Foto de lo que había al verificar (null en las anteriores a 0012). */
+    snapshot: v.snapshot ?? null,
     createdAt: v.created_at.toISOString(),
   };
 }

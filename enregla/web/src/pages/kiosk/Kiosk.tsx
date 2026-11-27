@@ -25,7 +25,7 @@ import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, recordSummary, signer } from '@
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useOnline } from '@/hooks/useOnline';
 import { remeasureDue, useNow } from '@/hooks/useNow';
-import { formatCompliance, formatRange, formatTemp, formatTime, isOutOfRange, plural, quedan } from '@/lib/format';
+import { formatCompliance, formatRange, formatTemp, formatTime, isOutOfRange, periodDueText, plural, quedan, startedAtText } from '@/lib/format';
 import { storage } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import { kioskApi } from './kioskApi';
@@ -746,10 +746,14 @@ function KioskHome({
   const tz = ctx.organization.timezone;
   // 1.12: un equipo cuya última lectura está fuera de rango sigue pendiente como «Volver a medir».
   const pendingTemps = today.temperatures.filter((t) => (t.status === 'pending' && t.countsToday !== false) || t.remeasure);
-  const pendingClean = today.cleaning.filter((c) => c.status === 'pending' && c.countsToday !== false);
+  // H-A2: semanales y mensuales se ven todo su periodo («Toca el jueves»); las que aún no tocan, aparte.
+  const later = (c: { dueToday?: boolean; dueDate?: string | null }) => c.dueToday === false && !!c.dueDate && c.dueDate > today.date;
+  const pendingClean = today.cleaning.filter((c) => c.status === 'pending' && c.countsToday !== false && !later(c));
+  const laterClean = today.cleaning.filter((c) => c.status === 'pending' && c.countsToday !== false && later(c));
   const doneTemps = today.temperatures.filter((t) => t.status === 'done' && t.countsToday !== false);
   const doneClean = today.cleaning.filter((c) => c.status === 'done' && c.countsToday !== false);
-  const pendingCustom = (today.custom ?? []).filter((c) => c.status === 'pending' && c.countsToday !== false);
+  const pendingCustom = (today.custom ?? []).filter((c) => c.status === 'pending' && c.countsToday !== false && !later(c));
+  const laterCustom = (today.custom ?? []).filter((c) => c.status === 'pending' && c.countsToday !== false && later(c));
   const doneCustom = (today.custom ?? []).filter((c) => c.status === 'done' && c.countsToday !== false);
   const coolings = today.coolings ?? [];
   const { summary } = today;
@@ -811,10 +815,11 @@ function KioskHome({
                   onClick={() => onStart({ kind: 'form', type: 'enfriamiento', preset: { startRecordId: c.recordId } })}
                   type="enfriamiento"
                   title={`Terminar: ${c.product}`}
-                  subtitle={`Empezó a las ${formatTime(c.startedAt, tz)} a ${formatTemp(c.startTemp)}`}
-                  extra={c.overdue ? `Han pasado más de ${c.maxMinutes} min` : `Antes de las ${formatTime(c.deadline, tz)}: ${formatTemp(c.targetTemp)} o menos`}
+                  subtitle={`Empezó ${startedAtText(c.startedAt, tz)} a ${formatTemp(c.startTemp)}`}
+                  extra={c.overdue ? `Han pasado ${c.maxMinutes} min o más: anota qué haces con el producto` : `Antes de las ${formatTime(c.deadline, tz)}: ${formatTemp(c.targetTemp)} o menos`}
                   alert={c.overdue}
                   due={c.overdue}
+                  dueLabel="Fuera de tiempo"
                 />
               </li>
             ))}
@@ -853,7 +858,7 @@ function KioskHome({
                   onClick={() => onStart({ kind: 'form', type: 'limpieza', preset: { cleaningPlanId: c.cleaningPlanId } })}
                   type="limpieza"
                   title={c.name}
-                  subtitle={c.partial ? `Parcial (${c.partial.done} de ${c.partial.total}): falta completarla` : 'Limpieza pendiente'}
+                  subtitle={c.partial ? `Parcial (${c.partial.done} de ${c.partial.total}): falta completarla` : c.frequency === 'daily' ? 'Limpieza pendiente' : periodDueText(c.frequency, c.dueDate, today.date)}
                 />
               </li>
             ))}
@@ -864,7 +869,7 @@ function KioskHome({
                   onClick={() => onStart({ kind: 'form', type: 'personalizado', preset: { templateId: c.templateId } })}
                   type="personalizado"
                   title={c.name}
-                  subtitle={c.required > 1 ? `${c.done} de ${c.required} hoy` : 'Pendiente'}
+                  subtitle={c.required > 1 ? `${c.done} de ${c.required} hoy` : c.frequency === 'daily' || c.frequency === 'on_demand' ? 'Pendiente' : periodDueText(c.frequency, c.dueDate, today.date)}
                 />
               </li>
             ))}
@@ -874,6 +879,27 @@ function KioskHome({
         <p className="flex items-center gap-2 rounded-3xl bg-ok-soft p-5 text-xl font-bold text-ok">
           <Icon name="check" size={28} strokeWidth={3} /> No queda nada pendiente. ¡Buen trabajo!
         </p>
+      ) : null}
+
+      {laterClean.length + laterCustom.length > 0 ? (
+        <section aria-labelledby="klater">
+          <h2 id="klater" className="mb-1 text-2xl font-extrabold">
+            Más adelante esta semana o este mes
+          </h2>
+          <p className="mb-3 text-lg text-ink-muted">Cuenta si se hace cualquier día de su semana o su mes.</p>
+          <ul className="grid gap-3 sm:grid-cols-2" data-testid="kiosk-later">
+            {laterClean.map((c) => (
+              <li key={c.cleaningPlanId}>
+                <BigTile disabled={readOnly} quiet onClick={() => onStart({ kind: 'form', type: 'limpieza', preset: { cleaningPlanId: c.cleaningPlanId } })} type="limpieza" title={c.name} subtitle={periodDueText(c.frequency, c.dueDate, today.date)} />
+              </li>
+            ))}
+            {laterCustom.map((c) => (
+              <li key={c.templateId}>
+                <BigTile disabled={readOnly} quiet onClick={() => onStart({ kind: 'form', type: 'personalizado', preset: { templateId: c.templateId } })} type="personalizado" title={c.name} subtitle={periodDueText(c.frequency, c.dueDate, today.date)} />
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
 
       {doneTemps.length + doneClean.length + doneCustom.length > 0 ? (
@@ -951,6 +977,8 @@ function BigTile({
   disabled,
   alert,
   due,
+  dueLabel = 'Ya toca',
+  quiet,
 }: {
   onClick: () => void;
   type: RecordType;
@@ -961,6 +989,9 @@ function BigTile({
   alert?: boolean;
   /** #14: ya ha llegado la hora de volver a medir (resaltado en pantalla; no hay notificación). */
   due?: boolean;
+  dueLabel?: string;
+  /** Tarea que aún no toca (borde neutro). */
+  quiet?: boolean;
 }) {
   return (
     <button
@@ -970,7 +1001,7 @@ function BigTile({
       data-due={due || undefined}
       className={cn(
         'flex min-h-28 w-full items-center gap-4 rounded-3xl border-2 bg-surface p-4 text-left shadow-card transition-transform active:scale-[0.98] disabled:opacity-50',
-        alert ? 'border-bad-solid' : 'border-warn-solid/60',
+        alert ? 'border-bad-solid' : quiet ? 'border-line' : 'border-warn-solid/60',
         due && 'border-4 bg-bad-soft ring-4 ring-bad-solid/30',
       )}
     >
@@ -980,7 +1011,7 @@ function BigTile({
       <span className="min-w-0 flex-1">
         {due ? (
           <span className="mb-1 inline-flex items-center gap-1 rounded-full bg-bad-solid px-3 py-0.5 text-base font-bold text-white" data-testid="remeasure-due">
-            <Icon name="clock" size={16} /> Ya toca
+            <Icon name="clock" size={16} /> {dueLabel}
           </span>
         ) : null}
         <span className="block text-xl font-extrabold [overflow-wrap:anywhere]">{title}</span>

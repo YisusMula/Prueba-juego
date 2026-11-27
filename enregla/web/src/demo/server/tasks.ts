@@ -3,7 +3,7 @@
  * sobre las tablas en memoria de la demo.
  */
 import { effectiveReferenceValues, esNumber, REMEASURE_ACTION, REMEASURE_MINUTES } from '@shared/schemas';
-import type { AlertKind, Compliance, CustomFrequency, MissingTask, OpenCooling, TodayTasks } from '@/api/types';
+import type { AlertKind, Compliance, CustomFrequency, MissingTask, OpenCooling, TodayTasks, VerificationSnapshot } from '@/api/types';
 import type { DemoState, DOrg, DRecord, EquipmentState, PlanState, TemplateState } from './state';
 import { latestVersion } from './records';
 import { addDays, dayOfMonth, dayStart, eachDay, iso, isoWeekday, localDate, startOfIsoWeek, startOfMonth } from './time';
@@ -19,6 +19,23 @@ export function periodStart(plan: { frequency: CustomFrequency }, date: string):
   if (plan.frequency === 'weekly') return startOfIsoWeek(date);
   if (plan.frequency === 'monthly') return startOfMonth(date);
   return date;
+}
+
+/** Último día del periodo (semana ISO o mes) que contiene `date`; el propio día si es diario. */
+export function periodEnd(plan: { frequency: CustomFrequency }, date: string): string {
+  if (plan.frequency === 'weekly') return addDays(startOfIsoWeek(date), 6);
+  if (plan.frequency === 'monthly') {
+    const [y, m] = date.split('-').map(Number) as [number, number];
+    return addDays(m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`, -1);
+  }
+  return date;
+}
+
+/** Día que toca una tarea semanal o mensual dentro del periodo de `date` (como el servidor). */
+export function dueDateInPeriod(plan: { frequency: CustomFrequency; weekday: number | null; monthDay: number | null }, date: string): string | null {
+  if (plan.frequency === 'weekly' && plan.weekday) return addDays(startOfIsoWeek(date), plan.weekday - 1);
+  if (plan.frequency === 'monthly' && plan.monthDay) return addDays(startOfMonth(date), plan.monthDay - 1);
+  return null;
 }
 
 /** Configuración vigente en `instant` (último tramo con validFrom ≤ instant, o < si `strict`). */
@@ -85,7 +102,8 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
     };
   });
 
-  const plans = db.plans.filter((p) => p.orgId === org.id && p.active && isDue(p, today)).sort((a, b) => a.createdAt - b.createdAt);
+  // H-A2: semanales y mensuales, todo su periodo.
+  const plans = db.plans.filter((p) => p.orgId === org.id && p.active && (p.frequency !== 'daily' || isDue(p, today))).sort((a, b) => a.createdAt - b.createdAt);
   const cleaning = plans.map((p) => {
     const from = dayStart(periodStart(p, today), tz);
     const recs = live
@@ -101,6 +119,8 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
       status: complete ? ('done' as const) : ('pending' as const),
       correctedLater: complete != null && !recs.some((r) => r.data.completed === true && !isLate(r, tz)),
       countsToday: stateAt(p.history, startToday)?.active === true,
+      dueToday: isDue(p, today),
+      dueDate: dueDateInPeriod(p, today),
       completedAt: complete ? iso(complete.effectiveAt) : null,
       partial: lastPartial
         ? { done: partialItems.filter((i) => i.done).length, total: partialItems.length, at: iso(lastPartial.effectiveAt), recordId: lastPartial.id }
@@ -108,7 +128,8 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
     };
   });
 
-  const templates = db.templates.filter((t) => t.orgId === org.id && t.active && isDue(t, today)).sort((a, b) => a.createdAt - b.createdAt);
+  const allTemplates = db.templates.filter((t) => t.orgId === org.id && t.active).sort((a, b) => a.createdAt - b.createdAt);
+  const templates = allTemplates.filter((t) => t.frequency === 'weekly' || t.frequency === 'monthly' || isDue(t, today));
   const custom = templates.map((t) => {
     const from = dayStart(periodStart(t, today), tz);
     const recs = live.filter((r) => r.type === 'personalizado' && r.customTemplateId === t.id && r.effectiveAt >= from && r.effectiveAt < endToday).sort((a, b) => b.effectiveAt - a.effectiveAt);
@@ -123,6 +144,8 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
       done: doneN,
       status: doneN >= required ? ('done' as const) : ('pending' as const),
       countsToday: stateAt(t.history, startToday)?.active === true,
+      dueToday: isDue(t, today),
+      dueDate: dueDateInPeriod(t, today),
       withAlert: recs.some((r) => r.alert),
       lastAt: recs[0] ? iso(recs[0].effectiveAt) : null,
     };
@@ -137,12 +160,27 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
   };
 
   const alerts = computeAlerts(live, startToday, endToday);
+  // Aviso «cada N meses» (p. ej. verificación de termómetros).
+  for (const t of allTemplates.filter((x) => x.reminderMonths != null)) {
+    const last = live.filter((r) => r.customTemplateId === t.id).sort((a, b) => b.effectiveAt - a.effectiveAt)[0];
+    const since = last?.effectiveAt ?? t.createdAt;
+    const limit = new Date(now);
+    limit.setUTCMonth(limit.getUTCMonth() - t.reminderMonths!);
+    if (since < limit.getTime()) {
+      alerts.unshift({
+        kind: 'registro_personalizado_vencido',
+        recordId: t.id,
+        createdAt: iso(since),
+        message: `${t.name}: ${last ? 'han pasado' : 'no consta en'} más de ${t.reminderMonths} ${t.reminderMonths === 1 ? 'mes' : 'meses'}${last ? ' desde el último registro' : ''}`,
+      });
+    }
+  }
   for (const c of coolings.filter((x) => x.overdue)) {
     alerts.unshift({ kind: 'enfriamiento_sin_cerrar', recordId: c.recordId, createdAt: c.startedAt, message: `Enfriamiento de ${c.product} sin cerrar: han pasado más de ${c.maxMinutes} min` });
   }
   const counted = temperatures.filter((t) => t.countsToday);
-  const countedCleaning = cleaning.filter((c) => c.countsToday);
-  const countedCustom = custom.filter((c) => c.countsToday);
+  const countedCleaning = cleaning.filter((c) => c.countsToday && c.dueToday);
+  const countedCustom = custom.filter((c) => c.countsToday && c.dueToday);
   const total = counted.reduce((a, t) => a + t.required, 0) + countedCleaning.length + countedCustom.reduce((a, c) => a + c.required, 0);
   const done = counted.reduce((a, t) => a + t.done, 0) + countedCleaning.filter((c) => c.status === 'done').length + countedCustom.reduce((a, c) => a + c.done, 0);
   const correctedLater = counted.reduce((a, t) => a + t.correctedLater, 0) + countedCleaning.filter((c) => c.correctedLater).length;
@@ -178,7 +216,7 @@ export function openCoolings(db: DemoState, org: DOrg, now = Date.now()): OpenCo
         startedAt: iso(root.effectiveAt),
         deadline: iso(deadline),
         minutesElapsed: Math.max(0, Math.floor((now - root.effectiveAt) / 60_000)),
-        overdue: now > deadline,
+        overdue: now >= deadline,
         targetTemp: refs.coolingTargetTemp,
         maxMinutes: refs.coolingMaxMinutes,
       };
@@ -248,10 +286,13 @@ export function computeCompliance(db: DemoState, org: DOrg, from: string, to: st
     }
     const cleanFrom = startOfMonth(from) < startOfIsoWeek(from) ? startOfMonth(from) : startOfIsoWeek(from);
     const cleanStart = dayStart(cleanFrom, tz);
+    // H-A2: las semanales y mensuales se cumplen con un registro en cualquier día del periodo.
+    const monthEndOfLast = periodEnd({ frequency: 'monthly' }, last);
+    const fetchEnd = dayStart(addDays(monthEndOfLast < today ? monthEndOfLast : today, 1), tz);
     const cleanByPlan = new Map<string, Map<string, boolean>>();
     const partialByPlan = new Map<string, Set<string>>();
     for (const r of live) {
-      if (r.type !== 'limpieza' || !r.cleaningPlanId || r.effectiveAt < cleanStart || r.effectiveAt >= endLast) continue;
+      if (r.type !== 'limpieza' || !r.cleaningPlanId || r.effectiveAt < cleanStart || r.effectiveAt >= fetchEnd) continue;
       const day = dayOf(r.effectiveAt);
       if (r.data.completed !== true) {
         const set = partialByPlan.get(r.cleaningPlanId) ?? new Set<string>();
@@ -265,7 +306,7 @@ export function computeCompliance(db: DemoState, org: DOrg, from: string, to: st
     }
     const customByTpl = new Map<string, Map<string, { n: number; late: number }>>();
     for (const r of live) {
-      if (r.type !== 'personalizado' || !r.customTemplateId || r.effectiveAt < cleanStart || r.effectiveAt >= endLast) continue;
+      if (r.type !== 'personalizado' || !r.customTemplateId || r.effectiveAt < cleanStart || r.effectiveAt >= fetchEnd) continue;
       const m = customByTpl.get(r.customTemplateId) ?? new Map<string, { n: number; late: number }>();
       const day = dayOf(r.effectiveAt);
       const v = m.get(day) ?? { n: 0, late: 0 };
@@ -282,6 +323,20 @@ export function computeCompliance(db: DemoState, org: DOrg, from: string, to: st
     const tpHist: [string, TemplateState[]][] = db.templates.filter((t) => t.orgId === org.id).map((t) => [t.id, t.history]);
     const eqHist: [string, EquipmentState[]][] = db.equipment.filter((e) => e.orgId === org.id).map((e) => [e.id, e.history]);
     const plHist: [string, PlanState[]][] = db.plans.filter((p) => p.orgId === org.id).map((p) => [p.id, p.history]);
+    // H-M2: nombre vigente ese día (los tramos antiguos no lo tienen: el actual).
+    const nameAt = (id: string, st: { name?: string }) => st.name ?? nameOf.get(id) ?? '—';
+    // H-A3: enfriamientos sin cerrar con el tiempo máximo ya pasado.
+    const refs = effectiveReferenceValues(org.referenceValues);
+    const unclosedByDay = new Map<string, { id: string; product: string }[]>();
+    for (const r of db.records) {
+      if (r.orgId !== org.id || r.type !== 'enfriamiento' || r.amendsRecordId || r.data.phase !== 'inicio') continue;
+      if (r.effectiveAt < startFrom || r.effectiveAt >= endLast || r.effectiveAt >= now - refs.coolingMaxMinutes * 60_000) continue;
+      if (db.records.some((c) => c.relatedRecordId === r.id && !c.amendsRecordId)) continue;
+      const day = dayOf(r.effectiveAt);
+      const list = unclosedByDay.get(day) ?? [];
+      list.push({ id: r.id, product: String((latestVersion(db, r.id) ?? r).data.product ?? '—') });
+      unclosedByDay.set(day, list);
+    }
     for (const day of eachDay(from, last)) {
       const start = dayStart(day, tz);
       const isToday = day === today;
@@ -298,20 +353,21 @@ export function computeCompliance(db: DemoState, org: DOrg, from: string, to: st
         const d = Math.min(c.n, st.checksPerDay);
         done += d;
         correctedLater += d - Math.min(c.n - c.late, st.checksPerDay);
-        if (d < st.checksPerDay) missing.push({ kind: 'temperatura', id: equipmentId, name: nameOf.get(equipmentId) ?? '—', expected: st.checksPerDay, done: d, frequency: 'daily' });
+        if (d < st.checksPerDay) missing.push({ kind: 'temperatura', id: equipmentId, name: nameAt(equipmentId, st), expected: st.checksPerDay, done: d, frequency: 'daily', pending: isToday, periodEnd: day });
       }
       for (const [planId, hist] of plHist) {
         const st = requiredState(hist, start, end, isToday);
         if (!st || !isDue(st, day)) continue;
         expected += 1;
         const pStart = periodStart(st, day);
-        const inPeriod = [...(cleanByPlan.get(planId) ?? new Map<string, boolean>()).entries()].filter(([d]) => d >= pStart && d <= day);
+        const pEnd = periodEnd(st, day);
+        const inPeriod = [...(cleanByPlan.get(planId) ?? new Map<string, boolean>()).entries()].filter(([d]) => d >= pStart && d <= pEnd);
         if (inPeriod.length > 0) {
           done += 1;
           if (inPeriod.every(([, allLate]) => allLate)) correctedLater += 1;
         } else {
-          const partial = [...(partialByPlan.get(planId) ?? new Set<string>())].some((d) => d >= pStart && d <= day);
-          missing.push({ kind: 'limpieza', id: planId, name: nameOf.get(planId) ?? '—', expected: 1, done: 0, partial, frequency: st.frequency });
+          const partial = [...(partialByPlan.get(planId) ?? new Set<string>())].some((d) => d >= pStart && d <= pEnd);
+          missing.push({ kind: 'limpieza', id: planId, name: nameAt(planId, st), expected: 1, done: 0, partial, frequency: st.frequency, pending: pEnd >= today, periodEnd: pEnd });
         }
       }
       for (const [tplId, hist] of tpHist) {
@@ -325,16 +381,20 @@ export function computeCompliance(db: DemoState, org: DOrg, from: string, to: st
           const d = Math.min(c.n, req);
           done += d;
           correctedLater += d - Math.min(c.n - c.late, req);
-          if (d < req) missing.push({ kind: 'personalizado', id: tplId, name: nameOf.get(tplId) ?? '—', expected: req, done: d, frequency: st.frequency });
+          if (d < req) missing.push({ kind: 'personalizado', id: tplId, name: nameAt(tplId, st), expected: req, done: d, frequency: st.frequency, pending: isToday, periodEnd: day });
         } else {
           expected += 1;
           const pStart = periodStart(st, day);
-          const inPeriod = [...m.entries()].filter(([d]) => d >= pStart && d <= day);
+          const pEnd = periodEnd(st, day);
+          const inPeriod = [...m.entries()].filter(([d]) => d >= pStart && d <= pEnd);
           if (inPeriod.length > 0) {
             done += 1;
             if (inPeriod.every(([, v]) => v.late >= v.n)) correctedLater += 1;
-          } else missing.push({ kind: 'personalizado', id: tplId, name: nameOf.get(tplId) ?? '—', expected: 1, done: 0, frequency: st.frequency });
+          } else missing.push({ kind: 'personalizado', id: tplId, name: nameAt(tplId, st), expected: 1, done: 0, frequency: st.frequency, pending: pEnd >= today, periodEnd: pEnd });
         }
+      }
+      for (const u of unclosedByDay.get(day) ?? []) {
+        missing.push({ kind: 'enfriamiento', id: u.id, name: u.product, expected: 1, done: 0, frequency: 'once', pending: false, periodEnd: day });
       }
       totalExpected += expected;
       totalDone += done;
@@ -351,7 +411,34 @@ export function computeCompliance(db: DemoState, org: DOrg, from: string, to: st
       done: totalDone,
       percent: totalExpected === 0 ? null : Math.round((totalDone / totalExpected) * 100),
       correctedLater: totalCorrectedLater,
-      daysWithGaps: days.filter((d) => (d.missing?.length ?? 0) > 0).length,
+      daysWithGaps: days.filter((d) => (d.missing ?? []).some((m) => !m.pending)).length,
+      daysEvaluated: days.filter((d) => d.date >= localDate(new Date(org.createdAt), tz) || (d.missing?.length ?? 0) > 0).length,
     },
+  };
+}
+
+/** Foto del periodo antes de verificarlo (como `periodSnapshot` del servidor). */
+export function periodSnapshot(db: DemoState, org: DOrg, from: string, to: string, now = Date.now()): VerificationSnapshot {
+  const c = computeCompliance(db, org, from, to, now);
+  const tz = org.timezone;
+  const start = dayStart(from, tz);
+  const end = dayStart(addDays(to, 1), tz);
+  const inPeriod = currentRecords(db, org.id).filter((r) => r.effectiveAt >= start && r.effectiveAt < end);
+  const alerts = inPeriod.filter((r) => r.alert && r.type !== 'incidencia');
+  const withAction = alerts.filter(
+    (r) =>
+      String(r.data.correctiveAction ?? '').trim() !== '' ||
+      (r.type === 'recepcion' && r.data.accepted === false && String(r.data.rejectionReason ?? '').trim() !== '') ||
+      (r.type === 'plagas' && String(r.data.action ?? '').trim() !== ''),
+  );
+  const gaps = c.days.flatMap((d) => (d.missing ?? []).filter((m) => m.kind !== 'enfriamiento' && !m.pending).map(() => d.date));
+  return {
+    gapTasks: gaps.length,
+    gapDays: new Set(gaps).size,
+    pendingTasks: c.days.reduce((n, d) => n + (d.missing ?? []).filter((m) => m.pending).length, 0),
+    alerts: alerts.length,
+    alertsWithoutAction: alerts.length - withAction.length,
+    openCoolings: c.days.reduce((n, d) => n + (d.missing ?? []).filter((m) => m.kind === 'enfriamiento').length, 0),
+    records: db.records.filter((r) => r.orgId === org.id && r.effectiveAt >= start && r.effectiveAt < end).length,
   };
 }

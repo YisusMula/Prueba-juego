@@ -326,7 +326,7 @@ async function walkthrough(label, opts) {
     await expect(f.getByRole('button', { name: 'Informe PDF' })).toHaveCount(0);
     await f.getByRole('button', { name: 'Ver vista previa del CSV' }).click();
     await expect(f.getByTestId('csv-preview')).toContainText('temperatura');
-    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 61 columnas/);
+    await expect(f.getByTestId('csv-preview')).toContainText(/filas y 63 columnas/);
     await f.getByRole('button', { name: 'Ver el PDF de ejemplo' }).click();
     await expect(f.getByText(/PDF de ejemplo con los datos iniciales de la demo/).filter({ visible: true }).first()).toBeVisible();
     const img = f.getByTestId('pdf-preview').getByRole('img');
@@ -341,14 +341,18 @@ async function walkthrough(label, opts) {
     await f.getByRole('link', { name: 'Revisar y marcar' }).click();
     const dlg = f.getByRole('dialog');
     await expect(dlg.getByRole('radio', { name: /La semana pasada/ })).toBeChecked();
+    // Antes de confirmar se ve lo que hay en el periodo (huecos, alertas sin acción, enfriamientos sin cerrar).
+    await expect(dlg.getByTestId('review-snapshot')).toContainText(/registros? en el periodo/);
     await dlg.getByRole('button', { name: 'Marcar como revisado' }).click();
     await expect(f.getByTestId('verifications')).toContainText('Verificado por Usuario Demo');
+    await expect(f.getByTestId('verification-snapshot').first()).toContainText('En ese momento:');
     await expect(f.getByTestId('missing-days')).toBeVisible();
     await nav(s, 'Registrar');
     await f.getByRole('link', { name: /Cocinado y regeneración/ }).filter({ visible: true }).first().click();
     await f.getByLabel('Producto', { exact: true }).fill(`Pollo demo ${stamp}`);
     await f.getByText('Cocinado', { exact: true }).click();
     await f.getByLabel(/Temperatura en el centro del producto/).fill('72');
+    await expect(f.getByText(/Lleva huevo fresco/)).toBeVisible();
     await f.getByRole('button', { name: 'Guardar', exact: true }).click();
     await expect(f.getByTestId('record-saved')).toContainText('Hecho');
     await nav(s, 'Registrar');

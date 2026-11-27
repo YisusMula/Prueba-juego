@@ -70,10 +70,14 @@ test('datos del establecimiento → PDF con portada, resumen, verificación, hue
   const dlg = page.getByRole('dialog');
   await expect(dlg.getByRole('heading', { name: 'Marcar como revisado' })).toBeVisible();
   await expect(dlg.getByRole('radio', { name: /La semana pasada/ })).toBeChecked();
+  // H-M1: antes de confirmar se ven los huecos, las alertas sin acción y los enfriamientos sin cerrar.
+  await expect(dlg.getByTestId('review-snapshot')).toContainText(/registros? en el periodo/);
+  await expect(dlg.getByRole('radio', { name: /periodo elegido/ })).toHaveCount(0);
   await dlg.getByLabel(/Comentario/).fill('Revisadas las alertas con el equipo');
   await dlg.getByRole('button', { name: 'Marcar como revisado' }).click();
   await expect(page.getByText('Periodo marcado como revisado')).toBeVisible();
   await expect(page.getByTestId('verifications')).toContainText('Revisadas las alertas con el equipo');
+  await expect(page.getByTestId('verification-snapshot').first()).toContainText('En ese momento:');
   // Tareas sin registrar por día, desplegables.
   const days = page.getByTestId('missing-days');
   await expect(days).toBeVisible();
@@ -115,7 +119,8 @@ test('datos del establecimiento → PDF con portada, resumen, verificación, hue
     expect(text).toContain('Razón social Restauración E2E S.L.');
     expect(text).toContain('NIF / CIF B12345674');
     expect(text).toContain('Resumen del periodo');
-    expect(text).toMatch(/Verificado por .* · Comentario: «Revisadas las alertas con el equipo»/);
+    expect(text).toMatch(/Verificado por .* · en ese momento: \d+ tareas? sin registrar, \d+ alertas? sin acción, \d+ enfriamientos? sin cerrar · Comentario: «Revisadas las alertas con el equipo»/);
+    expect(text).toContain('Referencia orientativa del local');
     expect(text).toContain('Tareas sin registrar');
     expect(text).toContain('Revisión y firma del responsable');
     expect(text).toMatch(/Página 1 de (\d+)/);
@@ -162,8 +167,14 @@ test('cocinado y enfriamiento en la web: alerta por debajo de la referencia; enf
   await page.goto(`${base}/registrar/cocinado`);
   await page.getByLabel('Producto', { exact: true }).fill('Pollo asado e2e');
   await page.getByText('Cocinado', { exact: true }).click();
+  await page.getByLabel(/Temperatura en el centro del producto/).fill('72');
+  await expect(page.getByText('72 °C: alcanza la referencia')).toBeVisible();
+  // H-A1: con huevo fresco la referencia sube a 75 °C.
+  await page.getByText(/Lleva huevo fresco/).click();
+  await expect(page.getByText('72 °C: no llega a 75 °C')).toBeVisible();
+  await page.getByText(/Lleva huevo fresco/).click();
   await page.getByLabel(/Temperatura en el centro del producto/).fill('60');
-  await expect(page.getByText('60 °C: no llega a 65 °C')).toBeVisible();
+  await expect(page.getByText('60 °C: no llega a 70 °C')).toBeVisible();
   await page.getByRole('button', { name: 'Se prolongó la cocción hasta alcanzar la temperatura' }).click();
   await page.getByRole('button', { name: 'Guardar con acción correctora' }).click();
   await expect(page.getByTestId('record-saved')).toContainText('Guardado, con alerta');
@@ -173,7 +184,10 @@ test('cocinado y enfriamiento en la web: alerta por debajo de la referencia; enf
   await expect(page.getByLabel('Producto', { exact: true }).or(nueva)).toBeVisible();
   if (await nueva.isVisible()) await nueva.click();
   await page.getByLabel('Producto', { exact: true }).fill('Caldo e2e');
-  await page.getByLabel(/Temperatura al empezar/).fill('78');
+  // H-M3: por debajo de 60 °C se pide el motivo.
+  await page.getByLabel(/Temperatura al empezar/).fill('50');
+  await expect(page.getByText('50 °C: por debajo de 60 °C')).toBeVisible();
+  await page.getByRole('button', { name: 'Ya venía templado' }).click();
   await page.getByRole('button', { name: 'Empezar el enfriamiento' }).click();
   await expect(page.getByTestId('cooling-started')).toBeVisible();
   await page.goto(`${base}/hoy`);

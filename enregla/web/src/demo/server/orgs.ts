@@ -39,7 +39,7 @@ export function createOrganization(
       checksPerDay: e.checksPerDay,
       active: true,
       createdAt: input.now,
-      history: [{ validFrom: input.now, checksPerDay: e.checksPerDay, active: true }],
+      history: [{ validFrom: input.now, checksPerDay: e.checksPerDay, active: true, name: e.name }],
     });
   }
   for (const p of tpl.cleaning) {
@@ -53,7 +53,7 @@ export function createOrganization(
       items: p.items.map((i) => ({ id: uuid(), ...i })),
       active: true,
       createdAt: input.now,
-      history: [{ validFrom: input.now, frequency: p.frequency, weekday: p.weekday, monthDay: p.monthDay, active: true }],
+      history: [{ validFrom: input.now, frequency: p.frequency, weekday: p.weekday, monthDay: p.monthDay, active: true, name: p.name }],
     });
   }
   return org;

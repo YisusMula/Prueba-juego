@@ -79,7 +79,7 @@ export function CustomTemplatesPage() {
                     <span className="min-w-0 flex-1">
                       <span className="block font-bold [overflow-wrap:anywhere]">{t.name}</span>
                       <span className="block text-sm text-ink-muted">
-                        {CUSTOM_KIND_LABELS[t.kind]} · {kindDetail(t)} · {customFrequencyText(t)}
+                        {CUSTOM_KIND_LABELS[t.kind]} · {kindDetail(t)} · {customFrequencyText(t)}{t.reminderMonths ? ` · aviso si pasan ${t.reminderMonths} meses` : ''}
                       </span>
                       {!t.active ? (
                         <Badge tone="neutral" className="mt-1">
@@ -178,6 +178,7 @@ type Draft = {
   weekday: number;
   monthDay: number;
   instructions: string;
+  reminderMonths: string;
   active: boolean;
 };
 
@@ -196,6 +197,7 @@ function TemplateDialog({ template, onClose }: { template: CustomTemplate | null
     weekday: template?.weekday ?? 1,
     monthDay: template?.monthDay ?? 1,
     instructions: template?.instructions ?? '',
+    reminderMonths: template?.reminderMonths != null ? String(template.reminderMonths) : '',
     active: template?.active ?? true,
   }));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -215,6 +217,8 @@ function TemplateDialog({ template, onClose }: { template: CustomTemplate | null
     const max = d.max.trim() ? parseDecimal(d.max) : null;
     if (d.min.trim() && min == null) errs.min = 'Escribe el mínimo con números';
     if (d.max.trim() && max == null) errs.max = 'Escribe el máximo con números';
+    const rm = d.reminderMonths.trim();
+    if (rm && !/^\d{1,2}$/.test(rm)) errs.reminderMonths = 'Escribe un número de meses entre 1 y 36';
     const body = {
       name: d.name.trim(),
       kind: d.kind ?? undefined,
@@ -227,6 +231,7 @@ function TemplateDialog({ template, onClose }: { template: CustomTemplate | null
       weekday: d.frequency === 'weekly' ? d.weekday : null,
       monthDay: d.frequency === 'monthly' ? d.monthDay : null,
       instructions: d.instructions.trim() || null,
+      reminderMonths: rm ? Number(rm) : null,
       active: d.active,
     };
     const r = createCustomTemplateBody.safeParse(body);
@@ -362,6 +367,14 @@ function TemplateDialog({ template, onClose }: { template: CustomTemplate | null
           </div>
           <Field label="Instrucciones" optional hint="Se muestran al registrarlo (en la web y en la tablet).">
             <Textarea value={d.instructions} onChange={(e) => set('instructions', e.target.value)} maxLength={1000} rows={2} />
+          </Field>
+          <Field
+            label="Avisar si pasan estos meses sin registrarlo"
+            optional
+            error={errors.reminderMonths}
+            hint="Para controles poco frecuentes, como la verificación de termómetros (cada 6 meses). Sale como alerta en «Hoy»."
+          >
+            <Input inputMode="numeric" value={d.reminderMonths} onChange={(e) => set('reminderMonths', e.target.value)} maxLength={2} className="max-w-32" />
           </Field>
           {template ? <Switch checked={d.active} onChange={(v) => set('active', v)} label="Activo" description="Si lo desactivas, deja de pedirse y sus registros se conservan." /> : null}
           {general ? (

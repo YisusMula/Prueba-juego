@@ -11,6 +11,14 @@
  *             ≤ 8 °C (< 24 h) · 30.4 congelación ≤ −18 °C · 30.6 enfriamiento de 60 °C a 10 °C en menos de
  *             2 horas · 30.7 recalentamiento ≥ 74 °C en el centro durante al menos 15 s (se admiten
  *             temperaturas inferiores si son equivalentes).
+ *  [AND]    «Requisitos simplificados de higiene: guía orientativa para la implantación del sistema de
+ *           autocontrol en ciertos establecimientos alimentarios», Consejería de Salud de la Junta de
+ *           Andalucía, 2.ª ed., 2010: https://cdn.juntadeandalucia.es/export/drupaljda/salud_5aeb2cc7219a1_guia_higiene_04.pdf
+ *           · «Cocinado de alimentos: se recomienda alcanzar siempre los 70ºC en el interior de las piezas
+ *             (75ºC si se utilizan huevos frescos)».
+ *  [AESAN]  Agencia Española de Seguridad Alimentaria y Nutrición, «Prevenir intoxicaciones alimentarias
+ *           en verano»: https://www.aesan.gob.es/AECOSAN/web/noticias_y_actualizaciones/temas_de_interes/campania_verano.htm
+ *           · «un mínimo de 70 °C en el centro del producto, al menos durante 2 minutos».
  *  [EUS]    Plan genérico de autocontrol en hostelería, Gobierno Vasco:
  *           https://www.euskadi.eus/contenidos/informacion/comedores_colectivos/es_def/adjuntos/Plan-generico-hosteleria.pdf
  *           · Temperatura de cocinado: 65 °C en el centro · Regeneración: 70 °C en el centro ·
@@ -36,42 +44,55 @@ import { z } from 'zod';
 export interface ReferenceValues {
   /** Cocinado: temperatura mínima en el centro del producto (°C). */
   cookingMinTemp: number;
+  /** Cocinado de platos con huevo fresco: temperatura mínima en el centro (°C). */
+  cookingEggMinTemp: number;
   /** Regeneración (recalentamiento): temperatura mínima en el centro del producto (°C). */
   reheatMinTemp: number;
   /** Enfriamiento rápido: temperatura máxima al terminar (°C). */
   coolingTargetTemp: number;
   /** Enfriamiento rápido: tiempo máximo (minutos). */
   coolingMaxMinutes: number;
+  /** Enfriamiento rápido: temperatura de partida de referencia (°C); por debajo se pide el motivo. */
+  coolingStartTemp: number;
 }
 
 /** Valores por defecto (orientativos). Ver la cabecera del fichero para la fuente de cada uno. */
 export const REFERENCE_DEFAULTS: ReferenceValues = {
-  // [EUS] «Temperatura de cocinado»: 65 °C en el centro. La normativa estatal no fija una cifra.
-  cookingMinTemp: 65,
+  // [AND] y [AESAN]: 70 °C en el centro (AESAN: durante al menos 2 minutos). La normativa estatal no fija
+  // una cifra; [EUS] y [VAL] usan 65 °C, el valor más bajo de las guías, que no se toma por defecto.
+  cookingMinTemp: 70,
+  // [AND]: 75 °C si se utilizan huevos frescos.
+  cookingEggMinTemp: 75,
   // [RD1086] art. 30.7 (y [MAD]): 74 °C en el centro durante al menos 15 s. [EUS] usa 70 °C y [VAL] 65 °C.
   reheatMinTemp: 74,
   // [RD1086] art. 30.6, [EUS], [VAL], [MAD]: de 60 °C a 10 °C en menos de 2 horas.
   coolingTargetTemp: 10,
   coolingMaxMinutes: 120,
+  // [RD1086] art. 30.6: el enfriamiento se mide desde 60 °C.
+  coolingStartTemp: 60,
 };
 
-/** Temperatura de partida de referencia del enfriamiento ([RD1086] art. 30.6): solo informativa. */
+/** Compatibilidad: temperatura de partida de referencia del enfriamiento por defecto. */
 export const COOLING_REFERENCE_START_TEMP = 60;
 
 /** Márgenes admitidos al cambiar los valores (evitan errores de tecleo, no son criterios sanitarios). */
 export const REFERENCE_BOUNDS: Record<keyof ReferenceValues, { min: number; max: number; unit: string; label: string }> = {
-  cookingMinTemp: { min: 50, max: 100, unit: '°C', label: 'Cocinado: temperatura mínima en el centro del producto' },
-  reheatMinTemp: { min: 60, max: 100, unit: '°C', label: 'Regeneración: temperatura mínima en el centro del producto' },
+  cookingMinTemp: { min: 65, max: 100, unit: '°C', label: 'Cocinado: temperatura mínima en el centro del producto' },
+  cookingEggMinTemp: { min: 70, max: 100, unit: '°C', label: 'Cocinado con huevo fresco: temperatura mínima en el centro' },
+  reheatMinTemp: { min: 70, max: 100, unit: '°C', label: 'Regeneración: temperatura mínima en el centro del producto' },
   coolingTargetTemp: { min: 0, max: 15, unit: '°C', label: 'Enfriamiento rápido: temperatura máxima al terminar' },
   coolingMaxMinutes: { min: 30, max: 360, unit: 'min', label: 'Enfriamiento rápido: tiempo máximo' },
+  coolingStartTemp: { min: 50, max: 75, unit: '°C', label: 'Enfriamiento rápido: temperatura de partida de referencia' },
 };
 
 /** Fuente legible de cada valor por defecto (se muestra junto al campo en Ajustes). */
 export const REFERENCE_SOURCES: Record<keyof ReferenceValues, string> = {
-  cookingMinTemp: 'Plan genérico de autocontrol en hostelería del Gobierno Vasco (65 °C en el centro). La normativa estatal no fija una cifra.',
+  cookingMinTemp: 'Guía de autocontrol de la Junta de Andalucía (70 °C en el interior) y AESAN (70 °C en el centro durante al menos 2 minutos). La normativa estatal no fija una cifra.',
+  cookingEggMinTemp: 'Guía de autocontrol de la Junta de Andalucía: 75 °C si se utilizan huevos frescos.',
   reheatMinTemp: 'RD 1086/2020, art. 30.7: al menos 74 °C en el centro durante 15 s (admite valores inferiores equivalentes; el plan vasco usa 70 °C).',
   coolingTargetTemp: 'RD 1086/2020, art. 30.6: de 60 °C a 10 °C en menos de dos horas.',
   coolingMaxMinutes: 'RD 1086/2020, art. 30.6: de 60 °C a 10 °C en menos de dos horas.',
+  coolingStartTemp: 'RD 1086/2020, art. 30.6: el enfriamiento se cuenta desde 60 °C; si empieza más frío, se anota el motivo.',
 };
 
 const bounded = (k: keyof ReferenceValues) => {
@@ -85,9 +106,11 @@ const bounded = (k: keyof ReferenceValues) => {
 export const referenceValuesBody = z
   .object({
     cookingMinTemp: bounded('cookingMinTemp').nullable(),
+    cookingEggMinTemp: bounded('cookingEggMinTemp').nullable(),
     reheatMinTemp: bounded('reheatMinTemp').nullable(),
     coolingTargetTemp: bounded('coolingTargetTemp').nullable(),
     coolingMaxMinutes: bounded('coolingMaxMinutes').nullable(),
+    coolingStartTemp: bounded('coolingStartTemp').nullable(),
   })
   .partial()
   .strict();
@@ -116,6 +139,8 @@ export interface SuggestedTemplate {
   min?: number | null;
   max?: number | null;
   frequency: 'daily' | 'weekly' | 'monthly' | 'on_demand';
+  /** Avisar si pasan estos meses sin registrarlo. */
+  reminderMonths?: number | null;
   timesPerDay?: number;
   weekday?: number | null;
   monthDay?: number | null;
@@ -150,8 +175,9 @@ export const SUGGESTED_TEMPLATES: SuggestedTemplate[] = [
       'Pilas y sonda en buen estado',
     ],
     frequency: 'on_demand',
+    reminderMonths: 6,
     instructions: 'Compara cada termómetro con uno de referencia (o en agua con hielo, que debe marcar 0 °C). Anota cualquier diferencia y corrígela o cambia el termómetro.',
-    when: 'Recomendado al menos cada seis meses.',
+    when: 'Avisa si pasan seis meses sin registrarla.',
     source: 'Criterios de autocontrol de la Comunitat Valenciana: verificación semestral de los equipos de medida de temperatura.',
   },
   {

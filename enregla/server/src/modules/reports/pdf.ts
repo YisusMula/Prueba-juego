@@ -111,12 +111,15 @@ export interface PdfEstablishment {
 }
 
 export interface PdfMissingItem {
-  kind: 'temperatura' | 'limpieza' | 'personalizado';
+  kind: 'temperatura' | 'limpieza' | 'personalizado' | 'enfriamiento';
   name: string;
   expected: number;
   done: number;
   partial?: boolean;
   frequency: string;
+  /** El periodo aún no ha terminado: «pendiente», nunca «no consta». */
+  pending?: boolean;
+  periodEnd?: string;
 }
 
 export interface PdfSummary {
@@ -125,6 +128,8 @@ export interface PdfSummary {
   done: number;
   alerts: number;
   alertsWithAction: number;
+  /** Enfriamientos del periodo sin cerrar pasado el tiempo máximo (incluidos en `alerts`, sin acción). */
+  openCoolings?: number;
   openIncidents: number;
   daysWithGaps: number;
   daysEvaluated: number;
@@ -139,6 +144,10 @@ export interface PdfVerification {
   userName: string;
   userRole: string;
   createdAt: string;
+  /** Lo que había al verificar (H-M1). */
+  snapshot?: { gapTasks: number; alertsWithoutAction: number; openCoolings: number } | null;
+  /** Registros o correcciones del periodo añadidos después de la verificación. */
+  addedAfter?: number;
 }
 
 export interface PdfInput {
@@ -162,6 +171,8 @@ export interface PdfInput {
   verifications?: PdfVerification[];
   /** Fecha local de hoy (la del día de hoy en «Tareas sin registrar» aún no ha terminado). */
   today?: string;
+  /** Tiempo máximo de enfriamiento del local: un inicio sin cerrar más allá de él se resalta como alerta. */
+  coolingMaxMinutes?: number;
 }
 
 const ROLE_LABEL: Record<string, string> = { owner: 'propietario/a', manager: 'encargado/a' };
@@ -172,23 +183,39 @@ export function verificationLine(v: PdfVerification, tz: string, period?: { from
   const what = v.kind === 'week' ? 'semana' : v.kind === 'month' ? 'mes' : 'periodo';
   const covers = period ? (v.from <= period.from && v.to >= period.to ? ' (cubre todo el periodo del informe)' : ' (cubre parte del periodo del informe)') : '';
   const comment = v.comment ? ` · Comentario: «${v.comment}»` : '';
-  return `Verificado por ${v.userName} (${ROLE_LABEL[v.userRole] ?? v.userRole}) el ${when} · ${what} del ${formatDateEs(v.from)} al ${formatDateEs(v.to)}${covers}${comment}`;
+  const pl = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const snap = v.snapshot
+    ? ` · en ese momento: ${pl(v.snapshot.gapTasks, 'tarea sin registrar', 'tareas sin registrar')}, ${pl(v.snapshot.alertsWithoutAction, 'alerta sin acción', 'alertas sin acción')}, ${pl(v.snapshot.openCoolings, 'enfriamiento sin cerrar', 'enfriamientos sin cerrar')}`
+    : '';
+  const after = v.addedAfter ? ` · registros o correcciones añadidos después de la verificación: ${v.addedAfter}` : '';
+  return `Verificado por ${v.userName} (${ROLE_LABEL[v.userRole] ?? v.userRole}) el ${when} · ${what} del ${formatDateEs(v.from)} al ${formatDateEs(v.to)}${covers}${snap}${comment}${after}`;
 }
 
 /** Texto de una tarea sin registrar (sección «Tareas sin registrar»). */
 export function missingText(m: PdfMissingItem): [string, string] {
+  if (m.kind === 'enfriamiento') return [`Enfriamiento: ${m.name}`, 'Sin cerrar: no consta el final ni la temperatura alcanzada'];
   const kind = m.kind === 'temperatura' ? 'Temperatura' : m.kind === 'limpieza' ? 'Limpieza' : 'Registro';
-  const period = m.frequency === 'weekly' ? ' (semanal: no consta en toda la semana)' : m.frequency === 'monthly' ? ' (mensual: no consta en todo el mes)' : '';
+  const periodic = m.frequency === 'weekly' || m.frequency === 'monthly';
+  const units = m.kind === 'temperatura' ? 'controles' : 'veces';
+  // H-A2: una semanal o mensual se cumple en cualquier día de su periodo; mientras no termina, «pendiente».
+  if (periodic) {
+    const word = m.frequency === 'weekly' ? 'esta semana' : 'este mes';
+    const whole = m.frequency === 'weekly' ? 'en toda la semana' : 'en todo el mes';
+    const until = m.periodEnd ? ` (hasta el ${formatDateEs(m.periodEnd)})` : '';
+    if (m.pending) return [`${kind}: ${m.name}`, `Pendiente ${word}${m.partial ? ': solo hay una limpieza parcial' : ''}`];
+    return [`${kind}: ${m.name}`, m.partial ? `Solo limpieza parcial ${whole}${until}` : `No consta ${whole}${until}`];
+  }
   const what =
     m.kind === 'limpieza'
       ? m.partial
-        ? `Solo limpieza parcial: falta completarla${period}`
-        : `Sin registrar${period}`
+        ? 'Solo limpieza parcial: falta completarla'
+        : 'Sin registrar'
       : m.expected > 1
         ? m.done > 0
-          ? `${m.done} de ${m.expected} ${m.kind === 'temperatura' ? 'controles' : 'veces'}`
-          : `Sin registrar (0 de ${m.expected} ${m.kind === 'temperatura' ? 'controles' : 'veces'})`
-        : `Sin registrar${period}`;
+          ? `${m.done} de ${m.expected} ${units}`
+          : `Sin registrar (0 de ${m.expected} ${units})`
+        : 'Sin registrar';
+  // Una diaria pendiente solo puede ser de hoy: la columna del día ya dice «(hoy: el día aún no ha terminado)».
   return [`${kind}: ${m.name}`, what];
 }
 
@@ -222,7 +249,9 @@ function groupTitle(type: RecordType, rows: ReportRecord[]): { title: string; su
     const partial = rows.filter((r) => r.data.completed !== true && !r.amended_by).length;
     return { title: String(last.planName ?? '—'), subtitle: `${items} zona(s) · ${rows.length} registro(s)${partial ? ` · ${partial} parcial(es)` : ''}` };
   }
-  const kind = last.kind === 'checklist' ? 'Lista de comprobación' : last.kind === 'numeric' ? `Valor (${rangeText(last.min, last.max, String(last.unit ?? '')).trim()})` : 'Sí / No';
+  // Cada registro guarda el rango que tenía su plantilla: se listan todos los del periodo.
+  const ranges = [...new Set(rows.map((r) => rangeText(r.data.min, r.data.max, String(r.data.unit ?? '')).trim()))];
+  const kind = last.kind === 'checklist' ? 'Lista de comprobación' : last.kind === 'numeric' ? `Valor (${ranges.join('; ')}${ranges.length > 1 ? ', cambió durante el periodo' : ''})` : 'Sí / No';
   return { title: String(last.templateName ?? '—'), subtitle: `${kind} · ${rows.length} registro(s)` };
 }
 
@@ -248,7 +277,8 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
   doc.registerFont(F.regular, FONT_PATHS.regular);
   doc.registerFont(F.bold, FONT_PATHS.bold);
   const tz = input.org.timezone;
-  const generatedAt = formatDateTimeEs(input.generatedAt ? new Date(input.generatedAt) : new Date(), tz);
+  const genTime = input.generatedAt ? new Date(input.generatedAt).getTime() : Date.now();
+  const generatedAt = formatDateTimeEs(new Date(genTime), tz);
 
   /** Pie de cada página: se dibuja al final, cuando ya se sabe cuántas páginas hay. */
   const footer = (page: number, total: number) => {
@@ -276,8 +306,9 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
   const ensure = (h: number) => {
     if (doc.y + h > bottomLimit()) doc.addPage();
   };
-  const sectionTitle = (t: string, size = 12) => {
-    ensure(50);
+  /** `room`: alto mínimo que debe quedar en la página (título, cabecera de tabla y una fila): que el título no quede solo. */
+  const sectionTitle = (t: string, size = 12, room = 95) => {
+    ensure(room);
     doc.font(F.bold).fontSize(size).fillColor(COLOR.brand).text(pdfText(t), left, doc.y, { width });
     doc.moveDown(0.3);
   };
@@ -347,6 +378,7 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
               ? `${sm.alerts}, ${sm.alerts === 1 ? 'con acción correctora' : 'todas con acción correctora'}`
               : `${sm.alerts}: ${sm.alertsWithAction} con acción correctora y ${withoutAction} sin acción indicada`,
         ],
+        ['Enfriamientos sin cerrar (pasado el tiempo máximo)', String(sm.openCoolings ?? 0)],
         ['Incidencias del periodo que siguen abiertas', String(sm.openIncidents)],
         [
           'Días con tareas sin registrar',
@@ -357,7 +389,7 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
     }
     // --- Verificación del responsable --------------------------------------------------------------
     if (input.verifications) {
-      sectionTitle('Verificación del responsable', 11);
+      sectionTitle('Verificación del responsable', 11, 60);
       if (input.verifications.length === 0) {
         doc.font(F.regular).fontSize(9).fillColor(COLOR.muted).text(pdfText('Ningún responsable ha marcado como revisado este periodo en la aplicación. Puede firmarse a mano en el espacio del final.'), left, doc.y, { width });
       } else {
@@ -375,7 +407,7 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
     // I-1: días cuyo cumplimiento mejoró por correcciones hechas en un día posterior.
     const notesWithLate = (input.dayNotes ?? []).filter((d) => d.correctedLater > 0);
     if (notesWithLate.length > 0) {
-      sectionTitle('Cumplimiento completado con correcciones posteriores', 11);
+      sectionTitle('Cumplimiento completado con correcciones posteriores', 11, 60);
       doc
         .font(F.regular)
         .fontSize(8)
@@ -540,7 +572,15 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
           const cells = formatRow(type, r, tz).map((c) => pdfText(c || '—'));
           const isAmendment = r.amends_record_id != null || r.amended_by != null;
           const partial = type === 'limpieza' && r.data.completed !== true;
-          t.drawRow(cells, { alert: r.alert, amendment: isAmendment, partial });
+          // H-A3: un enfriamiento sin cerrar pasado su tiempo máximo se resalta como una alerta.
+          const unclosed =
+            type === 'enfriamiento' &&
+            r.data.phase === 'inicio' &&
+            r.amends_record_id == null &&
+            !r.closed_by &&
+            input.coolingMaxMinutes != null &&
+            genTime - r.effective_at.getTime() >= input.coolingMaxMinutes * 60_000;
+          t.drawRow(cells, { alert: r.alert || unclosed, amendment: isAmendment, partial });
           count += 1;
           totalRows += 1;
         }
@@ -564,7 +604,7 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
 
     // --- Tareas sin registrar ----------------------------------------------------------------------
     if (sm) {
-      sectionTitle('Tareas sin registrar');
+      sectionTitle('Tareas sin registrar', 12, 130);
       doc
         .font(F.regular)
         .fontSize(8)
@@ -587,6 +627,8 @@ export function createReportPdf(input: PdfInput, onError: (err: unknown) => void
           { header: 'Qué falta', weight: 2.4 },
         ];
         const t = table(cols, () => 'Tareas sin registrar (continuación)');
+        // Que la cabecera no quede sola al final de una página.
+        ensure(60);
         table(cols, () => null).drawHeader();
         let n = 0;
         const totalItems = sm.missingDays.reduce((a, d) => a + d.items.length, 0);

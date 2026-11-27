@@ -170,6 +170,8 @@ const tplFields = {
     .nullable()
     .transform((v) => (v ? v : null)),
   active: z.boolean(),
+  /** Aviso en Hoy (y en el email) si pasan estos meses sin registrarlo; útil para «cuando ocurra». */
+  reminderMonths: z.number().int().min(1, 'Al menos 1 mes').max(36, 'Como máximo 36 meses').nullable(),
 };
 
 function checkTemplate(t: Partial<{ kind: CustomKind; items: unknown[]; min: number | null; max: number | null; frequency: CustomFrequency; weekday: number | null; monthDay: number | null }>, ctx: z.RefinementCtx) {
@@ -192,6 +194,7 @@ export const createCustomTemplateBody = z
     monthDay: tplFields.monthDay.default(null),
     instructions: tplFields.instructions.optional().transform((v) => v ?? null),
     active: tplFields.active.default(true),
+    reminderMonths: tplFields.reminderMonths.optional().transform((v) => v ?? null),
   })
   .superRefine(checkTemplate);
 

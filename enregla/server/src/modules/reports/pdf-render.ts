@@ -30,6 +30,7 @@ export interface PdfJob {
   summary?: PdfSummary;
   verifications?: PdfVerification[];
   today?: string;
+  coolingMaxMinutes?: number;
 }
 
 export type PdfWorkerReply = { ok: true; pdf: Uint8Array } | { ok: false; tooLarge: boolean; message: string };
@@ -71,6 +72,7 @@ export function renderPdfInProcess(job: PdfJob, signal?: AbortSignal): Promise<B
         summary: job.summary,
         verifications: job.verifications,
         today: job.today,
+        coolingMaxMinutes: job.coolingMaxMinutes,
       },
       () => undefined,
     );

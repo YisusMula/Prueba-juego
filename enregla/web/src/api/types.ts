@@ -99,6 +99,8 @@ export type CustomTemplate = {
   weekday: number | null;
   monthDay: number | null;
   instructions: string | null;
+  /** Avisa si pasan estos meses sin registrarlo (p. ej. verificación de termómetros cada 6). */
+  reminderMonths?: number | null;
   suggestionKey: string | null;
   source: string | null;
   active: boolean;
@@ -114,6 +116,17 @@ export type Verification = {
   comment: string | null;
   user: { id: string; name: string; role: Role };
   createdAt: string;
+  /** Foto del periodo en el momento de verificar (no cambia después). */
+  snapshot?: VerificationSnapshot | null;
+};
+export type VerificationSnapshot = {
+  gapTasks: number;
+  gapDays: number;
+  pendingTasks: number;
+  alerts: number;
+  alertsWithoutAction: number;
+  openCoolings: number;
+  records: number;
 };
 
 export type OpenCooling = {
@@ -129,13 +142,17 @@ export type OpenCooling = {
 };
 
 export type MissingTask = {
-  kind: 'temperatura' | 'limpieza' | 'personalizado';
+  kind: 'temperatura' | 'limpieza' | 'personalizado' | 'enfriamiento';
   id: string;
   name: string;
   expected: number;
   done: number;
   partial?: boolean;
   frequency: string;
+  /** El periodo (día, semana o mes) aún no ha terminado: «pendiente», no «no consta». */
+  pending?: boolean;
+  /** Último día del periodo de la tarea (para semanales y mensuales). */
+  periodEnd?: string;
 };
 
 export type Member = { userId: string; name: string; email: string; role: Role; joinedAt: string };
@@ -257,6 +274,8 @@ export type FormacionStored = {
 export type CocinadoStored = {
   product: string;
   process: CookingProcess;
+  /** Cocinado con huevo fresco: referencia más alta (75 °C por defecto). */
+  freshEgg?: boolean;
   coreTemp: number;
   minutes: number | null;
   referenceTemp: number;
@@ -264,7 +283,16 @@ export type CocinadoStored = {
   correctiveAction: string | null;
 };
 export type EnfriamientoStored =
-  | { phase: 'inicio'; product: string; startTemp: number; notes: string | null }
+  | {
+      phase: 'inicio';
+      product: string;
+      startTemp: number;
+      notes: string | null;
+      /** Temperatura de partida de referencia aplicada (60 °C por defecto) y si empezó por debajo, con motivo. */
+      startReferenceTemp?: number;
+      belowStartReference?: boolean;
+      startReason?: string | null;
+    }
   | {
       phase: 'fin';
       startRecordId: string;
@@ -373,7 +401,8 @@ export type AlertKind =
   | 'cocinado_por_debajo'
   | 'enfriamiento_fuera_de_criterio'
   | 'enfriamiento_sin_cerrar'
-  | 'registro_personalizado_no_conforme';
+  | 'registro_personalizado_no_conforme'
+  | 'registro_personalizado_vencido';
 
 export type TodayTasks = {
   date: string;
@@ -405,6 +434,10 @@ export type TodayTasks = {
     frequency: Frequency;
     status: 'done' | 'pending';
     countsToday: boolean;
+    /** Semanales y mensuales se ven todo el periodo; `dueToday` solo el día previsto. */
+    dueToday?: boolean;
+    /** Día previsto dentro del periodo actual («toca el jueves»). */
+    dueDate?: string | null;
     completedAt: string | null;
     /** Hecha solo gracias a una corrección registrada en un día posterior al del hecho. */
     correctedLater?: boolean;
@@ -421,6 +454,8 @@ export type TodayTasks = {
     done: number;
     status: 'done' | 'pending';
     countsToday: boolean;
+    dueToday?: boolean;
+    dueDate?: string | null;
     withAlert: boolean;
     lastAt: string | null;
   }[];
@@ -436,7 +471,7 @@ export type Compliance = {
   from: string;
   to: string;
   days: { date: string; expected: number; done: number; percent: number | null; correctedLater?: number; missing?: MissingTask[] }[];
-  overall: { expected: number; done: number; percent: number | null; correctedLater?: number; daysWithGaps?: number };
+  overall: { expected: number; done: number; percent: number | null; correctedLater?: number; daysWithGaps?: number; daysEvaluated?: number };
 };
 
 export type Billing = {

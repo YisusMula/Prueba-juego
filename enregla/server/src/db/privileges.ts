@@ -90,6 +90,9 @@ export async function applyAppRolePrivileges(pool: pg.Pool, role: string, opts: 
     if ((await client.query("SELECT to_regclass('public.custom_record_templates') AS t")).rows[0].t) {
       await q('REVOKE DELETE ON custom_record_templates FROM %ROLE%');
       await q('REVOKE UPDATE ON custom_record_templates FROM %ROLE%');
+      // reminder_months existe desde 0012 (se concede solo si ya está, para poder aplicar permisos entre migraciones).
+      const hasReminder = (await client.query("SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'custom_record_templates' AND column_name = 'reminder_months'")).rowCount;
+      if (hasReminder) await q('GRANT UPDATE (reminder_months) ON custom_record_templates TO %ROLE%');
       await q('GRANT UPDATE (name, items, unit, min_value, max_value, frequency, times_per_day, weekday, month_day, instructions, active, updated_at) ON custom_record_templates TO %ROLE%');
       await q('REVOKE INSERT, UPDATE, DELETE ON custom_template_config_history FROM %ROLE%');
       await q('REVOKE UPDATE, DELETE ON responsible_verifications FROM %ROLE%');

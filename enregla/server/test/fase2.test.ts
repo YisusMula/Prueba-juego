@@ -108,7 +108,7 @@ describe('datos del establecimiento', () => {
     expect(json(await o.client.get(o.base)).organization.referenceValues).toEqual(REFERENCE_DEFAULTS);
     expect((await o.client.patch(o.base, { referenceValues: { reheatMinTemp: 30 } })).statusCode).toBe(400);
     const r = json(await o.client.patch(o.base, { referenceValues: { reheatMinTemp: 70, coolingMaxMinutes: 90 } })).organization;
-    expect(r.referenceValues).toMatchObject({ reheatMinTemp: 70, coolingMaxMinutes: 90, cookingMinTemp: 65 });
+    expect(r.referenceValues).toMatchObject({ reheatMinTemp: 70, coolingMaxMinutes: 90, cookingMinTemp: 70 });
     const r2 = json(await o.client.patch(o.base, { referenceValues: { reheatMinTemp: null } })).organization;
     expect(r2.referenceValues).toMatchObject({ reheatMinTemp: 74, coolingMaxMinutes: 90 });
   });
@@ -122,9 +122,9 @@ describe('cocinado y regeneración', () => {
     const o = await setupOwner(ctx, 'coc@example.com');
     const low = await o.client.post(`${o.base}/records`, { type: 'cocinado', data: { product: 'Pollo asado', process: 'cocinado', coreTemp: 60 } });
     expect(low.statusCode).toBe(400);
-    expect(json(low).error.details[0]).toMatchObject({ path: 'data.correctiveAction', message: expect.stringMatching(/65 °C/) });
+    expect(json(low).error.details[0]).toMatchObject({ path: 'data.correctiveAction', message: expect.stringMatching(/70 °C/) });
     const ok = json(await o.client.post(`${o.base}/records`, { type: 'cocinado', data: { product: 'Pollo asado', process: 'cocinado', coreTemp: 72, minutes: 45 } })).record;
-    expect(ok).toMatchObject({ alert: false, data: { referenceTemp: 65, outOfRange: false, minutes: 45 } });
+    expect(ok).toMatchObject({ alert: false, data: { referenceTemp: 70, outOfRange: false, minutes: 45 } });
     // Regeneración a 70 °C: por debajo de 74 °C (RD 1086/2020, art. 30.7).
     const reg = await o.client.post(`${o.base}/records`, { type: 'cocinado', data: { product: 'Lentejas', process: 'regeneracion', coreTemp: 70 } });
     expect(reg.statusCode).toBe(400);
@@ -368,7 +368,7 @@ describe('verificación del responsable', () => {
       await expect(c.query('DELETE FROM responsible_verifications')).rejects.toThrow(/permission denied/);
       await expect(
         c.query(`INSERT INTO responsible_verifications (organization_id, period_from, period_to, user_id, user_name, user_role) VALUES ($1, current_date, current_date + 3, $2, 'X', 'owner')`, [o.org.id, o.user.id]),
-      ).rejects.toThrow(/fechas futuras/);
+      ).rejects.toThrow(/fechas futuras|periodo ya terminado/);
       // Plantillas: no se borran ni se atrasa su alta; el historial no se escribe a mano.
       const t = (await c.query(`INSERT INTO custom_record_templates (organization_id, name, kind, frequency, created_at) VALUES ($1, 'T', 'yesno', 'daily', now() - interval '60 days') RETURNING id, created_at`, [o.org.id])).rows[0] as { id: string; created_at: Date };
       expect(Date.now() - t.created_at.getTime()).toBeLessThan(60_000);
@@ -407,7 +407,8 @@ describe('PDF de inspección', () => {
     await ctx.deps.db.updateTable('users').set({ name: 'Laura Gil' }).where('id', '=', o.user.id).execute();
     await o.client.patch(o.base, { legalName: 'Bar La Prueba S.L.', taxId: 'B12345674', address: 'Calle Mayor 1', postalCode: '28013', city: 'Madrid', province: 'Madrid', sanitaryRegistry: '26.012345/M' });
     await backdateConfig(ctx, o.org.id);
-    const equipment = await ctx.deps.db.selectFrom('equipment').selectAll().where('organization_id', '=', o.org.id).where('checks_per_day', '>', 0).orderBy('created_at').execute();
+    // Orden determinista (backdateConfig deja la misma fecha de alta a todos): cámaras primero, por nombre.
+    const equipment = await ctx.deps.db.selectFrom('equipment').selectAll().where('organization_id', '=', o.org.id).where('type', 'in', ['camara', 'vitrina']).orderBy('name').execute();
     const plan = await ctx.deps.db.selectFrom('cleaning_plans').selectAll().where('organization_id', '=', o.org.id).where('frequency', '=', 'daily').orderBy('created_at').executeTakeFirstOrThrow();
     const tpl = json(await o.client.post(`${o.base}/custom-templates`, { name: 'Apertura', kind: 'yesno', frequency: 'on_demand' })).template;
     nowMs = FIXED_NOW.getTime() - 86_400_000;
@@ -428,7 +429,7 @@ describe('PDF de inspección', () => {
     expect(text).toContain('26.012345/M');
     expect(text).toMatch(/Alertas .*1, con acción correctora/);
     expect(text).toContain('Días con tareas sin registrar 1 de 1');
-    expect(text).toMatch(/Verificado por Laura Gil \(propietario\/a\) el .* periodo del 9 de noviembre de 2026 al 9 de noviembre de 2026 \(cubre todo el periodo del informe\) · Comentario: «Revisado con el equipo»/);
+    expect(text).toMatch(/Verificado por Laura Gil \(propietario\/a\) el .* periodo del 9 de noviembre de 2026 al 9 de noviembre de 2026 \(cubre todo el periodo del informe\) · en ese momento: \d+ tareas sin registrar, 0 alertas sin acción, 0 enfriamientos sin cerrar · Comentario: «Revisado con el equipo»/);
     // Agrupación: subtítulo por equipo con su rango, por plan, y sección de personalizados.
     expect(text).toContain(`${equipment[0]!.name} Rango configurado: máx. 4 °C`);
     expect(text).toContain(plan.name);

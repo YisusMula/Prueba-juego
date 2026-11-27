@@ -264,6 +264,10 @@ export interface EquipmentConfigHistoryTable {
   valid_from: Timestamp;
   checks_per_day: number;
   active: boolean;
+  /** Nombre y rango vigentes en ese tramo (0012). */
+  name: string | null;
+  min_temp: number | null;
+  max_temp: number | null;
 }
 
 export interface CleaningPlanConfigHistoryTable {
@@ -275,6 +279,8 @@ export interface CleaningPlanConfigHistoryTable {
   weekday: number | null;
   month_day: number | null;
   active: boolean;
+  /** Nombre vigente en ese tramo (0012). */
+  name: string | null;
 }
 
 export interface IdempotencyKeysTable {
@@ -318,6 +324,8 @@ export interface CustomRecordTemplatesTable {
   weekday: number | null;
   month_day: number | null;
   instructions: string | null;
+  /** Aviso si pasan estos meses sin registrarlo (0012). */
+  reminder_months: number | null;
   suggestion_key: string | null;
   source: string | null;
   active: Generated<boolean>;
@@ -335,6 +343,11 @@ export interface CustomTemplateConfigHistoryTable {
   weekday: number | null;
   month_day: number | null;
   active: boolean;
+  /** Nombre y rango vigentes en ese tramo (0012). */
+  name: string | null;
+  unit: string | null;
+  min_value: number | null;
+  max_value: number | null;
 }
 
 export interface ResponsibleVerificationsTable {
@@ -347,7 +360,19 @@ export interface ResponsibleVerificationsTable {
   user_id: string;
   user_name: string;
   user_role: Role;
+  /** Foto de lo que había al verificar (0012): huecos, alertas sin acción y enfriamientos sin cerrar. */
+  snapshot: Json<VerificationSnapshot | null> | null;
   created_at: Timestamp;
+}
+
+export interface VerificationSnapshot {
+  gapTasks: number;
+  gapDays: number;
+  pendingTasks: number;
+  alerts: number;
+  alertsWithoutAction: number;
+  openCoolings: number;
+  records: number;
 }
 
 export interface Database {

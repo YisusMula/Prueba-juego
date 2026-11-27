@@ -119,3 +119,26 @@ export function numberFieldError(text: string, opts: { notNumber: string; min: n
   if (n == null) return opts.notNumber;
   return n < opts.min || n > opts.max ? opts.outOfRange : null;
 }
+
+/** «lunes»… para una fecha AAAA-MM-DD. */
+export const weekdayOf = (date: string) => WEEKDAYS[(new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7]!;
+
+/**
+ * Tarea semanal o mensual que se ve todo su periodo (H-A2): «Toca hoy», «Toca el jueves»,
+ * «Tocaba el lunes: aún a tiempo esta semana». Diaria: «Toca hoy».
+ */
+export function periodDueText(frequency: string, dueDate: string | null | undefined, today: string): string {
+  if (frequency !== 'weekly' && frequency !== 'monthly') return 'Toca hoy';
+  const period = frequency === 'weekly' ? 'esta semana' : 'este mes';
+  if (!dueDate) return `Toca ${period}`;
+  const when = frequency === 'weekly' ? `el ${weekdayOf(dueDate)}` : `el día ${Number(dueDate.slice(8))}`;
+  if (dueDate === today) return `Toca hoy (cuenta si se hace ${period})`;
+  if (dueDate > today) return `Toca ${when} (cuenta si se hace cualquier día de ${period})`;
+  return `Tocaba ${when}: aún a tiempo ${period}`;
+}
+
+/** Hora de inicio de un enfriamiento; con la fecha si empezó otro día. */
+export function startedAtText(iso: string, tz: string | undefined): string {
+  const day = localDateIn(tz, new Date(iso));
+  return day === localDateIn(tz) ? `a las ${formatTime(iso, tz)}` : `el ${formatLocalDate(day, { day: 'numeric', month: 'short' })} a las ${formatTime(iso, tz)}`;
+}

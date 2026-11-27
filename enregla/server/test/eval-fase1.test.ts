@@ -105,11 +105,12 @@ describe.skipIf(!APP_URL)('#2 / #3 rol de ejecución de la app', () => {
   });
 
   it('#3 la hora y el orden de un registro los pone PostgreSQL; auditoría e historial no se reescriben', async () => {
-    const { org, fridge } = await orgWithRecords();
+    const { org, fridge, user } = await orgWithRecords();
+    // 0012: el autor tiene que ser un miembro real del local.
     const r = await app.query(
       `INSERT INTO records (organization_id, type, data, user_id, user_name, equipment_id, created_at, seq)
-       VALUES ($1, 'temperatura', '{"value": 2}', gen_random_uuid(), 'x', $2, now() - interval '10 days', 1) RETURNING created_at, effective_at, seq`,
-      [org.id, fridge.id],
+       VALUES ($1, 'temperatura', '{"value": 2}', $3, 'x', $2, now() - interval '10 days', 1) RETURNING created_at, effective_at, seq`,
+      [org.id, fridge.id, user.id],
     ).catch((e: Error) => e);
     if (r instanceof Error) {
       // Sin permiso sobre seq también vale: no puede fijar el orden.

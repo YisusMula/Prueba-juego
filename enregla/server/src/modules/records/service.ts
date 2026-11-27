@@ -289,13 +289,15 @@ async function prepare(db: DB, type: S.RecordType, raw: unknown, pc: PrepareCtx)
     case 'cocinado': {
       const d = parseData(S.cocinadoData, raw);
       const refs = S.effectiveReferenceValues(pc.org.reference_values);
-      const referenceTemp = d.process === 'cocinado' ? refs.cookingMinTemp : refs.reheatMinTemp;
+      // Cocinado: 70 °C (75 °C con huevo fresco); regeneración: 74 °C. Siempre la del local, orientativa.
+      const freshEgg = d.process === 'cocinado' && d.freshEgg === true;
+      const referenceTemp = d.process === 'cocinado' ? (freshEgg ? refs.cookingEggMinTemp : refs.cookingMinTemp) : refs.reheatMinTemp;
       const outOfRange = d.coreTemp < referenceTemp;
       if (outOfRange && !d.correctiveAction) {
-        throw validationError('data.correctiveAction', `No llega a la temperatura de referencia (${S.esNumber(referenceTemp)} °C en el centro): indica la acción correctora`);
+        throw validationError('data.correctiveAction', `No llega a la temperatura de referencia (${S.esNumber(referenceTemp)} °C en el centro${freshEgg ? ', con huevo fresco' : ''}): indica la acción correctora`);
       }
       return {
-        data: { product: d.product, process: d.process, coreTemp: d.coreTemp, minutes: d.minutes ?? null, referenceTemp, outOfRange, correctiveAction: d.correctiveAction },
+        data: { product: d.product, process: d.process, freshEgg, coreTemp: d.coreTemp, minutes: d.minutes ?? null, referenceTemp, outOfRange, correctiveAction: d.correctiveAction },
         alert: outOfRange,
         equipmentId: null,
         cleaningPlanId: null,
@@ -308,8 +310,22 @@ async function prepare(db: DB, type: S.RecordType, raw: unknown, pc: PrepareCtx)
         throw validationError('data.phase', d.phase === 'fin' ? 'Este registro es el inicio de un enfriamiento: corrige el inicio, no lo cierres aquí' : 'Este registro es el cierre de un enfriamiento: corrige el cierre');
       }
       if (d.phase === 'inicio') {
+        // H-M3: el criterio es de 60 °C a 10 °C; si empieza más frío, se anota por qué.
+        const startRef = (previous?.data as { startReferenceTemp?: number } | undefined)?.startReferenceTemp ?? S.effectiveReferenceValues(pc.org.reference_values).coolingStartTemp;
+        const belowStartReference = d.startTemp < startRef;
+        if (belowStartReference && !d.startReason) {
+          throw validationError('data.startReason', `Empieza por debajo de ${S.esNumber(startRef)} °C (referencia orientativa): indica el motivo (por ejemplo, «ya venía templado»)`);
+        }
         return {
-          data: { phase: 'inicio', product: d.product, startTemp: d.startTemp, notes: d.notes },
+          data: {
+            phase: 'inicio',
+            product: d.product,
+            startTemp: d.startTemp,
+            startReferenceTemp: startRef,
+            belowStartReference,
+            startReason: belowStartReference ? d.startReason : null,
+            notes: d.notes,
+          },
           alert: false,
           equipmentId: null,
           cleaningPlanId: null,
@@ -335,14 +351,15 @@ async function prepare(db: DB, type: S.RecordType, raw: unknown, pc: PrepareCtx)
       const discarded = d.discarded === true;
       if (!discarded && d.endTemp == null) throw validationError('data.endTemp', 'Escribe la temperatura al terminar el enfriamiento');
       const overTemp = !discarded && d.endTemp != null && d.endTemp > targetTemp;
-      const overTime = minutes > maxMinutes;
+      // «En menos de dos horas»: llegar justo al máximo ya no cumple.
+      const overTime = endedAt.getTime() - root.effective_at.getTime() >= maxMinutes * 60_000;
       const outOfRange = discarded || overTemp || overTime;
       if (outOfRange && !d.correctiveAction) {
         throw validationError(
           'data.correctiveAction',
           discarded
             ? 'Indica qué se ha hecho con el producto (por ejemplo, «Desechado»)'
-            : `No cumple el criterio de referencia (${S.esNumber(targetTemp)} °C o menos en ${maxMinutes} minutos o menos): indica la acción correctora`,
+            : `No cumple el criterio de referencia (${S.esNumber(targetTemp)} °C o menos en menos de ${maxMinutes} minutos): indica la acción correctora`,
         );
       }
       return {

@@ -182,11 +182,12 @@ function prepare(db: DemoState, org: DOrg, type: RecordType, raw: unknown, today
     case 'cocinado': {
       const d = parse(S.cocinadoData, raw, ['data']);
       const refs = S.effectiveReferenceValues(org.referenceValues);
-      const referenceTemp = d.process === 'cocinado' ? refs.cookingMinTemp : refs.reheatMinTemp;
+      const freshEgg = d.process === 'cocinado' && d.freshEgg === true;
+      const referenceTemp = d.process === 'cocinado' ? (freshEgg ? refs.cookingEggMinTemp : refs.cookingMinTemp) : refs.reheatMinTemp;
       const outOfRange = d.coreTemp < referenceTemp;
-      if (outOfRange && !d.correctiveAction) throw validationError('data.correctiveAction', `No llega a la temperatura de referencia (${S.esNumber(referenceTemp)} °C en el centro): indica la acción correctora`);
+      if (outOfRange && !d.correctiveAction) throw validationError('data.correctiveAction', `No llega a la temperatura de referencia (${S.esNumber(referenceTemp)} °C en el centro${freshEgg ? ', con huevo fresco' : ''}): indica la acción correctora`);
       return {
-        data: { product: d.product, process: d.process, coreTemp: d.coreTemp, minutes: d.minutes ?? null, referenceTemp, outOfRange, correctiveAction: d.correctiveAction },
+        data: { product: d.product, process: d.process, freshEgg, coreTemp: d.coreTemp, minutes: d.minutes ?? null, referenceTemp, outOfRange, correctiveAction: d.correctiveAction },
         alert: outOfRange,
         equipmentId: null,
         cleaningPlanId: null,
@@ -196,7 +197,20 @@ function prepare(db: DemoState, org: DOrg, type: RecordType, raw: unknown, today
       const d = parse(S.enfriamientoData, raw, ['data']);
       const prevPhase = previous?.data.phase;
       if (previous && prevPhase !== d.phase) throw validationError('data.phase', d.phase === 'fin' ? 'Este registro es el inicio de un enfriamiento: corrige el inicio, no lo cierres aquí' : 'Este registro es el cierre de un enfriamiento: corrige el cierre');
-      if (d.phase === 'inicio') return { data: { phase: 'inicio', product: d.product, startTemp: d.startTemp, notes: d.notes }, alert: false, equipmentId: null, cleaningPlanId: null };
+      if (d.phase === 'inicio') {
+        // H-M3: se cuenta desde 60 °C; si empieza más frío, se anota el motivo.
+        const startRef = (previous?.data as { startReferenceTemp?: number } | undefined)?.startReferenceTemp ?? S.effectiveReferenceValues(org.referenceValues).coolingStartTemp;
+        const belowStartReference = d.startTemp < startRef;
+        if (belowStartReference && !d.startReason) {
+          throw validationError('data.startReason', `Empieza por debajo de ${S.esNumber(startRef)} °C (referencia orientativa): indica el motivo (por ejemplo, «ya venía templado»)`);
+        }
+        return {
+          data: { phase: 'inicio', product: d.product, startTemp: d.startTemp, startReferenceTemp: startRef, belowStartReference, startReason: belowStartReference ? d.startReason : null, notes: d.notes },
+          alert: false,
+          equipmentId: null,
+          cleaningPlanId: null,
+        };
+      }
       const root = chainRoot(db, orgId, d.startRecordId);
       if (!root || root.type !== 'enfriamiento' || root.data.phase !== 'inicio') throw notFound('Enfriamiento');
       if (previous && previous.relatedRecordId !== root.id) throw validationError('data.startRecordId', 'Una corrección del cierre no puede cambiar de enfriamiento');
@@ -211,12 +225,13 @@ function prepare(db: DemoState, org: DOrg, type: RecordType, raw: unknown, today
       const discarded = d.discarded === true;
       if (!discarded && d.endTemp == null) throw validationError('data.endTemp', 'Escribe la temperatura al terminar el enfriamiento');
       const overTemp = !discarded && d.endTemp != null && d.endTemp > targetTemp;
-      const overTime = minutes > maxMinutes;
+      // «En menos de dos horas»: llegar justo al máximo ya no cumple.
+      const overTime = endedAt - root.effectiveAt >= maxMinutes * 60_000;
       const outOfRange = discarded || overTemp || overTime;
       if (outOfRange && !d.correctiveAction) {
         throw validationError(
           'data.correctiveAction',
-          discarded ? 'Indica qué se ha hecho con el producto (por ejemplo, «Desechado»)' : `No cumple el criterio de referencia (${S.esNumber(targetTemp)} °C o menos en ${maxMinutes} minutos o menos): indica la acción correctora`,
+          discarded ? 'Indica qué se ha hecho con el producto (por ejemplo, «Desechado»)' : `No cumple el criterio de referencia (${S.esNumber(targetTemp)} °C o menos en menos de ${maxMinutes} minutos): indica la acción correctora`,
         );
       }
       return {

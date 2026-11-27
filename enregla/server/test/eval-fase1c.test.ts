@@ -62,8 +62,9 @@ describe('R2 reloj del servidor', () => {
       const rec = (
         await c.query(
           `INSERT INTO records (organization_id, type, data, user_id, user_name, equipment_id)
-           VALUES ($1, 'temperatura', $2, gen_random_uuid(), 'x', $3) RETURNING created_at, effective_at`,
-          [o.org.id, JSON.stringify({ equipmentId: fridge.id, value: 2 }), fridge.id],
+           VALUES ($1, 'temperatura', $2, $4, 'x', $3) RETURNING created_at, effective_at`,
+          // 0012: el autor debe ser un miembro real del local (su nombre lo pone la base de datos).
+          [o.org.id, JSON.stringify({ equipmentId: fridge.id, value: 2 }), fridge.id, o.user.id],
         )
       ).rows[0] as { created_at: Date; effective_at: Date };
       const ev = (await c.query("INSERT INTO audit_events (event) VALUES ('auth.login') RETURNING created_at")).rows[0] as { created_at: Date };
@@ -521,6 +522,16 @@ describe.skipIf(!ADMIN_URL || !APP_URL || !PG_TOOLS)('R1 / R10 restauración (ba
         expect(await col('custom_record_templates', 'created_at')).toBe(false);
         expect(await col('custom_record_templates', 'kind')).toBe(false);
         expect(await col('custom_record_templates', 'organization_id')).toBe(false);
+        // 0012: el aviso «cada N meses» se puede editar; la foto de la verificación, no; y el
+        // historial con nombre y rango sobrevive a la restauración sin ser escribible por la app.
+        expect(await col('custom_record_templates', 'reminder_months')).toBe(true);
+        expect(await col('responsible_verifications', 'snapshot')).toBe(false);
+        expect(await col('responsible_verifications', 'user_name')).toBe(false);
+        for (const [t, c] of [['equipment_config_history', 'name'], ['equipment_config_history', 'max_temp'], ['cleaning_plan_config_history', 'name'], ['custom_template_config_history', 'name'], ['custom_template_config_history', 'max_value']] as const) {
+          expect(await col(t, c), `${t}.${c}`).toBe(false);
+        }
+        const migs = (await chk.query<{ id: string }>('SELECT version AS id FROM schema_migrations ORDER BY version')).rows.map((r) => r.id);
+        expect(migs.some((m) => m.startsWith('0012'))).toBe(true);
         const db = (await chk.query<{ tmp: boolean; create: boolean }>(
           "SELECT has_database_privilege('public', current_database(), 'TEMPORARY') AS tmp, has_database_privilege('public', current_database(), 'CREATE') AS create",
         )).rows[0]!;

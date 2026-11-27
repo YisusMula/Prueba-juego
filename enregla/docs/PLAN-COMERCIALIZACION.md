@@ -86,7 +86,7 @@ Son los fallos que dañarían la confianza de un inspector o pondrían en riesgo
 
 ### 2A. El PDF como documento de inspección (4–5 días)
 
-> **Estado: hecho el 27 de noviembre de 2026** (migración 0011): datos del establecimiento en Ajustes y en el alta guiada, portada y resumen, tareas sin registrar por día (PDF e Informes), limpiezas parciales señaladas, agrupación por equipo, plan y registro, «Página X de Y» y verificación del responsable inmutable con espacio de firma. Pendiente de la evaluación independiente de la fase 2.
+> **Estado: hecho el 27 de noviembre de 2026** (migración 0011): datos del establecimiento en Ajustes y en el alta guiada, portada y resumen, tareas sin registrar por día (PDF e Informes), limpiezas parciales señaladas, agrupación por equipo, plan y registro, «Página X de Y» y verificación del responsable inmutable con espacio de firma. Primera evaluación independiente: «no bueno»; corregido el mismo día (migración 0012): la verificación solo cubre periodos terminados y guarda la foto del momento (huecos, alertas sin acción, enfriamientos sin cerrar), el PDF dice lo añadido después, las semanales y mensuales no salen como «no consta» mientras su periodo no termina, y los nombres y rangos son los vigentes cada día. Pendiente de una nueva evaluación.
 
 Es lo que el cliente enseña. Hoy obtiene un 5,5.
 
@@ -101,7 +101,7 @@ Es lo que el cliente enseña. Hoy obtiene un 5,5.
 
 ### 2B. Registros que piden las guías oficiales (4–6 días)
 
-> **Estado: hecho el 27 de noviembre de 2026**: cocinado y regeneración, enfriamiento rápido en dos registros (en curso hasta cerrarlo), registros personalizados con vigencia histórica y cuatro sugeridos, también en la tablet y en la demo; valores orientativos y configurables, revisados con su fuente en [`VALORES-DE-REFERENCIA.md`](VALORES-DE-REFERENCIA.md) (RD 1086/2020 art. 30, RD 3/2023 y guías del País Vasco, la Comunitat Valenciana y la Comunidad de Madrid). Las guías de otras comunidades no se han revisado fila a fila. Pendiente de la evaluación independiente de la fase 2.
+> **Estado: hecho el 27 de noviembre de 2026**: cocinado y regeneración, enfriamiento rápido en dos registros (en curso hasta cerrarlo), registros personalizados con vigencia histórica y cuatro sugeridos, también en la tablet y en la demo; valores orientativos y configurables, revisados con su fuente en [`VALORES-DE-REFERENCIA.md`](VALORES-DE-REFERENCIA.md) (RD 1086/2020 art. 30, RD 3/2023 y guías del País Vasco, la Comunitat Valenciana y la Comunidad de Madrid). Las guías de otras comunidades no se han revisado fila a fila. Tras la primera evaluación (0012): cocinado a 70 °C (75 °C con huevo fresco) según la guía andaluza y AESAN, partida del enfriamiento a 60 °C con motivo si es menor, enfriamientos sin cerrar como alerta, aviso de verificación de termómetros cada 6 meses y registro personalizado con botones grandes en la tablet. Pendiente de una nueva evaluación.
 
 - **Cocinado y regeneración**: temperatura en el centro del producto (≥ 70 °C para regenerar según el plan genérico vasco; usar los valores de la normativa vigente y dejarlos configurables).
 - **Enfriamiento rápido**: hora y temperatura de inicio y fin.

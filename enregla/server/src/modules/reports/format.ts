@@ -137,7 +137,7 @@ export const COLUMNS: Record<RecordType, Column[]> = {
     { header: 'Producto', weight: 1.6 },
     { header: 'Proceso', weight: 1 },
     { header: 'T.ª en el centro', weight: 0.8 },
-    { header: 'Referencia', weight: 0.8 },
+    { header: 'Referencia orientativa del local', weight: 1 },
     { header: 'Tiempo', weight: 0.6 },
     { header: 'Firma', weight: 1.1 },
     { header: 'Acción correctora', weight: 1.7 },
@@ -192,13 +192,18 @@ export function customDetail(d: Record<string, unknown>): string {
 
 /** Texto de temperaturas y tiempos de un registro de enfriamiento (inicio o cierre). */
 function coolingTemps(d: Record<string, unknown>): string {
-  if (d.phase === 'inicio') return `Inicio: ${pdfNum(d.startTemp)} °C`;
+  if (d.phase === 'inicio') {
+    const below = d.belowStartReference
+      ? ` (por debajo de ${pdfNum(d.startReferenceTemp)} °C (referencia orientativa); motivo: ${str(d.startReason)})`
+      : '';
+    return `Inicio: ${pdfNum(d.startTemp)} °C${below}`;
+  }
   const end = d.discarded ? (typeof d.endTemp === 'number' ? `${pdfNum(d.endTemp)} °C (desechado)` : 'Desechado sin medir') : `${pdfNum(d.endTemp)} °C`;
   return `Inicio: ${typeof d.startTemp === 'number' ? `${pdfNum(d.startTemp)} °C` : '—'} → fin: ${end}`;
 }
 function coolingTime(d: Record<string, unknown>, tz: string): string {
   if (d.phase === 'inicio') return '';
-  const crit = `criterio: ≤ ${pdfNum(d.targetTemp)} °C en ≤ ${str(d.maxMinutes)} min`;
+  const crit = `criterio orientativo: ≤ ${pdfNum(d.targetTemp)} °C en menos de ${str(d.maxMinutes)} min`;
   const start = typeof d.startedAt === 'string' ? `desde ${formatDateTimeEs(new Date(d.startedAt), tz)}, ` : '';
   const flags = [d.overTime ? 'fuera de tiempo' : null, d.overTemp ? 'por encima de la temperatura' : null].filter(Boolean).join(', ');
   return `${start}${str(d.minutes)} min (${crit})${flags ? `: ${flags}` : ''}`;
@@ -279,7 +284,7 @@ export function formatRow(type: RecordType, r: ReportRecord, tz: string): string
         str(d.product),
         COOKING_PROCESS_LABELS[d.process as CookingProcess] ?? str(d.process),
         `${pdfNum(d.coreTemp)} °C${d.outOfRange ? ' (no llega)' : ''}`,
-        typeof d.referenceTemp === 'number' ? `≥ ${pdfNum(d.referenceTemp)} °C` : '',
+        typeof d.referenceTemp === 'number' ? `≥ ${pdfNum(d.referenceTemp)} °C${d.freshEgg ? ' (huevo fresco)' : ''}` : '',
         typeof d.minutes === 'number' ? `${d.minutes} min` : '',
         signer(r),
         str(d.correctiveAction),
@@ -362,6 +367,9 @@ export const CSV_HEADERS = [
   'registro_personalizado',
   'resultado_personalizado',
   'detalle_personalizado',
+  // Evaluación de la fase 2: huevo fresco (cocinado) y motivo de un enfriamiento que empieza por debajo de 60 °C.
+  'huevo_fresco',
+  'motivo_inicio_enfriamiento',
 ];
 
 export function csvRow(r: ReportRecord, tz: string): string[] {
@@ -430,6 +438,8 @@ export function csvRow(r: ReportRecord, tz: string): string[] {
     registro_personalizado: r.type === 'personalizado' ? str(d.templateName) : '',
     resultado_personalizado: r.type === 'personalizado' ? customResult(d).replace('−', '-') : '',
     detalle_personalizado: r.type === 'personalizado' ? customDetail(d).replace(/−/g, '-') : '',
+    huevo_fresco: r.type === 'cocinado' ? (d.freshEgg ? 'sí' : 'no') : '',
+    motivo_inicio_enfriamiento: r.type === 'enfriamiento' && d.belowStartReference ? str(d.startReason) : '',
   };
   return CSV_HEADERS.map((h) => row[h] ?? '');
 }

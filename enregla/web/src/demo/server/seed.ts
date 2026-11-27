@@ -8,7 +8,7 @@ import { correctiveActionsFor } from '../../../../server/src/scripts/seed-action
 import type { AllergenMap, RecordType } from '@/api/types';
 import { STATE_VERSION, type DemoState, type DRecord, type DStaff, type DTemplate } from './state';
 import { createOrganization } from './orgs';
-import { isDue } from './tasks';
+import { isDue, periodSnapshot } from './tasks';
 import { newDeviceToken, uuid } from './ids';
 import { addDays, isoWeekday, localDate, localHour, localInstant } from './time';
 
@@ -94,11 +94,12 @@ export function seedDemo(nowMs = Date.now()): DemoState {
       max: t.max ?? null,
       ...freq,
       instructions: t.instructions,
+      reminderMonths: t.reminderMonths ?? null,
       suggestionKey: t.key,
       source: t.source,
       active: true,
       createdAt: startTs,
-      history: [{ validFrom: startTs, ...freq, active: true }],
+      history: [{ validFrom: startTs, ...freq, active: true, name: t.name }],
     };
   });
   db.templates.push(...templates);
@@ -255,6 +256,7 @@ export function seedDemo(nowMs = Date.now()): DemoState {
     push(date, 13, 'cocinado', {
       product: pick(['Pollo asado', 'Albóndigas en salsa', 'Merluza al horno', 'Hamburguesa de ternera', 'Tortilla de patata']),
       process: 'cocinado',
+      freshEgg: false,
       coreTemp: lowCook ? 61.5 : round1(70 + rand() * 12),
       minutes: 20 + Math.floor(rand() * 40),
       referenceTemp: REFERENCE_DEFAULTS.cookingMinTemp,
@@ -275,10 +277,20 @@ export function seedDemo(nowMs = Date.now()): DemoState {
     }
     if (i % 3 === 1 || date === today) {
       const product = pick(['Caldo de ave', 'Fondo oscuro', 'Arroz para ensalada', 'Salsa de tomate']);
-      const startTemp = round1(68 + rand() * 12);
+      // Un día empieza ya templado (por debajo de 60 °C): se anota el motivo (H-M3).
+      const warm = i === 7;
+      const startTemp = warm ? 52 : round1(68 + rand() * 12);
       const startHour = date === today ? Math.max(0, nowHour - 1) : 16;
       const before = rows.length;
-      push(date, startHour, 'enfriamiento', { phase: 'inicio', product, startTemp, notes: 'En abatidor' });
+      push(date, startHour, 'enfriamiento', {
+        phase: 'inicio',
+        product,
+        startTemp,
+        startReferenceTemp: REFERENCE_DEFAULTS.coolingStartTemp,
+        belowStartReference: warm,
+        startReason: warm ? 'Ya venía templado: sobrante del servicio de mediodía' : null,
+        notes: 'En abatidor',
+      });
       if (rows.length > before && date !== today) {
         const st = rows[rows.length - 1]!;
         const slow = i === 13;
@@ -447,6 +459,7 @@ export function seedDemo(nowMs = Date.now()): DemoState {
       userName: user.name,
       userRole: 'owner',
       createdAt: localInstant(addDays(to, 1), TZ, 10, 15),
+      snapshot: periodSnapshot(db, org, from, to, localInstant(addDays(to, 1), TZ, 10, 15)),
     });
   }
   device.lastUsedAt = rows.filter((r) => r.deviceId === device.id).reduce((m, r) => Math.max(m, r.createdAt), 0) || null;

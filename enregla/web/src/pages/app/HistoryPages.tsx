@@ -286,7 +286,7 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
         { label: 'Producto', value: r.data.product },
         { label: 'Proceso', value: COOKING_PROCESS_LABELS[r.data.process] },
         { label: 'Temperatura en el centro', value: <span className="font-display text-2xl tabular">{formatTemp(r.data.coreTemp)}</span> },
-        { label: 'Referencia aplicada', value: `${formatTemp(r.data.referenceTemp)} o más (orientativa, configurable en Ajustes)` },
+        { label: 'Referencia aplicada', value: `${formatTemp(r.data.referenceTemp)} o más${r.data.freshEgg ? ', con huevo fresco' : ''} (orientativa, configurable en Ajustes)` },
         { label: 'Tiempo', value: r.data.minutes != null ? `${r.data.minutes} min` : '—' },
         { label: 'Resultado', value: r.data.outOfRange ? <Badge tone="bad" icon="alert">No llega a la referencia</Badge> : <Badge tone="ok" icon="check">Alcanza la referencia</Badge> },
         { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
@@ -298,6 +298,9 @@ function RecordDetails({ record: r }: { record: AppRecord }) {
           { label: 'Fase', value: 'Inicio del enfriamiento' },
           { label: 'Producto', value: r.data.product },
           { label: 'Temperatura al empezar', value: <span className="font-display text-2xl tabular">{formatTemp(r.data.startTemp)}</span> },
+          ...(r.data.belowStartReference
+            ? [{ label: 'Motivo (por debajo de la referencia)', value: `Empezó por debajo de ${formatTemp(r.data.startReferenceTemp ?? null)} (referencia orientativa): ${r.data.startReason ?? '—'}` }]
+            : []),
           { label: 'Notas', value: r.data.notes ?? '—' },
         );
       } else {

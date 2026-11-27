@@ -988,3 +988,47 @@ Cuentan en Hoy y en el cumplimiento con **vigencia histórica** (tabla `custom_t
 - Nuevo evento `db.membership_changed` (escrito por la base de datos) en cada alta en `memberships` y en cada cambio de rol (`metadata: { op, old_role, new_role, session_user, client_addr }`).
 - La base de datos rechaza en `records.data` un `supplierId` que no sea `null` o un UUID en texto de un proveedor del local, y las claves de referencia con otra capitalización (`SupplierId`, `equipmentID`…).
 
+## 25. Fase 2, bloque A: correcciones tras la evaluación (migración 0012)
+
+Lo de esta sección **sustituye** lo que diga el §24 cuando no coincidan.
+
+### 25.1 Valores de referencia
+
+`referenceValues` gana dos claves: `cookingEggMinTemp` (cocinado con huevo fresco, por defecto **75 °C**, 70–100) y `coolingStartTemp` (partida del enfriamiento, por defecto **60 °C**, 50–75). Los por defecto pasan a `{ cookingMinTemp: 70, cookingEggMinTemp: 75, reheatMinTemp: 74, coolingTargetTemp: 10, coolingMaxMinutes: 120, coolingStartTemp: 60 }` y los márgenes a cocinado 65–100 °C y regeneración 70–100 °C (fuentes: guía de la Junta de Andalucía y AESAN; detalle en `docs/VALORES-DE-REFERENCIA.md`). El `PATCH` de la organización se hace en una transacción con `SELECT … FOR UPDATE`: dos cambios a la vez de claves distintas de `referenceValues` se conservan los dos.
+
+### 25.2 Registros
+
+| Tipo | Cambio |
+|---|---|
+| `cocinado` | entrada `freshEgg?: boolean` (por defecto `false`; solo cuenta en `process: 'cocinado'`): la referencia aplicada es `cookingEggMinTemp`. Se guarda `freshEgg` y `referenceTemp` (la aplicada ese día). |
+| `enfriamiento` (inicio) | entrada `startReason?` (≤ 300). Si `startTemp < coolingStartTemp` sin `startReason` → 400 `data.startReason`. Se guarda `startReferenceTemp`, `belowStartReference` y `startReason` (`null` si no está por debajo). Una corrección conserva la referencia del original. |
+| `enfriamiento` (cierre) | `overTime` si han pasado **`maxMinutes` o más** (antes, más de): «en menos de dos horas». |
+
+La base de datos (trigger de `records`, 0012) además exige:
+- una corrección de un enfriamiento tiene la misma fase y el mismo `related_record_id` que el original (un cierre no pasa a otro inicio, un inicio no pasa a cierre);
+- con el rol de la app, `user_id` debe ser miembro del local; `user_name` se toma de `users` y `staff_name` de `staff` (lo que envíe quien inserta se ignora).
+
+### 25.3 Registros personalizados
+
+`CustomTemplate` y su cuerpo de alta y `PATCH` ganan `reminderMonths` (1–36 o `null`). La sugerencia `termometros` trae `reminderMonths: 6`. Si pasan esos meses sin un registro (o desde el alta si no hay ninguno), `GET /tasks/today` añade la alerta `registro_personalizado_vencido` (`recordId` = id de la plantilla, `message` «Verificación de termómetros: han pasado más de 6 meses desde el último registro») y el email del recordatorio la incluye.
+
+### 25.4 Hoy y cumplimiento (semanales y mensuales)
+
+- Una tarea semanal o mensual se cumple con un registro en **cualquier día de su semana o su mes**, también posterior al día que toca.
+- `GET /tasks/today`: las limpiezas y registros semanales o mensuales salen **todos los días de su periodo**, con `dueToday` (si hoy es el día que toca) y `dueDate` (día que toca en el periodo actual). En `summary` solo cuentan el día que tocan.
+- `GET /tasks/compliance`: cada `missing` añade `pending` (el periodo aún no ha terminado: «pendiente esta semana/este mes» o, en las diarias, el día en curso) y `periodEnd`. `kind` admite `'enfriamiento'`: un enfriamiento empezado ese día, sin cerrar y con el tiempo máximo pasado (`frequency: 'once'`, `id` = inicio). `overall.daysWithGaps` cuenta solo días con algo no pendiente; nuevo `overall.daysEvaluated` (días desde el alta del local).
+- Los nombres de equipos, planes y registros personalizados (y el rango de los equipos y de los registros con valor) se guardan en su historial de configuración: los huecos y los subtítulos del PDF usan el **vigente ese día**, no el actual.
+
+### 25.5 Verificación del responsable
+
+- `GET /verifications/preview?from&to` → `{ gapTasks, gapDays, pendingTasks, alerts, alertsWithoutAction, openCoolings, records }`: lo que hay en el periodo, para enseñarlo antes de confirmar.
+- `POST /verifications`: 400 si `to` es **hoy o posterior** (fecha local): se verifica un periodo terminado, como muy tarde hasta ayer. La base de datos también lo rechaza con el rol de la app. Guarda la foto anterior en `snapshot` (inmutable, como el resto de la fila) y la devuelve en `verification.snapshot`; `user_name` lo pone la base de datos desde `users`.
+- PDF: «Verificado por X el … · en ese momento: N tareas sin registrar, M alertas sin acción, K enfriamientos sin cerrar» y, si los hay, «registros o correcciones añadidos después de la verificación: N».
+
+### 25.6 Informes
+
+- Resumen: los enfriamientos sin cerrar pasado el tiempo máximo cuentan como alerta sin acción correctora y en su propia fila; su fila de inicio sale resaltada («SIN CERRAR») y aparece en «Tareas sin registrar».
+- «Días con tareas sin registrar N de M días evaluados»: M cuenta desde el alta del local.
+- Cocinado: columna «Referencia orientativa del local» (`≥ 70 °C` o `≥ 75 °C (huevo fresco)`); enfriamiento: el inicio por debajo de la referencia lleva «por debajo de 60 °C (referencia orientativa); motivo: …».
+- CSV: columnas nuevas al final `huevo_fresco` y `motivo_inicio_enfriamiento` (63 en total).
+

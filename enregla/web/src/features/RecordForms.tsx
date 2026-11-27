@@ -925,11 +925,13 @@ export function CocinadoForm(p: Props<'cocinado'>) {
   const [process, setProcess] = useState<CookingProcess | null>(p.initial?.process ?? null);
   const [value, setValue] = useState(numText(p.initial?.coreTemp));
   const [minutes, setMinutes] = useState(p.initial?.minutes != null ? String(p.initial.minutes) : '');
+  const [freshEgg, setFreshEgg] = useState(p.initial?.freshEgg ?? false);
   const [action, setAction] = useState(p.initial?.correctiveAction ?? '');
   const { errors, submit } = useValidated(cocinadoData, p.onSubmit);
   const server = fieldErrorsFrom(p.serverError);
   const r = refs(p.ctx);
-  const reference = process === 'regeneracion' ? r.reheatMinTemp : r.cookingMinTemp;
+  const egg = process === 'cocinado' && freshEgg;
+  const reference = process === 'regeneracion' ? r.reheatMinTemp : egg ? r.cookingEggMinTemp : r.cookingMinTemp;
   const num = parseDecimal(value);
   const valid = physicallyValidTemp(num);
   const liveError = value.trim() === '' || value.trim() === '−' ? null : num == null ? (p.large ? null : 'Escribe la temperatura con números (por ejemplo 72,5)') : !valid ? TEMP_RANGE_MESSAGE : null;
@@ -947,7 +949,7 @@ export function CocinadoForm(p: Props<'cocinado'>) {
         if (!process) extra.process = 'Elige si es cocinado o regeneración';
         if (num == null) extra.coreTemp = 'Escribe la temperatura en el centro del producto';
         if (low && !action.trim()) extra.correctiveAction = 'No llega a la temperatura de referencia: indica qué has hecho';
-        submit({ product: product.trim(), process: process ?? undefined, coreTemp: num ?? Number.NaN, minutes: minutes.trim() ? Number(minutes) : null, correctiveAction: action.trim() || null }, extra);
+        submit({ product: product.trim(), process: process ?? undefined, freshEgg: egg, coreTemp: num ?? Number.NaN, minutes: minutes.trim() ? Number(minutes) : null, correctiveAction: action.trim() || null }, extra);
       }}
     >
       <Field label="Producto" error={errors.product || server.product}>
@@ -962,9 +964,16 @@ export function CocinadoForm(p: Props<'cocinado'>) {
         options={(['cocinado', 'regeneracion'] as const).map((v) => ({
           value: v,
           label: COOKING_PROCESS_LABELS[v],
-          description: `Referencia: ${formatTemp(v === 'cocinado' ? r.cookingMinTemp : r.reheatMinTemp)} o más en el centro`,
+          description: `Referencia orientativa: ${formatTemp(v === 'cocinado' ? r.cookingMinTemp : r.reheatMinTemp)} o más en el centro`,
         }))}
       />
+      {process === 'cocinado' ? (
+        <Checkbox
+          checked={freshEgg}
+          onChange={setFreshEgg}
+          label={`Lleva huevo fresco (referencia: ${formatTemp(r.cookingEggMinTemp)} o más)`}
+        />
+      ) : null}
       <ValueField
         name="coreTemp"
         label="Temperatura en el centro del producto"
@@ -972,7 +981,7 @@ export function CocinadoForm(p: Props<'cocinado'>) {
         onChange={setValue}
         large={p.large}
         error={liveError || errors.coreTemp || server.coreTemp}
-        hint={process ? `Valor de referencia orientativo: ${formatTemp(reference)} o más. ${REFERENCE_SOURCES[process === 'regeneracion' ? 'reheatMinTemp' : 'cookingMinTemp']}` : 'Mide con la sonda en la parte más gruesa del producto.'}
+        hint={process ? `Valor de referencia orientativo: ${formatTemp(reference)} o más. ${REFERENCE_SOURCES[process === 'regeneracion' ? 'reheatMinTemp' : egg ? 'cookingEggMinTemp' : 'cookingMinTemp']}` : 'Mide con la sonda en la parte más gruesa del producto.'}
       />
       {process && valid ? (
         low ? (
@@ -994,6 +1003,7 @@ export function CocinadoForm(p: Props<'cocinado'>) {
 // ---------------------------------------------------------------------------
 // Enfriamiento rápido: inicio y cierre (dos registros)
 // ---------------------------------------------------------------------------
+export const COOL_START_REASONS = ['Ya venía templado', 'Sobrante del servicio que se enfría ahora', 'Se midió tarde', 'Producto preparado en frío'];
 export const COOL_ACTIONS = ['Producto regenerado y consumido en el día', 'Producto desechado', 'Abatidor revisado: estaba sobrecargado', 'Avisado el servicio técnico'];
 
 /** Minutos desde un instante ISO hasta ahora. */
@@ -1008,6 +1018,7 @@ export function EnfriamientoForm(p: Props<'enfriamiento'>) {
   const [product, setProduct] = useState(init?.phase === 'inicio' ? init.product : '');
   const [value, setValue] = useState(init ? numText(init.phase === 'inicio' ? init.startTemp : init.endTemp) : '');
   const [notes, setNotes] = useState(init?.phase === 'inicio' ? (init.notes ?? '') : '');
+  const [startReason, setStartReason] = useState(init?.phase === 'inicio' ? (init.startReason ?? '') : '');
   const [discarded, setDiscarded] = useState(init?.phase === 'fin' ? init.discarded : false);
   const [action, setAction] = useState(init?.phase === 'fin' ? (init.correctiveAction ?? '') : '');
   const { errors, submit } = useValidated(enfriamientoData, p.onSubmit);
@@ -1021,7 +1032,11 @@ export function EnfriamientoForm(p: Props<'enfriamiento'>) {
   const target = init?.phase === 'fin' ? init.targetTemp : (cooling?.targetTemp ?? r.coolingTargetTemp);
   const maxMin = init?.phase === 'fin' ? init.maxMinutes : (cooling?.maxMinutes ?? r.coolingMaxMinutes);
   const elapsed = init?.phase === 'fin' ? init.minutes : cooling ? minutesSince(cooling.startedAt) : null;
-  const overTime = elapsed != null && elapsed > maxMin;
+  // Igual que el servidor: llegar justo al tiempo máximo ya no cumple «en menos de N min».
+  const overTime = elapsed != null && elapsed >= maxMin;
+  // Inicio: se espera partir de 60 °C o más (referencia del local); si no, se anota el motivo.
+  const startRef = init?.phase === 'inicio' ? (init.startReferenceTemp ?? r.coolingStartTemp) : r.coolingStartTemp;
+  const belowStart = mode === 'inicio' && valid && num! < startRef;
   const overTemp = !discarded && valid && num! > target;
   const bad = mode === 'fin' && (discarded || overTemp || overTime);
 
@@ -1051,7 +1066,10 @@ export function EnfriamientoForm(p: Props<'enfriamiento'>) {
       onSubmit={(e) => {
         e.preventDefault();
         if (mode === 'inicio') {
-          submit({ phase: 'inicio', product: product.trim(), startTemp: num ?? Number.NaN, notes: notes.trim() || null }, num == null ? { startTemp: 'Escribe la temperatura al empezar' } : {});
+          const extra: Record<string, string> = {};
+          if (num == null) extra.startTemp = 'Escribe la temperatura al empezar';
+          if (belowStart && !startReason.trim()) extra.startReason = `Empieza por debajo de ${formatTemp(startRef)}: indica el motivo`;
+          submit({ phase: 'inicio', product: product.trim(), startTemp: num ?? Number.NaN, startReason: belowStart ? startReason.trim() || null : null, notes: notes.trim() || null }, extra);
           return;
         }
         const extra: Record<string, string> = {};
@@ -1078,8 +1096,19 @@ export function EnfriamientoForm(p: Props<'enfriamiento'>) {
             onChange={setValue}
             large={p.large}
             error={liveError || errors.startTemp || server.startTemp}
-            hint={`Criterio orientativo del local: ${formatTemp(r.coolingTargetTemp)} o menos en ${r.coolingMaxMinutes} minutos o menos. ${REFERENCE_SOURCES.coolingMaxMinutes}`}
+            hint={`Se cuenta desde ${formatTemp(startRef)} o más. Criterio orientativo del local: ${formatTemp(r.coolingTargetTemp)} o menos en menos de ${r.coolingMaxMinutes} minutos. ${REFERENCE_SOURCES.coolingMaxMinutes}`}
           />
+          {belowStart ? (
+            <>
+              <Callout tone="warn" title={`${formatTemp(num!)}: por debajo de ${formatTemp(startRef)}`} live="polite">
+                La referencia orientativa para empezar a contar es {formatTemp(startRef)} o más. Anota por qué empieza más frío; constará en el informe.
+              </Callout>
+              <Field label="¿Por qué empieza por debajo?" error={errors.startReason || server.startReason} hint="Toca una opción o escríbelo tú.">
+                <Suggestions value={startReason} onChange={setStartReason} suggestions={COOL_START_REASONS} large={p.large} />
+                <Textarea value={startReason} onChange={(e) => setStartReason(e.target.value)} maxLength={300} rows={2} placeholder="Motivo" />
+              </Field>
+            </>
+          ) : null}
           <Field label="Notas" optional>
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={500} placeholder="Ej.: en abatidor, en bandejas de 5 cm" />
           </Field>
@@ -1129,7 +1158,7 @@ export function EnfriamientoForm(p: Props<'enfriamiento'>) {
               onChange={setValue}
               large={p.large}
               error={liveError || errors.endTemp || server.endTemp}
-              hint={`Criterio orientativo: ${formatTemp(target)} o menos en ${maxMin} minutos o menos.`}
+              hint={`Criterio orientativo: ${formatTemp(target)} o menos en menos de ${maxMin} minutos.`}
             />
           ) : null}
           <Checkbox checked={discarded} onChange={setDiscarded} label="No se ha podido medir: el producto se ha desechado" />
@@ -1153,6 +1182,16 @@ export function EnfriamientoForm(p: Props<'enfriamiento'>) {
 // Registros personalizados (lista de comprobación, valor con número o sí/no)
 // ---------------------------------------------------------------------------
 export const CUSTOM_ACTIONS = ['Corregido en el momento', 'Avisado el responsable', 'Avisado el servicio técnico', 'Se repetirá el control'];
+
+/** «Diario, 2 veces» / «Semanal (lunes)» / «Cuando ocurra». */
+const frequencyText = (t: CustomTemplate) =>
+  t.frequency === 'on_demand'
+    ? 'Cuando ocurra'
+    : t.frequency === 'daily'
+      ? t.timesPerDay > 1
+        ? `Diario, ${t.timesPerDay} veces`
+        : 'Diario'
+      : frequencyLabel(t.frequency, t.weekday, t.monthDay);
 
 export function PersonalizadoForm(p: Props<'personalizado'>) {
   const templates = (p.ctx.customTemplates ?? []).filter((t) => t.active || t.id === p.initial?.templateId);
@@ -1208,7 +1247,17 @@ export function PersonalizadoForm(p: Props<'personalizado'>) {
         );
       }}
     >
-      {p.initial ? null : (
+      {p.initial ? null : p.large ? (
+        // Tablet: botones grandes en lugar de un desplegable del sistema.
+        <ChoiceGroup
+          legend="¿Qué registro?"
+          value={templateId || null}
+          onChange={setTemplateId}
+          size="xl"
+          error={errors.templateId || server.templateId}
+          options={templates.map((t) => ({ value: t.id, label: t.name, description: frequencyText(t) }))}
+        />
+      ) : (
         <Field label="Registro" error={errors.templateId || server.templateId}>
           <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={cn(p.large && 'min-h-16 text-xl')}>
             <option value="">Elige…</option>
