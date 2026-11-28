@@ -1,0 +1,39 @@
+# Caddy delante de EnRegla: TLS automático y X-Forwarded-For fiable.
+{
+	email {$ACME_EMAIL}
+	# Timeouts del lado del cliente (I-10), coherentes con los de la app (server/src/app.ts,
+	# HTTP_TIMEOUTS: cabeceras 130 s, petición 300 s, keep-alive 125 s): Caddy corta ANTES a los
+	# clientes lentos o colgados, y la app nunca cierra una conexión que Caddy aún reutiliza.
+	servers {
+		timeouts {
+			# Cabeceras de la petición: un cliente legítimo las envía en milisegundos (anti-slowloris).
+			read_header 15s
+			# Cuerpo completo (máx. 2 MB, ver request_body): de sobra incluso en móvil lento.
+			read_body 60s
+			# Conexión keep-alive inactiva con el navegador.
+			idle 120s
+			# Sin `write`: las descargas grandes (PDF/CSV/exportación) pueden tardar; la app ya corta
+			# las que no progresan en 60 s (http/slow-download.ts).
+		}
+	}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	# Caddy sustituye (no añade) X-Forwarded-For con la IP real del cliente.
+	reverse_proxy app:3000 {
+		header_up X-Forwarded-For {remote_host}
+		transport http {
+			# Conexiones inactivas hacia la app: menos que su keepAliveTimeout (125 s) para no
+			# reutilizar una que la app esté cerrando (502 intermitentes).
+			keepalive 60s
+			# Tiempo máximo hasta recibir las cabeceras de la respuesta: < requestTimeout de la app
+			# (300 s). Un PDF puede esperar ~20 s en cola más la generación.
+			response_header_timeout 290s
+		}
+	}
+	# El webhook de Stripe y la API pueden tardar algo más (informes).
+	request_body {
+		max_size 2MB
+	}
+}

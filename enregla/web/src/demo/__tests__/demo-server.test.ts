@@ -1,0 +1,202 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import '@shared/schemas';
+import { handle } from '../server';
+import { resetDb } from '../server/store';
+import { DEMO_EMAIL, DEMO_PASSWORD } from '../server/seed';
+import type { Account, Equipment, Page, Staff, TodayTasks, Dish, PublicMenu, AppRecord } from '@/api/types';
+
+const get = <T,>(url: string, headers?: HeadersInit) => handle('GET', url, { headers }) as { status: number; json: T; text?: string };
+const send = <T,>(method: string, url: string, body?: unknown, headers?: HeadersInit) =>
+  handle(method, url, { body: body === undefined ? undefined : JSON.stringify(body), headers }) as { status: number; json: T; headers?: Record<string, string> };
+
+describe('API de la demo', () => {
+  let orgId = '';
+  beforeEach(() => {
+    resetDb();
+    orgId = get<Account>('/api/account').json.organizations[0]!.id;
+  });
+
+  it('arranca con la sesión del dueño demo y 30 días de datos', () => {
+    const acc = get<Account>('/api/account');
+    expect(acc.status).toBe(200);
+    expect(acc.json.user.email).toBe(DEMO_EMAIL);
+    const today = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json;
+    expect(today.temperatures.length).toBeGreaterThan(0);
+    const recs = get<Page<AppRecord>>(`/api/orgs/${orgId}/records?limit=200`).json;
+    expect(recs.items.length).toBe(200);
+    expect(recs.nextCursor).not.toBeNull();
+  });
+
+  it('valida en español y exige acción correctora fuera de rango', () => {
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    const bad = send<{ error: { code: string; details: { path: string; message: string }[] } }>('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: 9 } });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error.details[0]!.path).toBe('data.correctiveAction');
+    const r = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: 9, correctiveAction: 'Revisada' } });
+    expect(r.status).toBe(201);
+    expect(r.json.record.alert).toBe(true);
+    const alerts = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.alerts;
+    expect(alerts.some((a) => a.recordId === r.json.record.id)).toBe(true);
+    // Enmienda: misma fecha del hecho, y solo una por registro.
+    const am = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records/${r.json.record.id}/amendments`, { reason: 'Error', data: { equipmentId: eq.id, value: 3 } });
+    expect(am.status).toBe(201);
+    expect(am.json.record.effectiveAt).toBe(r.json.record.effectiveAt);
+    expect(send('POST', `/api/orgs/${orgId}/records/${r.json.record.id}/amendments`, { reason: 'Otra', data: { equipmentId: eq.id, value: 3 } }).status).toBe(409);
+  });
+
+  it('bloquea el PIN a los 5 fallos en el modo cocina', () => {
+    const token = (send<{ token: string }>('POST', `/api/orgs/${orgId}/devices`, { name: 'Prueba' }).json).token;
+    const auth = { Authorization: `Bearer ${token}` };
+    const ana = get<Page<Staff>>(`/api/orgs/${orgId}/staff`).json.items.find((s) => s.name === 'Ana Martín')!;
+    for (let i = 0; i < 4; i++) expect(send('POST', '/api/kiosk/verify-pin', { staffId: ana.id, pin: '0000' }, auth).status).toBe(401);
+    const locked = send<{ error: { code: string } }>('POST', '/api/kiosk/verify-pin', { staffId: ana.id, pin: '0000' }, auth);
+    expect(locked.status).toBe(429);
+    expect(locked.json.error.code).toBe('PIN_LOCKED');
+    expect(locked.headers?.['Retry-After']).toBeTruthy();
+    expect(send('POST', '/api/kiosk/verify-pin', { staffId: ana.id, pin: '1234' }, auth).status).toBe(429);
+    send('POST', `/api/orgs/${orgId}/staff/${ana.id}/unlock`);
+    expect(send('POST', '/api/kiosk/verify-pin', { staffId: ana.id, pin: '1234' }, auth).status).toBe(200);
+  });
+
+  it('solo publica en la carta los platos revisados', () => {
+    const slug = get<{ publicMenu: { slug: string } }>(`/api/orgs/${orgId}/public-menu`).json.publicMenu.slug;
+    const names = () => get<PublicMenu>(`/api/public/menu/${slug}`).json.dishes.map((d) => d.name);
+    expect(names()).not.toContain('Pulpo a la gallega');
+    const pulpo = get<Page<Dish>>(`/api/orgs/${orgId}/dishes`).json.items.find((d) => d.name === 'Pulpo a la gallega')!;
+    send('PATCH', `/api/orgs/${orgId}/dishes/${pulpo.id}`, { allergensReviewed: true });
+    expect(names()).toContain('Pulpo a la gallega');
+  });
+
+  it('cierra sesión y vuelve a entrar con las credenciales demo', () => {
+    expect(send('POST', '/api/auth/logout').status).toBe(204);
+    expect(get('/api/account').status).toBe(401);
+    expect(send('POST', '/api/auth/login', { email: DEMO_EMAIL, password: 'mala' }).status).toBe(401);
+    expect(send('POST', '/api/auth/login', { email: DEMO_EMAIL, password: DEMO_PASSWORD }).status).toBe(200);
+    expect(get('/api/account').status).toBe(200);
+  });
+
+  it('borrado diferido: solo lectura y restauración', () => {
+    expect(send('DELETE', `/api/orgs/${orgId}`, { password: DEMO_PASSWORD }).status).toBe(204);
+    const org = get<{ organization: { subscription: { readOnly: boolean }; deletionScheduledAt: string | null } }>(`/api/orgs/${orgId}`).json.organization;
+    expect(org.deletionScheduledAt).not.toBeNull();
+    expect(org.subscription.readOnly).toBe(true);
+    expect(send('POST', `/api/orgs/${orgId}/staff`, { name: 'X' }).status).toBe(402);
+    expect(send('POST', `/api/orgs/${orgId}/restore`).status).toBe(200);
+    expect(send('POST', `/api/orgs/${orgId}/staff`, { name: 'X' }).status).toBe(201);
+  });
+
+  it('genera el CSV con la cabecera del servidor', () => {
+    const r = handle('GET', `/api/orgs/${orgId}/reports/csv?from=2000-01-01&to=2000-01-31`);
+    expect(r.status).toBe(200);
+    expect(r.text?.startsWith('\uFEFF"id";"tipo"')).toBe(true);
+  });
+
+  // Fase 1: la demo refleja el comportamiento del servidor real.
+  it('fase 1: firma «anotado por», autor de la corrección y orden original → corrección', () => {
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    const ana = get<Page<Staff>>(`/api/orgs/${orgId}/staff`).json.items.find((s) => s.name === 'Ana Martín')!;
+    const r = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', staffId: ana.id, data: { equipmentId: eq.id, value: 2 } }).json.record;
+    expect(r.signature).toMatch(/^Ana Martín \(anotado por .+\)$/);
+    const am = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records/${r.id}/amendments`, { reason: 'Ajuste', data: { equipmentId: eq.id, value: 3 } }).json.record;
+    // Sin staffId se conserva el firmante; corrige el usuario con sesión.
+    expect(am.staff?.name).toBe('Ana Martín');
+    expect(am.correctedBy).toBe(am.user?.name);
+    const list = get<Page<AppRecord>>(`/api/orgs/${orgId}/records?limit=10`).json.items.map((x) => x.id);
+    expect(list.indexOf(r.id)).toBeLessThan(list.indexOf(am.id));
+    const day = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.date;
+    const csv = handle('GET', `/api/orgs/${orgId}/reports/csv?from=${day}&to=${day}&types=temperatura`).text!;
+    expect(csv.indexOf(r.id)).toBeLessThan(csv.indexOf(am.id));
+  });
+
+  it('fase 1: recepción con categoría (6 °C refrigerado exige acción; sin categoría se rechaza)', () => {
+    const base = { supplierName: 'P', product: 'Merluza', accepted: true };
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'refrigerado', temperature: 6 } }).status).toBe(400);
+    // N9 (como el servidor): la categoría es obligatoria; ya no hay «cliente antiguo» con límite presupuesto.
+    const noCat = send<{ error: { details: { path: string }[] } }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, temperature: 6, correctiveAction: 'Se usa ya' } });
+    expect(noCat.status).toBe(400);
+    expect(noCat.json.error.details.map((d) => d.path)).toContain('data.category');
+    // El antiguo atajo «máx. 4 °C» se ignora: comida caliente a 70 °C no da falsa alarma.
+    const hot = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'caliente', temperature: 70, maxTemperature: 4 } }).json.record;
+    expect(hot.alert).toBe(false);
+  });
+
+  it('N9: «ambiente» para un proveedor de refrigerado exige motivo y lo guarda (como el servidor)', () => {
+    const sup = send<{ supplier: { id: string } }>('POST', `/api/orgs/${orgId}/suppliers`, { name: 'Frío SL', defaultCategory: 'refrigerado' }).json.supplier;
+    const base = { supplierId: sup.id, product: 'Conservas', accepted: true, category: 'ambiente' };
+    const r = send<{ error: { details: { path: string }[] } }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: base });
+    expect(r.status).toBe(400);
+    expect(r.json.error.details.map((d) => d.path)).toContain('data.categoryReason');
+    const ok = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, categoryReason: 'Hoy trae latas' } }).json.record;
+    expect(ok.data).toMatchObject({ categoryDiffersFromSupplier: true, categoryReason: 'Hoy trae latas' });
+    // Refrigerado aceptado sin temperatura: obligatoria.
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { ...base, category: 'refrigerado' } }).status).toBe(400);
+  });
+
+  it('N1: la eliminación inmediata queda pedida (202) y la ejecuta el mantenimiento en la próxima hora', async () => {
+    const { runDemoMaintenance, MAINTENANCE_INTERVAL_MS } = await import('../server/routes');
+    const { getDb } = await import('../server/store');
+    expect(send('DELETE', `/api/orgs/${orgId}`, { password: DEMO_PASSWORD }).status).toBe(204);
+    const r = send<{ purgeRequestedAt: string; message: string }>('DELETE', `/api/orgs/${orgId}/permanent`, { password: DEMO_PASSWORD });
+    expect(r.status).toBe(202);
+    expect(r.json.message).toContain('en la próxima hora');
+    // Sigue existiendo (pendiente) hasta la pasada del mantenimiento.
+    const org = get<{ organization: { purgeRequestedAt: string | null } }>(`/api/orgs/${orgId}`);
+    expect(org.status).toBe(200);
+    expect(org.json.organization.purgeRequestedAt).toBe(r.json.purgeRequestedAt);
+    const db = getDb();
+    expect(runDemoMaintenance(db, Date.parse(r.json.purgeRequestedAt) + 60_000)).toBe(0);
+    expect(runDemoMaintenance(db, Date.parse(r.json.purgeRequestedAt) + MAINTENANCE_INTERVAL_MS)).toBe(1);
+    expect(db.orgs.some((o) => o.id === orgId)).toBe(false);
+    expect(db.records.some((x) => x.orgId === orgId)).toBe(false);
+  });
+
+  it('fase 1: «volver a medir» hasta una lectura correcta posterior', () => {
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    send('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: 9, correctiveAction: 'Puerta cerrada' } });
+    let t = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.temperatures.find((x) => x.equipmentId === eq.id)!;
+    expect(t).toMatchObject({ withAlert: true, remeasure: true });
+    send('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: 3 } });
+    t = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.temperatures.find((x) => x.equipmentId === eq.id)!;
+    expect(t).toMatchObject({ withAlert: true, remeasure: false });
+  });
+
+  it('fase 1: correcciones en la tablet (misma persona y dispositivo) y salir/desvincular con contraseña', () => {
+    const token = send<{ token: string }>('POST', `/api/orgs/${orgId}/devices`, { name: 'T' }).json.token;
+    const auth = { Authorization: `Bearer ${token}` };
+    const staff = get<Page<Staff>>(`/api/orgs/${orgId}/staff`).json.items;
+    const luis = staff.find((s) => s.name === 'Luis Pérez')!;
+    const ana = staff.find((s) => s.name === 'Ana Martín')!;
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    const rec = send<{ record: AppRecord }>('POST', '/api/kiosk/records', { staffId: luis.id, type: 'temperatura', data: { equipmentId: eq.id, value: 2 } }, auth).json.record;
+    expect(send<{ error: { code: string } }>('POST', `/api/kiosk/records/${rec.id}/amendments`, { staffId: ana.id, pin: '1234', reason: 'wrong_value', data: { equipmentId: eq.id, value: 3 } }, auth).json.error.code).toBe('CORRECTION_NOT_ALLOWED');
+    const ok = send<{ record: AppRecord }>('POST', `/api/kiosk/records/${rec.id}/amendments`, { staffId: luis.id, reason: 'wrong_person', newStaffId: ana.id, newStaffPin: '1234' }, auth);
+    expect(ok.status).toBe(201);
+    expect(ok.json.record).toMatchObject({ staff: { name: 'Ana Martín' }, amendmentReason: 'Me equivoqué de persona (figuraba Luis Pérez)', correctedBy: 'Ana Martín' });
+    expect(send('POST', '/api/kiosk/exit', { email: DEMO_EMAIL, password: 'mala' }, auth).status).toBe(401);
+    expect(send('POST', '/api/kiosk/exit', { email: DEMO_EMAIL, password: DEMO_PASSWORD }, auth).status).toBe(200);
+    expect(send('POST', '/api/kiosk/unpair', { email: DEMO_EMAIL, password: DEMO_PASSWORD }, auth).status).toBe(200);
+    expect(get('/api/kiosk/context', auth).status).toBe(401);
+  });
+
+  it('evaluación: límite del proveedor, temperatura obligatoria, «volver a medir» con hora y reintento idempotente de la corrección', () => {
+    const sup = send<{ supplier: { id: string; receptionLimit: number | null } }>('POST', `/api/orgs/${orgId}/suppliers`, { name: 'Lácteos 2', defaultCategory: 'refrigerado', receptionLimit: 6 }).json.supplier;
+    expect(sup.receptionLimit).toBe(6);
+    expect(send('POST', `/api/orgs/${orgId}/suppliers`, { name: 'Laxo', defaultCategory: 'refrigerado', receptionLimit: 50 }).status).toBe(400);
+    const r = send<{ record: AppRecord }>('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { supplierId: sup.id, product: 'Nata', accepted: true, category: 'refrigerado', temperature: 5 } }).json.record;
+    expect(r.alert).toBe(false);
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { supplierName: 'P', product: 'X', accepted: true, category: 'refrigerado', maxTemperature: 50, temperature: 15 } }).status).toBe(400);
+    expect(send('POST', `/api/orgs/${orgId}/records`, { type: 'recepcion', data: { supplierName: 'P', product: 'X', accepted: true, category: 'congelado' } }).status).toBe(400);
+    const eq = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'congelador')!;
+    send('POST', `/api/orgs/${orgId}/records`, { type: 'temperatura', data: { equipmentId: eq.id, value: -5, correctiveAction: 'Repetiré la medición en 30 min' } });
+    const t = get<TodayTasks>(`/api/orgs/${orgId}/tasks/today`).json.temperatures.find((x) => x.equipmentId === eq.id)!;
+    expect(t.remeasureFrom).toBeTruthy();
+    const token = send<{ token: string }>('POST', `/api/orgs/${orgId}/devices`, { name: 'T2' }).json.token;
+    const auth = { Authorization: `Bearer ${token}`, 'Idempotency-Key': '0b6c3c1e-7d9b-4c1e-9f6a-2a1b3c4d5e6f' };
+    const luis = get<Page<Staff>>(`/api/orgs/${orgId}/staff`).json.items.find((s) => s.name === 'Luis Pérez')!;
+    const cam = get<Page<Equipment>>(`/api/orgs/${orgId}/equipment`).json.items.find((e) => e.type === 'camara')!;
+    const orig = send<{ record: AppRecord }>('POST', '/api/kiosk/records', { staffId: luis.id, type: 'temperatura', data: { equipmentId: cam.id, value: 2 } }, { Authorization: `Bearer ${token}` }).json.record;
+    const body = { staffId: luis.id, reason: 'wrong_value', data: { equipmentId: cam.id, value: 3 } };
+    expect(send('POST', `/api/kiosk/records/${orig.id}/amendments`, body, auth).status).toBe(201);
+    expect(send('POST', `/api/kiosk/records/${orig.id}/amendments`, body, auth).status).toBe(200);
+  });
+});

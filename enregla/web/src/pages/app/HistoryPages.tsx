@@ -1,0 +1,610 @@
+import { useMemo, useState, type ReactNode } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
+import { useQueryClient } from '@tanstack/react-query';
+import { COOKING_PROCESS_LABELS, RECEPTION_CATEGORY_LABELS, RECORD_TYPES, RECORD_TYPE_LABELS } from '@shared/schemas';
+import { orgApi, useRecord, useRecords, type RecordFilters } from '@/api/queries';
+import { isApiError } from '@/api/client';
+import type { AppRecord, RecordType } from '@/api/types';
+import { useOrgContext } from '@/hooks/useOrgContext';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { Button } from '@/components/ui/Button';
+import { Badge, Callout, EmptyState, ErrorState, LoadingBlock } from '@/components/ui/Feedback';
+import { Card, DetailList, PageHeader } from '@/components/ui/Layout';
+import { Field, Input, Select, Switch, Textarea } from '@/components/ui/Form';
+import { Icon } from '@/components/icons/Icon';
+import { RECORD_ICON, RECORD_SHORT, RECORD_TINT, cleaningResult, corrector, customResult, formatNumber, isRecordType, recordSummary, signer } from '@/features/recordMeta';
+import { RecordForm } from '@/features/RecordForms';
+import { WriteGuard } from '@/features/SubscriptionBanner';
+import { useFormContext } from './RecordPages';
+import { formatDateTime, formatLocalDate, formatLongDate, formatDecimal, formatPercent, formatRange, formatTemp, formatTime, localDateIn } from '@/lib/format';
+import { useIdempotencyKeys } from '@/lib/idempotency';
+import { cn } from '@/lib/cn';
+
+// ===========================================================================
+// LISTADO
+// ===========================================================================
+export function HistoryPage() {
+  const { orgId, tz, path } = useOrgContext();
+  useDocumentTitle('Historial');
+  const [params, setParams] = useSearchParams();
+  const filters: RecordFilters = {
+    type: isRecordType(params.get('tipo') ?? undefined) ? (params.get('tipo') as RecordType) : '',
+    from: params.get('desde') ?? '',
+    to: params.get('hasta') ?? '',
+    alert: params.get('alertas') === '1' ? 'true' : '',
+  };
+  const setFilter = (k: string, v: string) => {
+    const n = new URLSearchParams(params);
+    if (v) n.set(k, v);
+    else n.delete(k);
+    setParams(n, { replace: true });
+  };
+  const dateError = filters.from && filters.to && filters.from > filters.to ? 'La fecha «desde» debe ser anterior a «hasta»' : null;
+  const q = useRecords(orgId, filters, 25, !dateError);
+  const items = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);
+  const groups = useMemo(() => {
+    const m = new Map<string, AppRecord[]>();
+    for (const r of items) {
+      // Se agrupa por la fecha del HECHO (effectiveAt), no por cuándo se insertó o corrigió.
+      const d = localDateIn(tz, new Date(r.effectiveAt));
+      m.set(d, [...(m.get(d) ?? []), r]);
+    }
+    return [...m.entries()];
+  }, [items, tz]);
+  const anyFilter = !!(filters.type || filters.from || filters.to || filters.alert);
+
+  return (
+    <>
+      <PageHeader title="Historial" subtitle="Todos los registros, del más reciente al más antiguo. Los registros no se borran: las correcciones quedan enlazadas." />
+      <Card className="mb-6">
+        <h2 className="sr-only">Filtros</h2>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Field label="Tipo" className="col-span-2 lg:col-span-1">
+            <Select value={filters.type} onChange={(e) => setFilter('tipo', e.target.value)}>
+              <option value="">Todos</option>
+              {RECORD_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {RECORD_TYPE_LABELS[t]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Desde" error={dateError} live>
+            <Input type="date" value={filters.from} onChange={(e) => setFilter('desde', e.target.value)} />
+          </Field>
+          <Field label="Hasta">
+            <Input type="date" value={filters.to} onChange={(e) => setFilter('hasta', e.target.value)} />
+          </Field>
+          <div className="col-span-2 flex items-end lg:col-span-1">
+            <Switch checked={filters.alert === 'true'} onChange={(v) => setFilter('alertas', v ? '1' : '')} label="Solo alertas" />
+          </div>
+        </div>
+        {anyFilter ? (
+          <button type="button" onClick={() => setParams({}, { replace: true })} className="mt-3 min-h-11 font-semibold text-brand-strong underline underline-offset-4 dark:text-brand">
+            Quitar filtros
+          </button>
+        ) : null}
+      </Card>
+
+      {dateError ? (
+        <EmptyState icon="history" title="Corrige las fechas para ver los registros">
+          {dateError}. Mientras tanto no se muestra ninguna lista.
+        </EmptyState>
+      ) : q.isPending ? (
+        <LoadingBlock rows={6} label="Cargando registros…" />
+      ) : q.isError ? (
+        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+      ) : items.length === 0 ? (
+        <EmptyState
+          icon="history"
+          title={anyFilter ? 'No hay registros con estos filtros' : 'Todavía no hay registros'}
+          action={
+            anyFilter ? (
+              <Button variant="secondary" onClick={() => setParams({}, { replace: true })}>
+                Quitar filtros
+              </Button>
+            ) : (
+              <Link to={path('registrar')} className="font-semibold text-brand-strong underline underline-offset-4 dark:text-brand">
+                Hacer el primer registro
+              </Link>
+            )
+          }
+        >
+          {anyFilter ? 'Prueba con otras fechas u otro tipo.' : 'Los registros que hagáis desde la web o la tablet de cocina aparecerán aquí.'}
+        </EmptyState>
+      ) : (
+        <div className="space-y-6" aria-live="polite">
+          {groups.map(([date, list]) => (
+            <section key={date} aria-labelledby={`d-${date}`}>
+              <h2 id={`d-${date}`} className="mb-2 text-base font-bold text-ink-muted first-letter:uppercase">
+                {formatLongDate(date)}
+              </h2>
+              <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
+                {list.map((r) => (
+                  <RecordRow key={r.id} record={r} tz={tz} to={path(`historial/${r.id}`)} />
+                ))}
+              </ul>
+            </section>
+          ))}
+          {q.hasNextPage ? (
+            <div className="text-center">
+              <Button variant="secondary" size="lg" onClick={() => void q.fetchNextPage()} loading={q.isFetchingNextPage}>
+                Cargar más
+              </Button>
+            </div>
+          ) : (
+            <p className="text-center text-sm text-ink-muted">No hay más registros.</p>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function RecordRow({ record: r, tz, to }: { record: AppRecord; tz: string; to: string }) {
+  const s = recordSummary(r);
+  return (
+    <li>
+      <Link to={to} className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-surface-2">
+        <span className={cn('grid size-11 shrink-0 place-items-center rounded-xl', RECORD_TINT[r.type])}>
+          <Icon name={RECORD_ICON[r.type]} size={22} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-semibold break-words">{s.title}</span>
+          <span className="block text-sm text-ink-muted">
+            {formatTime(r.effectiveAt, tz)} · {RECORD_SHORT[r.type]} · {signer(r)}
+          </span>
+          <span className={cn('block text-sm', r.alert ? 'font-semibold text-bad' : 'text-ink-muted')}>{s.detail}</span>
+        </span>
+        <span className="flex shrink-0 flex-col items-end gap-1">
+          {r.alert ? <Badge tone="bad" icon="alert">Alerta</Badge> : null}
+          {r.amendedByRecordId ? <Badge tone="warn" icon="pencil">Corregido</Badge> : null}
+          {r.amendsRecordId ? <Badge tone="info" icon="pencil">Corrección</Badge> : null}
+        </span>
+        <Icon name="chevronRight" className="hidden shrink-0 text-ink-muted sm:block" />
+      </Link>
+    </li>
+  );
+}
+
+// ===========================================================================
+// DETALLE
+// ===========================================================================
+function RecordDetails({ record: r }: { record: AppRecord }) {
+  const { path } = useOrgContext();
+  const items: { label: ReactNode; value: ReactNode }[] = [];
+  switch (r.type) {
+    case 'temperatura':
+      items.push(
+        { label: 'Equipo', value: r.data.equipmentName },
+        { label: 'Temperatura', value: <span className="font-display text-2xl tabular">{formatTemp(r.data.value)}</span> },
+        { label: 'Rango del equipo', value: formatRange(r.data.minTemp, r.data.maxTemp) },
+        { label: 'Resultado', value: r.data.outOfRange ? <Badge tone="bad" icon="alert">Fuera de rango</Badge> : <Badge tone="ok" icon="check">Dentro de rango</Badge> },
+        { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+      );
+      break;
+    case 'limpieza':
+      items.push(
+        { label: 'Plan', value: r.data.planName },
+        {
+          label: 'Estado',
+          value: r.data.completed ? <Badge tone="ok" icon="check">{cleaningResult(r.data.items)}</Badge> : <Badge tone="warn" icon="clock">{cleaningResult(r.data.items)}</Badge>,
+        },
+        {
+          label: 'Zonas',
+          value: (
+            <ul className="space-y-1 font-normal">
+              {r.data.items.map((i) => (
+                <li key={i.itemId} className="flex items-center gap-2">
+                  <Icon name={i.done ? 'check' : 'x'} size={18} className={i.done ? 'text-ok' : 'text-bad'} strokeWidth={2.5} />
+                  {i.area}
+                  <span className="sr-only">{i.done ? 'hecha' : 'no hecha'}</span>
+                </li>
+              ))}
+            </ul>
+          ),
+        },
+        { label: 'Observaciones', value: r.data.observations ?? '—' },
+      );
+      break;
+    case 'recepcion':
+      items.push(
+        { label: 'Proveedor', value: r.data.supplierName },
+        { label: 'Producto', value: r.data.product },
+        { label: 'Lote', value: r.data.lot ?? '—' },
+        {
+          label: 'Tipo de producto',
+          value: r.data.category ? `${RECEPTION_CATEGORY_LABELS[r.data.category]}${r.data.categoryAssumed ? ' (aplicado por defecto: el registro no indicaba el tipo)' : ''}` : '—',
+        },
+        ...(r.data.categoryDiffersFromSupplier
+          ? [{ label: 'Motivo del tipo', value: `El proveedor suele traer otro tipo de producto. Motivo: ${r.data.categoryReason ?? '—'}` }]
+          : r.data.categoryChangedFrom
+            ? [{ label: 'Motivo del tipo', value: `Antes era ${RECEPTION_CATEGORY_LABELS[r.data.categoryChangedFrom].toLowerCase()}. Motivo: ${r.data.categoryReason ?? '—'}` }]
+            : []),
+        {
+          label: 'Temperatura',
+          value: (
+            <>
+              {formatTemp(r.data.temperature)}
+              {r.data.maxTemperature != null ? <span className="font-normal text-ink-muted"> (máx. {formatTemp(r.data.maxTemperature)})</span> : null}
+              {r.data.minTemperature != null ? <span className="font-normal text-ink-muted"> (mín. {formatTemp(r.data.minTemperature)})</span> : null}
+              {r.data.limitDiffersFromReference ? <span className="font-normal text-ink-muted"> · límite propio del proveedor</span> : null}
+              {r.data.temperatureOutOfRange ? <Badge tone="bad" icon="alert" className="ml-2">Fuera del límite</Badge> : null}
+            </>
+          ),
+        },
+        {
+          label: 'Caducidad',
+          value: r.data.expiryDate ? (
+            <>
+              {formatLocalDate(r.data.expiryDate)}
+              {r.data.expired ? <Badge tone="bad" icon="alert" className="ml-2">Caducada</Badge> : null}
+            </>
+          ) : (
+            '—'
+          ),
+        },
+        { label: 'Resultado', value: r.data.accepted ? <Badge tone={r.alert ? 'warn' : 'ok'} icon="check">{r.alert ? 'Aceptada con incidencia' : 'Aceptada'}</Badge> : <Badge tone="bad" icon="x">Rechazada</Badge> },
+        ...(r.data.accepted ? [] : [{ label: 'Motivo del rechazo', value: r.data.rejectionReason ?? '—' }]),
+        ...(r.data.accepted && r.data.correctiveAction ? [{ label: 'Motivo / acción al aceptarla', value: r.data.correctiveAction }] : []),
+      );
+      break;
+    case 'aceite':
+      items.push(
+        { label: 'Freidora', value: r.data.fryerName },
+        { label: 'Acción', value: r.data.action === 'cambiado' ? 'Aceite cambiado' : 'Aceite revisado' },
+        { label: 'Compuestos polares', value: r.data.polarCompounds != null ? formatPercent(r.data.polarCompounds) : '—' },
+        { label: 'Resultado', value: r.data.overLimit ? <Badge tone="bad" icon="alert">Por encima del límite</Badge> : <Badge tone="ok" icon="check">Correcto</Badge> },
+        { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+      );
+      break;
+    case 'plagas':
+      items.push(
+        { label: 'Resultado', value: r.data.result === 'sin_indicios' ? <Badge tone="ok" icon="check">Sin indicios</Badge> : <Badge tone="bad" icon="alert">Con indicios</Badge> },
+        { label: 'Descripción', value: r.data.description ?? '—' },
+        { label: 'Acción', value: r.data.action ?? '—' },
+      );
+      break;
+    case 'incidencia':
+      items.push(
+        { label: 'Descripción', value: r.data.description },
+        { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+        { label: 'Estado', value: r.data.closed ? <Badge tone="ok" icon="check">Cerrada</Badge> : <Badge tone="warn" icon="clock">Abierta</Badge> },
+      );
+      break;
+    case 'formacion':
+      items.push(
+        { label: 'Persona', value: r.data.traineeName },
+        { label: 'Curso', value: r.data.course },
+        { label: 'Fecha', value: formatLocalDate(r.data.trainingDate) },
+        { label: 'Formador', value: r.data.trainer ?? '—' },
+        { label: 'Horas', value: r.data.hours != null ? formatDecimal(r.data.hours) : '—' },
+      );
+      break;
+    case 'cocinado':
+      items.push(
+        { label: 'Producto', value: r.data.product },
+        { label: 'Proceso', value: COOKING_PROCESS_LABELS[r.data.process] },
+        { label: 'Temperatura en el centro', value: <span className="font-display text-2xl tabular">{formatTemp(r.data.coreTemp)}</span> },
+        { label: 'Referencia aplicada', value: `${formatTemp(r.data.referenceTemp)} o más${r.data.freshEgg ? ', con huevo fresco' : ''} (orientativa, configurable en Ajustes)` },
+        { label: 'Tiempo', value: r.data.minutes != null ? `${r.data.minutes} min` : '—' },
+        { label: 'Resultado', value: r.data.outOfRange ? <Badge tone="bad" icon="alert">No llega a la referencia</Badge> : <Badge tone="ok" icon="check">Alcanza la referencia</Badge> },
+        { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+      );
+      break;
+    case 'enfriamiento':
+      if (r.data.phase === 'inicio') {
+        items.push(
+          { label: 'Fase', value: 'Inicio del enfriamiento' },
+          { label: 'Producto', value: r.data.product },
+          { label: 'Temperatura al empezar', value: <span className="font-display text-2xl tabular">{formatTemp(r.data.startTemp)}</span> },
+          ...(r.data.belowStartReference
+            ? [{ label: 'Motivo (por debajo de la referencia)', value: `Empezó por debajo de ${formatTemp(r.data.startReferenceTemp ?? null)} (referencia orientativa): ${r.data.startReason ?? '—'}` }]
+            : []),
+          { label: 'Notas', value: r.data.notes ?? '—' },
+        );
+      } else {
+        items.push(
+          { label: 'Fase', value: 'Fin del enfriamiento' },
+          { label: 'Producto', value: r.data.product ?? '—' },
+          { label: 'Temperaturas', value: `${formatTemp(r.data.startTemp)} → ${r.data.discarded && r.data.endTemp == null ? 'desechado sin medir' : formatTemp(r.data.endTemp)}` },
+          { label: 'Tiempo', value: `${r.data.minutes} min` },
+          { label: 'Criterio aplicado', value: `${formatTemp(r.data.targetTemp)} o menos en ${r.data.maxMinutes} min o menos (orientativo)` },
+          {
+            label: 'Resultado',
+            value: r.data.outOfRange ? (
+              <Badge tone="bad" icon="alert">{r.data.discarded ? 'Desechado' : r.data.overTime ? 'Fuera de tiempo' : 'Por encima de la temperatura'}</Badge>
+            ) : (
+              <Badge tone="ok" icon="check">Cumple el criterio</Badge>
+            ),
+          },
+          { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+          { label: 'Inicio', value: <Link className="font-semibold underline underline-offset-4" to={path(`historial/${r.data.startRecordId}`)}>Ver el registro de inicio</Link> },
+        );
+      }
+      break;
+    case 'personalizado':
+      items.push(
+        { label: 'Registro', value: r.data.templateName },
+        { label: 'Resultado', value: r.alert ? <Badge tone="bad" icon="alert">{customResult(r.data)}</Badge> : <Badge tone="ok" icon="check">{customResult(r.data)}</Badge> },
+        ...(r.data.kind === 'checklist'
+          ? [
+              {
+                label: 'Puntos',
+                value: (
+                  <ul className="space-y-1 font-normal">
+                    {(r.data.items ?? []).map((i) => (
+                      <li key={i.itemId} className="flex items-center gap-2">
+                        <Icon name={i.ok ? 'check' : 'x'} size={18} className={i.ok ? 'text-ok' : 'text-bad'} strokeWidth={2.5} />
+                        {i.label}
+                        <span className="sr-only">{i.ok ? 'correcto' : 'no se cumple'}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ),
+              },
+            ]
+          : r.data.kind === 'numeric'
+            ? [{ label: 'Rango', value: r.data.min != null || r.data.max != null ? `${formatNumber(r.data.min)} a ${formatNumber(r.data.max)}${r.data.unit ? ` ${r.data.unit}` : ''}` : 'Sin rango' }]
+            : []),
+        { label: 'Observaciones', value: r.data.notes ?? '—' },
+        { label: 'Acción correctora', value: r.data.correctiveAction ?? '—' },
+      );
+      break;
+  }
+  return <DetailList items={items} />;
+}
+
+export function RecordDetailPage() {
+  const { recordId = '' } = useParams();
+  // Al navegar a otro registro (p. ej. tras guardar una corrección) la página empieza de cero:
+  // formulario cerrado y vista de detalle.
+  return <RecordDetail key={recordId} recordId={recordId} />;
+}
+
+function RecordDetail({ recordId }: { recordId: string }) {
+  const { orgId, tz, path } = useOrgContext();
+  const [params, setParams] = useSearchParams();
+  const justAmended = params.get('corregido');
+  const q = useRecord(orgId, recordId);
+  const [mode, setMode] = useState<'view' | 'amend' | 'close'>('view');
+  useDocumentTitle('Detalle del registro');
+
+  if (q.isPending) return <LoadingBlock rows={4} />;
+  if (q.isError) {
+    if (isApiError(q.error) && q.error.code === 'NOT_FOUND') {
+      return (
+        <EmptyState icon="history" title="Registro no encontrado" action={<Link to={path('historial')} className="font-semibold underline">Volver al historial</Link>}>
+          Puede que el enlace no sea correcto.
+        </EmptyState>
+      );
+    }
+    return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  }
+  const { record: r, amends, amendedBy } = q.data;
+  const s = recordSummary(r);
+  const openIncident = r.type === 'incidencia' && !r.data.closed && !r.amendedByRecordId;
+
+  return (
+    <>
+      <Link to={path('historial')} className="mb-3 inline-flex min-h-11 items-center gap-1 font-semibold text-ink-muted hover:text-ink">
+        <Icon name="chevronLeft" size={20} /> Historial
+      </Link>
+      <PageHeader
+        eyebrow={RECORD_TYPE_LABELS[r.type]}
+        title={s.title}
+        subtitle={`${formatDateTime(r.effectiveAt, tz)} · ${signer(r)}`}
+        actions={
+          mode === 'view' && !r.amendedByRecordId ? (
+            <>
+              {openIncident ? (
+                <Button variant="ok" icon="check" onClick={() => setMode('close')}>
+                  Cerrar incidencia
+                </Button>
+              ) : null}
+              <Button variant="secondary" icon="pencil" onClick={() => setMode('amend')}>
+                Corregir
+              </Button>
+            </>
+          ) : null
+        }
+      />
+      <div className="space-y-4">
+        {justAmended && mode === 'view' ? (
+          <Callout
+            tone="ok"
+            title={justAmended === 'cierre' ? 'Incidencia cerrada' : 'Corrección guardada'}
+            live="polite"
+            action={
+              <Button variant="ghost" size="sm" onClick={() => setParams({}, { replace: true })}>
+                Cerrar
+              </Button>
+            }
+          >
+            El registro original se conserva enlazado. Esta es la versión vigente.
+          </Callout>
+        ) : null}
+        {amendedBy ? (
+          <Callout
+            tone="warn"
+            icon="pencil"
+            title="Este registro fue corregido"
+            action={
+              <Link to={path(`historial/${amendedBy.id}`)} className="font-semibold underline underline-offset-4">
+                Ver la versión corregida
+              </Link>
+            }
+          >
+            Corregido el {formatDateTime(amendedBy.createdAt, tz)} por {corrector(amendedBy)}. Motivo: {amendedBy.amendmentReason}
+          </Callout>
+        ) : null}
+        {amends ? (
+          <Callout
+            tone="info"
+            icon="pencil"
+            title="Este registro es una corrección"
+            action={
+              <Link to={path(`historial/${amends.id}`)} className="font-semibold underline underline-offset-4">
+                Ver el original
+              </Link>
+            }
+          >
+            Firmó: {signer(r)} · Corrigió: {corrector(r)} el {formatDateTime(r.createdAt, tz)} · Motivo: {r.amendmentReason}. Valor original: {recordSummary(amends).title}
+            {(amends.staff?.name ?? amends.user?.name) !== (r.staff?.name ?? r.user?.name) ? ` · Firmante anterior: ${amends.staff?.name ?? amends.user?.name ?? '—'}` : ''}.
+          </Callout>
+        ) : null}
+        {mode === 'view' ? (
+          <Card>
+            <div className="mb-4 flex items-center gap-3">
+              <span className={cn('grid size-12 place-items-center rounded-2xl', RECORD_TINT[r.type])}>
+                <Icon name={RECORD_ICON[r.type]} size={26} />
+              </span>
+              {r.alert ? <Badge tone="bad" icon="alert">Alerta</Badge> : <Badge tone="ok" icon="check">Sin alerta</Badge>}
+            </div>
+            <RecordDetails record={r} />
+            <dl className="mt-6 grid gap-x-6 gap-y-3 border-t border-line pt-4 text-sm sm:grid-cols-3">
+              <div>
+                <dt className="text-ink-muted">Firma</dt>
+                <dd className="font-semibold" data-testid="record-signature">{signer(r)}</dd>
+              </div>
+              <div>
+                <dt className="text-ink-muted">Registrado desde</dt>
+                <dd className="font-semibold">
+                  {r.deviceId ? 'Tablet de cocina' : r.user ? `La web, con la cuenta de ${r.user.name}` : '—'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-ink-muted">Fecha del registro</dt>
+                <dd className="font-semibold">{formatDateTime(r.effectiveAt, tz)}</dd>
+              </div>
+              {r.amendsRecordId ? (
+                <div className="sm:col-span-3">
+                  <dt className="text-ink-muted">Corrección</dt>
+                  <dd className="font-semibold">
+                    Corrigió: {corrector(r)} el {formatDateTime(r.createdAt, tz)}
+                    {r.deviceId && !r.user ? ' (en la tablet de cocina)' : ''}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+          </Card>
+        ) : (
+          <AmendForm record={r} close={mode === 'close'} onCancel={() => setMode('view')} />
+        )}
+      </div>
+    </>
+  );
+}
+
+function AmendForm({ record, close, onCancel }: { record: AppRecord; close: boolean; onCancel: () => void }) {
+  const { orgId, path } = useOrgContext();
+  const { ctx, error, retry } = useFormContext();
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const keys = useIdempotencyKeys();
+  const [lastData, setLastData] = useState<unknown>(undefined);
+  const [reason, setReason] = useState(close ? 'Incidencia resuelta' : '');
+  const [reasonError, setReasonError] = useState<string | null>(null);
+  // Firmante de la versión corregida: por defecto, el del original (1.5: se puede cambiar con motivo).
+  const [staffId, setStaffId] = useState(record.staff?.id ?? '');
+  const [saving, setSaving] = useState(false);
+  const [serverError, setServerError] = useState<unknown>(null);
+
+  const submit = async (data: unknown) => {
+    if (!reason.trim()) {
+      setReasonError('Indica el motivo de la corrección');
+      document.getElementById('amend-reason')?.focus();
+      return;
+    }
+    setReasonError(null);
+    setSaving(true);
+    setServerError(null);
+    setLastData(data);
+    const body = { reason: reason.trim(), data, staffId: staffId || null };
+    try {
+      const amended = await orgApi(orgId).amend(record.id, body, keys.keyFor(body));
+      keys.reset();
+      await qc.invalidateQueries({ queryKey: ['org', orgId] });
+      // Se abre el detalle de la versión corregida, con el formulario cerrado y la confirmación.
+      navigate(path(`historial/${amended.id}?corregido=${close ? 'cierre' : '1'}`));
+    } catch (err) {
+      setServerError(err);
+      if (isApiError(err)) {
+        const r = err.details.find((d) => d.path === 'reason');
+        if (r) setReasonError(r.message);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Para corregir se usa la entrada completa: los datos almacenados sirven de valores iniciales.
+  // El firmante del original se conserva si sigue activo.
+  return (
+    <Card>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold">{close ? 'Cerrar la incidencia' : 'Corregir el registro'}</h2>
+          <p className="text-ink-muted">
+            {close
+              ? 'Se guarda como una corrección con el estado «cerrada»; el registro original se conserva.'
+              : 'El registro original no se borra: se guarda una versión corregida con el motivo, tu nombre y la hora.'}
+          </p>
+        </div>
+        <Button variant="ghost" onClick={onCancel}>
+          Cancelar
+        </Button>
+      </div>
+      {error ? (
+        <ErrorState error={error} onRetry={retry} />
+      ) : !ctx ? (
+        <LoadingBlock />
+      ) : (
+        <WriteGuard what="corregir registros">
+          <RecordForm
+            type={record.type}
+            ctx={ctx}
+            initial={record.data as never}
+            forceClosed={close}
+            onSubmit={(d) => void submit(d)}
+            onRetry={lastData !== undefined ? () => void submit(lastData) : undefined}
+            submitting={saving}
+            serverError={serverError}
+            submitLabel={close ? 'Cerrar incidencia' : 'Guardar corrección'}
+            footer={
+              <>
+                {!close ? (
+                  <Field
+                    label="¿Quién lo hizo?"
+                    hint={
+                      staffId !== (record.staff?.id ?? '')
+                        ? 'Vas a cambiar la persona que firma el registro: explica el motivo abajo.'
+                        : 'Si se registró con la persona equivocada, cámbiala aquí. Tú constarás como quien corrige.'
+                    }
+                  >
+                    <Select value={staffId} onChange={(e) => setStaffId(e.target.value)} name="amend-staff">
+                      <option value="">Nadie del personal (solo usuarios)</option>
+                      {record.staff && !ctx.staff.some((x) => x.id === record.staff!.id && x.active !== false) ? (
+                        <option value={record.staff.id}>{record.staff.name} (desactivado)</option>
+                      ) : null}
+                      {ctx.staff
+                        .filter((x) => x.active !== false)
+                        .map((x) => (
+                          <option key={x.id} value={x.id}>
+                            {x.name}
+                          </option>
+                        ))}
+                    </Select>
+                  </Field>
+                ) : null}
+                <Field label="Motivo de la corrección" error={reasonError} id="amend-reason">
+                  <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} rows={2} placeholder="Ej.: se apuntó en el equipo equivocado" />
+                </Field>
+              </>
+            }
+          />
+        </WriteGuard>
+      )}
+    </Card>
+  );
+}

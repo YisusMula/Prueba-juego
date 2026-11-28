@@ -1,0 +1,324 @@
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------------------
+ * Fuentes autoalojadas (solo subconjuntos latín y latín extendido).
+ * Bricolage Grotesque: titulares con carácter. Atkinson Hyperlegible Next:
+ * texto, diseñada para la máxima legibilidad (pantallas lejanas, prisas, poca luz).
+ * ------------------------------------------------------------------------- */
+@font-face {
+  font-family: 'Bricolage';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../../node_modules/@fontsource-variable/bricolage-grotesque/files/bricolage-grotesque-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Bricolage';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../../node_modules/@fontsource-variable/bricolage-grotesque/files/bricolage-grotesque-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Atkinson';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../../node_modules/@fontsource-variable/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Atkinson';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../../node_modules/@fontsource-variable/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Cifras: Atkinson Hyperlegible dibuja el cero con barra (se confundía con «Ø» en «0 %», «120 €»,
+ * «07:25»). Para las cifras 0–9 la familia de texto usa las de Bricolage (cero sin barra, con cifras
+ * tabulares disponibles). Al declararse después, este tramo tiene prioridad para U+0030–0039. */
+@font-face {
+  font-family: 'Atkinson';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../../node_modules/@fontsource-variable/bricolage-grotesque/files/bricolage-grotesque-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0030-0039;
+}
+
+/* ---------------------------------------------------------------------------
+ * Tokens de diseño. Paleta "cocina profesional": papel cálido, tinta azul pizarra,
+ * marca petróleo (acero + agua) y semáforo verde/ámbar/rojo con significado.
+ * ------------------------------------------------------------------------- */
+:root {
+  color-scheme: light dark;
+  --paper: #f6f4ef;
+  --surface: #ffffff;
+  --surface-2: #eeebe3;
+  --surface-3: #e3dfd4;
+  --ink: #15232d;
+  --ink-muted: #4c5a63;
+  --line: #d9d4c8;
+  --line-strong: #b9b2a3;
+  --brand: #0d5c63;
+  --brand-strong: #08454b;
+  --brand-soft: #d5ebe9;
+  --on-brand: #ffffff;
+  --mint: #9fdccf;
+  --ok: #1b7340;
+  --ok-solid: #22894d;
+  --ok-soft: #dcf1e3;
+  --warn: #8a5300;
+  --warn-solid: #e09b1a;
+  --warn-soft: #fcefd3;
+  --bad: #b02417;
+  --bad-solid: #c8321f;
+  --bad-soft: #fde3df;
+  --focus: #0a7ea4;
+  --shadow: 0 1px 2px rgb(21 35 45 / 0.06), 0 4px 16px rgb(21 35 45 / 0.06);
+  --shadow-lg: 0 2px 4px rgb(21 35 45 / 0.06), 0 16px 40px rgb(21 35 45 / 0.12);
+}
+
+/*
+ * Tema oscuro: por preferencia del sistema, salvo que el elemento raíz fije data-theme="light";
+ * data-theme="dark" lo fuerza aunque el sistema esté en claro (lo usan visores que imponen su tema).
+ * La app normal no pone data-theme: solo cuenta la preferencia del sistema.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0d1418;
+    --surface: #141f25;
+    --surface-2: #1b2930;
+    --surface-3: #24353d;
+    --ink: #e7eef0;
+    --ink-muted: #a5b4ba;
+    --line: #2a3b44;
+    --line-strong: #3e535d;
+    --brand: #62c6c4;
+    --brand-strong: #8ad9d6;
+    --brand-soft: #123a3e;
+    --on-brand: #04262a;
+    --mint: #2c6b62;
+    --ok: #6fd897;
+    --ok-solid: #2f9e5c;
+    --ok-soft: #12321f;
+    --warn: #f5c060;
+    --warn-solid: #d4930f;
+    --warn-soft: #3a2b0c;
+    --bad: #ff978b;
+    /* Más oscuro que en claro para que el texto blanco de los botones rojos cumpla 4,5:1. */
+    --bad-solid: #b3311f;
+    --bad-soft: #3e1814;
+    --focus: #6fd0f0;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
+    --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.3), 0 16px 40px rgb(0 0 0 / 0.4);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0d1418;
+  --surface: #141f25;
+  --surface-2: #1b2930;
+  --surface-3: #24353d;
+  --ink: #e7eef0;
+  --ink-muted: #a5b4ba;
+  --line: #2a3b44;
+  --line-strong: #3e535d;
+  --brand: #62c6c4;
+  --brand-strong: #8ad9d6;
+  --brand-soft: #123a3e;
+  --on-brand: #04262a;
+  --mint: #2c6b62;
+  --ok: #6fd897;
+  --ok-solid: #2f9e5c;
+  --ok-soft: #12321f;
+  --warn: #f5c060;
+  --warn-solid: #d4930f;
+  --warn-soft: #3a2b0c;
+  --bad: #ff978b;
+  /* Más oscuro que en claro para que el texto blanco de los botones rojos cumpla 4,5:1. */
+  --bad-solid: #b3311f;
+  --bad-soft: #3e1814;
+  --focus: #6fd0f0;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
+  --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.3), 0 16px 40px rgb(0 0 0 / 0.4);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Variante `dark:` de Tailwind con la misma regla que los tokens. */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+  &:where(:root[data-theme="dark"], :root[data-theme="dark"] *) {
+    @slot;
+  }
+}
+
+@theme inline {
+  --font-display: 'Bricolage', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Atkinson', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-soft: var(--brand-soft);
+  --color-on-brand: var(--on-brand);
+  --color-mint: var(--mint);
+  --color-ok: var(--ok);
+  --color-ok-solid: var(--ok-solid);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-solid: var(--warn-solid);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-solid: var(--bad-solid);
+  --color-bad-soft: var(--bad-soft);
+  --color-focus: var(--focus);
+
+  --shadow-card: var(--shadow);
+  --shadow-pop: var(--shadow-lg);
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --radius-3xl: 1.75rem;
+
+  --animate-pop: pop 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  --animate-fade-up: fade-up 240ms ease-out;
+  --animate-shake: shake 360ms ease-in-out;
+}
+
+@keyframes pop {
+  0% { transform: scale(0.85); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes fade-up {
+  0% { transform: translateY(6px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+/* Barra de progreso indeterminada (informes PDF en cola/generándose). */
+.indeterminate-bar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 30%;
+  border-radius: 9999px;
+  background: var(--brand);
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .indeterminate-bar::after { width: 100%; animation: none; opacity: 0.5; }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 1.0625rem;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    /* Palabras larguísimas (p. ej. un nombre de local sin espacios) se parten en vez de desbordar. */
+    overflow-wrap: break-word;
+  }
+  /*
+   * Todo texto escrito por una persona (nombre del local, plato, proveedor…) rompe palabra en vez de desbordar:
+   * «anywhere» también reduce el tamaño mínimo de contenido, así que los hijos de cajas flex/grid pueden encoger.
+   */
+  body, body * {
+    overflow-wrap: anywhere;
+  }
+  /* En tablas se mantiene el criterio normal (solo parte la palabra si no cabe) para no deformar las columnas. */
+  td, th {
+    overflow-wrap: break-word;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+    text-wrap: balance;
+  }
+  :focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: var(--mint);
+    color: var(--ink);
+  }
+  [hidden] { display: none !important; }
+  input, select, textarea, button { font: inherit; }
+  /* Las cifras se alinean en tablas y lecturas */
+  .tabular { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+    background-size: 400% 100%;
+    animation: shimmer 1.4s ease infinite;
+    border-radius: 0.75rem;
+  }
+  .placeholder-mark {
+    background: var(--warn-soft);
+    color: var(--warn);
+    border: 1px dashed var(--warn-solid);
+    padding: 0 0.3em;
+    border-radius: 0.3em;
+    font-weight: 700;
+    white-space: normal;
+  }
+  .prose-legal h2 { font-size: 1.35rem; font-weight: 700; margin-top: 2rem; margin-bottom: 0.5rem; }
+  .prose-legal h3 { font-size: 1.1rem; font-weight: 700; margin-top: 1.25rem; margin-bottom: 0.25rem; }
+  .prose-legal p, .prose-legal li { margin-top: 0.5rem; color: var(--ink); }
+  .prose-legal ul { list-style: disc; padding-left: 1.25rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  body { background: #fff; color: #000; }
+  .no-print { display: none !important; }
+}

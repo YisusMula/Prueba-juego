@@ -1,0 +1,222 @@
+# Despliegue de producción de ejemplo: app + PostgreSQL + Caddy (TLS automático con Let's Encrypt).
+# Uso (desde enregla/):
+#   cp server/.env.example server/.env    # NODE_ENV=production, APP_URL=https://TU_DOMINIO, SMTP_*, MAIL_FROM,
+#                                         # (claves de la base de datos aparte: sh deploy/generate-db-secrets.sh)
+#                                         # DOMAIN=TU_DOMINIO, ACME_EMAIL=tu@email
+#   docker compose -f docker-compose.prod.yml --env-file server/.env up -d --build
+# Guía completa (primer despliegue, copias, restauración, actualización): docs/OPERACIONES.md
+# Requisitos: el DNS de DOMAIN apunta a este servidor y los puertos 80/443 están abiertos.
+# La app NO publica ningún puerto: solo Caddy es accesible desde fuera.
+x-app-build: &app-build
+  context: .
+  # Datos de la web (VITE_*): el build falla si faltan los legales obligatorios (web/.env.example).
+  args:
+    VITE_APP_NAME: ${VITE_APP_NAME:-}
+    VITE_PUBLIC_URL: ${VITE_PUBLIC_URL:-}
+    VITE_SUPPORT_EMAIL: ${VITE_SUPPORT_EMAIL:-}
+    VITE_LEGAL_OWNER_NAME: ${VITE_LEGAL_OWNER_NAME:-}
+    VITE_LEGAL_TAX_ID: ${VITE_LEGAL_TAX_ID:-}
+    VITE_LEGAL_ADDRESS: ${VITE_LEGAL_ADDRESS:-}
+    VITE_LEGAL_CONTACT_EMAIL: ${VITE_LEGAL_CONTACT_EMAIL:-}
+    VITE_LEGAL_HOSTING_PROVIDER: ${VITE_LEGAL_HOSTING_PROVIDER:-}
+    VITE_LEGAL_LAST_UPDATED: ${VITE_LEGAL_LAST_UPDATED:-}
+    VITE_LEGAL_REGISTRY_DATA: ${VITE_LEGAL_REGISTRY_DATA:-}
+    VITE_LEGAL_HOSTING_LOCATION: ${VITE_LEGAL_HOSTING_LOCATION:-}
+    VITE_LEGAL_EMAIL_PROVIDER: ${VITE_LEGAL_EMAIL_PROVIDER:-}
+    VITE_LEGAL_JURISDICTION: ${VITE_LEGAL_JURISDICTION:-}
+    VITE_ALLOW_PLACEHOLDER_LEGAL: ${VITE_ALLOW_PLACEHOLDER_LEGAL:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: enregla
+      POSTGRES_USER: enregla
+    # Claves de la base de datos (POSTGRES_PASSWORD y las de los roles) en un fichero que SOLO recibe
+    # este servicio (deploy/generate-db-secrets.sh lo crea). El script de inicio crea enregla_owner
+    # (migraciones y mantenimiento), enregla_app (ejecución) y enregla_backup (copias, solo lectura).
+    env_file:
+      - path: deploy/secrets/db.env
+        required: true
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Por TCP: durante la inicialización el servidor temporal solo escucha por socket.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U enregla -d enregla"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  # Migraciones con el rol PROPIETARIO del esquema, en un paso aparte que termina antes de que
+  # arranque la app. Al acabar fija los permisos del rol de la app (APP_DB_ROLE): en `records`
+  # solo SELECT e INSERT, así que ni la app ni quien robe sus credenciales pueden reescribir,
+  # borrar ni desactivar el trigger de inmutabilidad del historial.
+  migrate:
+    build: *app-build
+    image: enregla-app:local
+    restart: "no"
+    command: ["node", "dist/db/migrate-cli.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ""
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: enregla_owner
+      PGDATABASE: enregla
+      APP_DB_ROLE: enregla_app
+      # Rol de copias (solo lectura, sin las tablas que no se copian): también lo fija migrate.
+      BACKUP_DB_ROLE: enregla_backup
+    # Solo la clave del propietario (PGPASSWORD de deploy/secrets/owner.env), nada más.
+    env_file:
+      - path: deploy/secrets/owner.env
+        required: true
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks: [internal]
+
+  # Mantenimiento cada hora con el rol PROPIETARIO (N1/N3): purga los locales cuyo plazo venció o cuya
+  # eliminación inmediata pidió su titular (como mucho en una hora) y la auditoría antigua (mínimo
+  # 12 meses, fijado en la base de datos). La app NO puede ejecutar estas purgas. Si en 24 h se
+  # fueran a purgar más locales de los permitidos (enregla_owner_settings.max_purges_per_day, 3 por
+  # defecto), no purga ninguno, lo registra en la auditoría y escribe un error en su log.
+  maintenance:
+    build: *app-build
+    image: enregla-app:local
+    restart: unless-stopped
+    command: ["node", "dist/scripts/maintenance.js", "--loop", "3600"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ""
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: enregla_owner
+      PGDATABASE: enregla
+      AUDIT_RETENTION_MONTHS: ${AUDIT_RETENTION_MONTHS:-12}
+      # Para purgar un local que ha tenido suscripción, el mantenimiento la comprueba en Stripe (solo
+      # lectura; puede ser una clave restringida). Sin ella, esos locales no se purgan (error en el log).
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+    env_file:
+      - path: deploy/secrets/owner.env
+        required: true
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks: [internal]
+
+  app:
+    build: *app-build
+    image: enregla-app:local
+    restart: unless-stopped
+    # La app NO recibe las claves de administración ni del propietario: solo server/.env (sin claves
+    # de la base de datos) y deploy/secrets/app-db.env (PGPASSWORD del rol enregla_app). En producción
+    # se niega a arrancar si encuentra POSTGRES_PASSWORD o DB_*_PASSWORD en su entorno.
+    env_file:
+      - path: server/.env
+        required: true
+      - path: deploy/secrets/app-db.env
+        required: true
+    environment:
+      # Siempre production (aunque server/.env diga development): la imagen no trae pino-pretty.
+      NODE_ENV: production
+      # Conexión por variables separadas: la contraseña NO va dentro de una URL (no hace falta
+      # codificar caracteres como @ : / #). DATABASE_URL vacío anula el que haya en server/.env.
+      DATABASE_URL: ""
+      PGHOST: db
+      PGPORT: "5432"
+      # Rol de EJECUCIÓN: sin DDL, sin ser propietario de nada y, en `records`, solo SELECT e
+      # INSERT. Las migraciones las aplica el servicio `migrate` con el rol propietario.
+      PGUSER: enregla_app
+      PGDATABASE: enregla
+      MIGRATE_ON_START: "false"
+      HOST: 0.0.0.0
+      PORT: 3000
+      # Solo se confía en el proxy de la red interna `edge` (Caddy). Nunca TRUST_PROXY=true.
+      TRUST_PROXY: 172.30.0.0/24
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    # Límite de memoria recomendado (docs/OPERACIONES.md, «Memoria del contenedor»): proceso
+    # principal (~250 MB) + hasta PDF_MAX_CONCURRENCY (2) workers de PDF con el heap acotado a
+    # 256 MB cada uno + búferes de los PDF. Con más PDF simultáneos, súbelo ~350 MB por cada uno.
+    mem_limit: 1g
+    networks: [internal, edge]
+
+  # Copias de seguridad diarias con pg_dump (deploy/backup.sh), retención local de
+  # BACKUP_RETENTION_DAYS días en ./backups. Una copia que solo está en este servidor NO protege
+  # de perder el servidor: define BACKUP_POST_HOOK para enviarla fuera (docs/OPERACIONES.md).
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      # Rol de SOLO LECTURA (pg_read_all_data): no puede modificar ni borrar nada.
+      PGUSER: enregla_backup
+      PGDATABASE: enregla
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_POST_HOOK: ${BACKUP_POST_HOOK:-}
+      # Hora (UTC) de la copia diaria.
+      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-3}
+    volumes:
+      - ./deploy/backup.sh:/usr/local/bin/enregla-backup.sh:ro
+      - ./backups:/backups
+    # Bucle simple (sin cron en la imagen): una copia al día a BACKUP_HOUR_UTC.
+    # Solo la clave del rol de copias (PGPASSWORD de deploy/secrets/backup.env).
+    env_file:
+      - path: deploy/secrets/backup.env
+        required: true
+    entrypoint: ["/bin/sh", "-c", "while true; do if [ \"$$(date -u +%H)\" -eq \"$${BACKUP_HOUR_UTC}\" ] && [ \"$$(date -u +%F)\" != \"$$(cat /backups/.last 2>/dev/null)\" ]; then sh /usr/local/bin/enregla-backup.sh && date -u +%F > /backups/.last; fi; sleep 300; done"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Define DOMAIN (p. ej. app.tudominio.es) en server/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?Define ACME_EMAIL en server/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+    networks: [edge]
+
+networks:
+  internal:
+    internal: true
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,496 @@
+/**
+ * Tipos de las respuestas de la API (docs/API.md). Las constantes y esquemas de entrada
+ * se importan directamente de `@shared/schemas` (enregla/server/src/schemas) para usar
+ * exactamente las mismas reglas que el servidor.
+ */
+import type { AllergenId, CookingProcess, CustomFrequency, CustomKind, ReceptionCategory, RecordType, ReferenceValues, SuggestedTemplate, VerificationKind } from '@shared/schemas';
+import type { BUSINESS_TYPES, EQUIPMENT_TYPES } from '@shared/schemas';
+
+export type { AllergenId, ReceptionCategory, RecordType, ReferenceValues, CustomKind, CustomFrequency };
+export type BusinessType = (typeof BUSINESS_TYPES)[number];
+export type EquipmentType = (typeof EQUIPMENT_TYPES)[number];
+export type Role = 'owner' | 'manager';
+
+export type Page<T> = { items: T[]; nextCursor: string | null };
+
+export type User = { id: string; email: string; name: string; emailVerified: boolean; createdAt?: string };
+
+export type SubscriptionStatus =
+  | 'trialing'
+  | 'trial_expired'
+  | 'active'
+  | 'past_due'
+  | 'unpaid'
+  | 'canceled'
+  | 'incomplete'
+  | 'incomplete_expired'
+  | 'paused';
+
+export type Subscription = {
+  status: SubscriptionStatus;
+  readOnly: boolean;
+  /** Cobro fallido (past_due): se puede seguir escribiendo, pero hay que avisar. */
+  paymentFailed: boolean;
+  /** Desde cuándo el cobro falla (past_due). Pasado el plazo de gracia del servidor (no expuesto), el local pasa a solo lectura. */
+  pastDueSince?: string | null;
+  trialEndsAt: string;
+  plan: 'monthly' | 'annual' | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  hasBillingAccount: boolean;
+};
+
+export type OrgSummary = {
+  id: string;
+  name: string;
+  businessType: BusinessType;
+  role: Role;
+  subscription: Subscription;
+  /** Si no es null, el local está pendiente de eliminación definitiva en esa fecha. */
+  deletionScheduledAt: string | null;
+};
+
+export type Account = { user: User; organizations: OrgSummary[] };
+
+export type Organization = {
+  id: string;
+  name: string;
+  businessType: BusinessType;
+  timezone: string;
+  reminderEnabled: boolean;
+  reminderHour: number;
+  role: Role;
+  publicMenu: { enabled: boolean; slug: string };
+  subscription: Subscription;
+  /** Si no es null, el local está pendiente de eliminación definitiva en esa fecha (solo lectura). */
+  deletionScheduledAt: string | null;
+  /** El titular confirmó la eliminación inmediata: el mantenimiento la ejecuta en la próxima hora. */
+  purgeRequestedAt: string | null;
+  /** Datos del establecimiento para la portada del PDF (fase 2). */
+  establishment?: Establishment;
+  /** Valores de referencia vigentes (los del local o los orientativos). */
+  referenceValues?: ReferenceValues;
+  /** Valores que el local ha cambiado. */
+  referenceValuesCustom?: Partial<ReferenceValues>;
+  createdAt: string;
+};
+
+export type Establishment = {
+  legalName: string | null;
+  taxId: string | null;
+  address: string | null;
+  postalCode: string | null;
+  city: string | null;
+  province: string | null;
+  sanitaryRegistry: string | null;
+  sanitaryRegistryFormatOk: boolean;
+};
+
+export type CustomTemplate = {
+  id: string;
+  name: string;
+  kind: CustomKind;
+  items: { id: string; label: string }[];
+  unit: string | null;
+  min: number | null;
+  max: number | null;
+  frequency: CustomFrequency;
+  timesPerDay: number;
+  weekday: number | null;
+  monthDay: number | null;
+  instructions: string | null;
+  /** Avisa si pasan estos meses sin registrarlo (p. ej. verificación de termómetros cada 6). */
+  reminderMonths?: number | null;
+  suggestionKey: string | null;
+  source: string | null;
+  active: boolean;
+  createdAt: string;
+};
+export type TemplateSuggestion = SuggestedTemplate & { activated: boolean };
+
+export type Verification = {
+  id: string;
+  from: string;
+  to: string;
+  kind: VerificationKind;
+  comment: string | null;
+  user: { id: string; name: string; role: Role };
+  createdAt: string;
+  /** Foto del periodo en el momento de verificar (no cambia después). */
+  snapshot?: VerificationSnapshot | null;
+};
+export type VerificationSnapshot = {
+  gapTasks: number;
+  gapDays: number;
+  pendingTasks: number;
+  alerts: number;
+  alertsWithoutAction: number;
+  openCoolings: number;
+  records: number;
+};
+
+export type OpenCooling = {
+  recordId: string;
+  product: string;
+  startTemp: number | null;
+  startedAt: string;
+  deadline: string;
+  minutesElapsed: number;
+  overdue: boolean;
+  targetTemp: number;
+  maxMinutes: number;
+};
+
+export type MissingTask = {
+  kind: 'temperatura' | 'limpieza' | 'personalizado' | 'enfriamiento';
+  id: string;
+  name: string;
+  expected: number;
+  done: number;
+  partial?: boolean;
+  frequency: string;
+  /** El periodo (día, semana o mes) aún no ha terminado: «pendiente», no «no consta». */
+  pending?: boolean;
+  /** Último día del periodo de la tarea (para semanales y mensuales). */
+  periodEnd?: string;
+};
+
+export type Member = { userId: string; name: string; email: string; role: Role; joinedAt: string };
+export type Invitation = { id: string; email: string; role: Role; expiresAt: string; createdAt: string };
+export type InvitationPreview = { organizationName: string; email: string; role: Role; invitedBy: string | null; expiresAt: string };
+
+export type AuditEvent = {
+  id: string;
+  event: string;
+  user: { id: string; name: string | null } | null;
+  ip: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type Staff = { id: string; name: string; hasPin: boolean; active: boolean; lockedUntil: string | null; createdAt: string };
+export type Device = { id: string; name: string; createdByName?: string | null; createdAt: string; lastUsedAt: string | null; revokedAt: string | null; active: boolean };
+
+export type Equipment = {
+  id: string;
+  name: string;
+  type: EquipmentType;
+  minTemp: number | null;
+  maxTemp: number | null;
+  checksPerDay: number;
+  active: boolean;
+  createdAt: string;
+};
+
+export type Frequency = 'daily' | 'weekly' | 'monthly';
+export type CleaningItem = { id: string; area: string; product: string | null; method: string | null };
+export type CleaningPlan = {
+  id: string;
+  name: string;
+  frequency: Frequency;
+  weekday: number | null;
+  monthDay: number | null;
+  items: CleaningItem[];
+  active: boolean;
+  createdAt: string;
+};
+
+export type Supplier = {
+  id: string;
+  name: string;
+  contactName: string | null;
+  phone: string | null;
+  email: string | null;
+  products: string[];
+  notes: string | null;
+  /** Categoría de producto que se preselecciona en la recepción. */
+  defaultCategory?: ReceptionCategory | null;
+  /** Límite propio de recepción (máx. en refrigerado/congelado, mín. en caliente); null = el de referencia. */
+  receptionLimit?: number | null;
+  createdAt: string;
+};
+
+// --- Registros ---------------------------------------------------------------
+export type TemperaturaStored = {
+  equipmentId: string;
+  equipmentName: string;
+  value: number;
+  minTemp: number | null;
+  maxTemp: number | null;
+  outOfRange: boolean;
+  correctiveAction: string | null;
+};
+export type LimpiezaStored = {
+  cleaningPlanId: string;
+  planName: string;
+  items: { itemId: string; area: string; done: boolean }[];
+  completed: boolean;
+  observations: string | null;
+};
+export type RecepcionStored = {
+  supplierId: string | null;
+  supplierName: string;
+  product: string;
+  lot: string | null;
+  temperature: number | null;
+  /** Tipo de producto (registros nuevos); `categoryAssumed`: aplicado por defecto a una petición sin categoría. */
+  category?: ReceptionCategory | null;
+  categoryAssumed?: boolean;
+  /** «Ambiente» para un proveedor habitualmente refrigerado/congelado/caliente: con su motivo. */
+  categoryDiffersFromSupplier?: boolean;
+  /** Corrección que pasó de refrigerado/congelado/caliente a ambiente (con motivo). */
+  categoryChangedFrom?: ReceptionCategory | null;
+  categoryReason?: string | null;
+  limitSource?: 'referencia' | 'proveedor' | 'peticion' | 'presupuesta' | null;
+  limitDiffersFromReference?: boolean;
+  maxTemperature?: number | null;
+  minTemperature?: number | null;
+  temperatureOutOfRange?: boolean;
+  expiryDate: string | null;
+  expired?: boolean;
+  accepted: boolean;
+  rejectionReason: string | null;
+  correctiveAction?: string | null;
+};
+export type AceiteStored = {
+  equipmentId: string;
+  fryerName: string;
+  action: 'revisado' | 'cambiado';
+  polarCompounds: number | null;
+  overLimit: boolean;
+  correctiveAction: string | null;
+};
+export type PlagasStored = { result: 'sin_indicios' | 'con_indicios'; description: string | null; action: string | null };
+export type IncidenciaStored = { description: string; correctiveAction: string | null; closed: boolean };
+export type FormacionStored = {
+  traineeStaffId: string;
+  traineeName: string;
+  course: string;
+  trainingDate: string;
+  trainer: string | null;
+  hours: number | null;
+};
+
+export type CocinadoStored = {
+  product: string;
+  process: CookingProcess;
+  /** Cocinado con huevo fresco: referencia más alta (75 °C por defecto). */
+  freshEgg?: boolean;
+  coreTemp: number;
+  minutes: number | null;
+  referenceTemp: number;
+  outOfRange: boolean;
+  correctiveAction: string | null;
+};
+export type EnfriamientoStored =
+  | {
+      phase: 'inicio';
+      product: string;
+      startTemp: number;
+      notes: string | null;
+      /** Temperatura de partida de referencia aplicada (60 °C por defecto) y si empezó por debajo, con motivo. */
+      startReferenceTemp?: number;
+      belowStartReference?: boolean;
+      startReason?: string | null;
+    }
+  | {
+      phase: 'fin';
+      startRecordId: string;
+      product: string | null;
+      startTemp: number | null;
+      startedAt: string | null;
+      endedAt: string | null;
+      endTemp: number | null;
+      minutes: number;
+      targetTemp: number;
+      maxMinutes: number;
+      overTemp: boolean;
+      overTime: boolean;
+      discarded: boolean;
+      outOfRange: boolean;
+      correctiveAction: string | null;
+    };
+export type PersonalizadoStored = {
+  templateId: string;
+  templateName: string;
+  kind: CustomKind;
+  notes: string | null;
+  items?: { itemId: string; label: string; ok: boolean }[];
+  failed?: number;
+  reading?: number;
+  unit?: string | null;
+  min?: number | null;
+  max?: number | null;
+  outOfRange?: boolean;
+  answer?: boolean;
+  correctiveAction: string | null;
+};
+
+export type RecordDataMap = {
+  temperatura: TemperaturaStored;
+  limpieza: LimpiezaStored;
+  recepcion: RecepcionStored;
+  aceite: AceiteStored;
+  plagas: PlagasStored;
+  incidencia: IncidenciaStored;
+  formacion: FormacionStored;
+  cocinado: CocinadoStored;
+  enfriamiento: EnfriamientoStored;
+  personalizado: PersonalizadoStored;
+};
+
+type RecordBase = {
+  id: string;
+  staff: { id: string; name: string } | null;
+  user: { id: string; name: string } | null;
+  deviceId: string | null;
+  /** Firma legible: «Ana Martín (anotado por Laura Gil)» si un usuario lo anotó para un empleado. */
+  signature?: string;
+  /** En una corrección: quién la hizo (usuario en la web, empleado en la tablet). */
+  correctedBy?: string | null;
+  alert: boolean;
+  amendsRecordId: string | null;
+  amendmentReason: string | null;
+  amendedByRecordId: string | null;
+  /** Fecha del HECHO (en una enmienda, la del registro original). Es la que se muestra. */
+  effectiveAt: string;
+  /** Hora real de inserción (en una enmienda: cuándo se corrigió). */
+  createdAt: string;
+};
+
+export type AppRecord = {
+  [K in RecordType]: RecordBase & { type: K; data: RecordDataMap[K] };
+}[RecordType];
+
+export type RecordDetail = { record: AppRecord; amends: AppRecord | null; amendedBy: AppRecord | null };
+
+// --- Alérgenos ------------------------------------------------------------------
+export type AllergenStatus = 'contains' | 'traces' | 'no';
+export type AllergenMap = Record<AllergenId, AllergenStatus>;
+export type Dish = {
+  id: string;
+  name: string;
+  category: string | null;
+  description: string | null;
+  allergens: AllergenMap;
+  /** Revisión explícita de los 14 alérgenos: sin revisar no sale en la carta pública. */
+  allergensReviewed: boolean;
+  allergensReviewedAt: string | null;
+  visible: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+export type PublicMenuSettings = { enabled: boolean; slug: string; apiPath: string };
+export type PublicMenu = {
+  organization: { name: string };
+  allergens: { id: AllergenId; label: string; name?: string }[];
+  statuses: Record<AllergenStatus, string>;
+  dishes: { name: string; category: string | null; description: string | null; allergens: AllergenMap }[];
+  updatedAt: string | null;
+  notice: string;
+};
+
+// --- Tareas -------------------------------------------------------------------
+export type AlertKind =
+  | 'temperatura_fuera_de_rango'
+  | 'aceite_fuera_de_limite'
+  | 'recepcion_rechazada'
+  | 'recepcion_con_incidencia'
+  | 'plagas_con_indicios'
+  | 'incidencia_abierta'
+  | 'cocinado_por_debajo'
+  | 'enfriamiento_fuera_de_criterio'
+  | 'enfriamiento_sin_cerrar'
+  | 'registro_personalizado_no_conforme'
+  | 'registro_personalizado_vencido';
+
+export type TodayTasks = {
+  date: string;
+  timezone: string;
+  temperatures: {
+    equipmentId: string;
+    name: string;
+    type: EquipmentType;
+    minTemp: number | null;
+    maxTemp: number | null;
+    required: number;
+    done: number;
+    status: 'done' | 'pending';
+    /** false: alta o reactivación hoy; se muestra pero no cuenta (empieza a contar mañana). */
+    countsToday: boolean;
+    /** Lecturas hechas que solo cuentan por una corrección registrada en un día posterior. */
+    correctedLater?: number;
+    /** Alguna lectura vigente de hoy está fuera de rango («Hecho con alerta» si además está hecho). */
+    withAlert?: boolean;
+    /** La última lectura de hoy está fuera de rango: hay que volver a medir. */
+    remeasure?: boolean;
+    /** Si se eligió «Repetiré la medición en 30 min»: a partir de cuándo toca volver a medir. */
+    remeasureFrom?: string | null;
+    lastReading: { value: number; outOfRange: boolean; at: string } | null;
+  }[];
+  cleaning: {
+    cleaningPlanId: string;
+    name: string;
+    frequency: Frequency;
+    status: 'done' | 'pending';
+    countsToday: boolean;
+    /** Semanales y mensuales se ven todo el periodo; `dueToday` solo el día previsto. */
+    dueToday?: boolean;
+    /** Día previsto dentro del periodo actual («toca el jueves»). */
+    dueDate?: string | null;
+    completedAt: string | null;
+    /** Hecha solo gracias a una corrección registrada en un día posterior al del hecho. */
+    correctedLater?: boolean;
+    /** Última limpieza PARCIAL del periodo (no cuenta como hecha). */
+    partial?: { done: number; total: number; at: string; recordId: string } | null;
+  }[];
+  /** Registros personalizados que tocan hoy (fase 2). */
+  custom?: {
+    templateId: string;
+    name: string;
+    kind: CustomKind;
+    frequency: CustomFrequency;
+    required: number;
+    done: number;
+    status: 'done' | 'pending';
+    countsToday: boolean;
+    dueToday?: boolean;
+    dueDate?: string | null;
+    withAlert: boolean;
+    lastAt: string | null;
+  }[];
+  /** Enfriamientos empezados y sin cerrar. */
+  coolings?: OpenCooling[];
+  /** Semana anterior: ¿está marcada como revisada? (`due`: el local ya existía al terminar esa semana). */
+  review?: { from: string; to: string; due: boolean; verified: boolean };
+  summary: { total: number; done: number; pending: number; percent: number; correctedLater?: number; doneWithAlert?: number; remeasure?: number };
+  alerts: { kind: AlertKind; recordId: string; message: string; createdAt: string }[];
+};
+
+export type Compliance = {
+  from: string;
+  to: string;
+  days: { date: string; expected: number; done: number; percent: number | null; correctedLater?: number; missing?: MissingTask[] }[];
+  overall: { expected: number; done: number; percent: number | null; correctedLater?: number; daysWithGaps?: number; daysEvaluated?: number };
+};
+
+export type Billing = {
+  billingEnabled: boolean;
+  prices: {
+    monthly: { amount: number; currency: string; interval: string };
+    annual: { amount: number; currency: string; interval: string };
+  };
+  subscription: Subscription;
+};
+
+// --- Kiosko -------------------------------------------------------------------
+export type KioskContext = {
+  device: { id: string; name: string };
+  organization: { id: string; name: string; timezone: string; readOnly: boolean };
+  staff: { id: string; name: string; hasPin: boolean }[];
+  equipment: { id: string; name: string; type: EquipmentType; minTemp: number | null; maxTemp: number | null; checksPerDay: number }[];
+  cleaningPlans: { id: string; name: string; frequency: Frequency; weekday: number | null; monthDay: number | null; items: CleaningItem[] }[];
+  suppliers: { id: string; name: string; products: string[]; defaultCategory?: ReceptionCategory | null; receptionLimit?: number | null }[];
+  customTemplates?: CustomTemplate[];
+  referenceValues?: ReferenceValues;
+};

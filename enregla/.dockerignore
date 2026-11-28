@@ -1,0 +1,25 @@
+**/node_modules
+**/dist
+**/coverage
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+.git
+deploy/secrets
+# N10: copias y volcados de la base de datos nunca entran en la imagen.
+backups
+**/backups
+**/*.dump
+**/*.dump.sha256
+**/*.sql.gz
+**/*.partial
+**/*.bak
+**/*.orig
+**/*~
+# N10: copias de secretos fuera de deploy/secrets/.
+**/db.env*
+**/owner.env*
+**/backup.env*
+**/app-db.env*
+**/*.env.old

@@ -1,0 +1,133 @@
+# CI de EnRegla (servidor + web). Solo se ejecuta si cambia algo bajo enregla/ o este fichero.
+name: EnRegla CI
+
+on:
+  push:
+    paths:
+      - 'enregla/**'
+      - '.github/workflows/enregla-ci.yml'
+  pull_request:
+    paths:
+      - 'enregla/**'
+      - '.github/workflows/enregla-ci.yml'
+
+permissions:
+  contents: read
+
+# Acciones fijadas a su versión MAYOR estable (v4). Recomendado para endurecer la cadena de
+# suministro: fijarlas por SHA de commit completo (p. ej. `actions/checkout@<sha-de-40-caracteres> # v4.x.y`),
+# tomando el SHA de la página de releases oficial de cada acción, y actualizarlas con Dependabot
+# (package-ecosystem: github-actions). No se han fijado por SHA aquí para no introducir SHAs sin verificar.
+
+concurrency:
+  group: enregla-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Servidor (lint, typecheck, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: enregla
+          POSTGRES_PASSWORD: enregla
+          POSTGRES_DB: enregla_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U enregla -d enregla_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: enregla/server
+    env:
+      # Los tests BORRAN y recrean el esquema public de esta base.
+      TEST_DATABASE_URL: postgres://enregla:enregla@localhost:5432/enregla_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: enregla/server/package-lock.json
+      # pdftotext: los tests del PDF extraen el texto para comprobar que no se recorta nada.
+      - name: Instalar poppler-utils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  web:
+    name: Web (lint, typecheck, tests, build, e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Usuario con permisos de superusuario en el contenedor: e2e/start-server.mjs crea la base enregla_e2e.
+          POSTGRES_USER: enregla
+          POSTGRES_PASSWORD: enregla
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U enregla -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_ADMIN_DATABASE_URL: postgres://enregla:enregla@localhost:5432/postgres
+      E2E_DATABASE_URL: postgres://enregla:enregla@localhost:5432/enregla_e2e
+      # CI compila sin los datos legales reales del titular: se permiten los marcadores a propósito.
+      # (Un build de producción real sin VITE_LEGAL_* falla; ver web/.env.example.)
+      VITE_ALLOW_PLACEHOLDER_LEGAL: 'true'
+      VITE_PUBLIC_URL: http://localhost:3100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            enregla/server/package-lock.json
+            enregla/web/package-lock.json
+      # La web importa los esquemas zod de server/src (alias @shared/schemas) y la suite e2e
+      # arranca el servidor real con tsx: hacen falta las dependencias del servidor.
+      - name: Dependencias del servidor
+        working-directory: enregla/server
+        run: npm ci
+      - name: Dependencias de la web
+        working-directory: enregla/web
+        run: npm ci
+      - working-directory: enregla/web
+        run: npm run lint
+      - working-directory: enregla/web
+        run: npm run typecheck
+      - working-directory: enregla/web
+        run: npm test
+      - working-directory: enregla/web
+        run: npm run build
+      - name: Instalar Chromium de Playwright (con dependencias del sistema)
+        working-directory: enregla/web
+        run: npx playwright install --with-deps chromium
+      - name: e2e (Playwright)
+        working-directory: enregla/web
+        run: npm run e2e
+      - name: Artefactos de fallos e2e
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-resultados
+          path: |
+            enregla/web/test-results
+            enregla/web/e2e/.runtime/server.log
+          retention-days: 7
+          if-no-files-found: ignore
