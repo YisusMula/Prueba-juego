@@ -184,7 +184,7 @@ export async function openCoolings(db: DB, org: Organization, now: Date) {
       startedAt: root.effective_at.toISOString(),
       deadline: deadline.toISOString(),
       minutesElapsed: Math.max(0, Math.floor((now.getTime() - root.effective_at.getTime()) / 60_000)),
-      overdue: now.getTime() > deadline.getTime(),
+      overdue: now.getTime() >= deadline.getTime(),
       targetTemp: refs.coolingTargetTemp,
       maxMinutes: refs.coolingMaxMinutes,
     });
@@ -436,7 +436,7 @@ export async function computeToday(db: DB, org: Organization, now = new Date()) 
       kind: 'enfriamiento_sin_cerrar',
       recordId: c.recordId,
       createdAt: c.startedAt,
-      message: `Enfriamiento de ${c.product} sin cerrar: han pasado más de ${c.maxMinutes} min`,
+      message: `Enfriamiento de ${c.product} sin cerrar: han pasado ${c.maxMinutes} min o más`,
     });
   }
 

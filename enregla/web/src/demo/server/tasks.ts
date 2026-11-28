@@ -176,7 +176,7 @@ export function computeToday(db: DemoState, org: DOrg, now = Date.now()): TodayT
     }
   }
   for (const c of coolings.filter((x) => x.overdue)) {
-    alerts.unshift({ kind: 'enfriamiento_sin_cerrar', recordId: c.recordId, createdAt: c.startedAt, message: `Enfriamiento de ${c.product} sin cerrar: han pasado más de ${c.maxMinutes} min` });
+    alerts.unshift({ kind: 'enfriamiento_sin_cerrar', recordId: c.recordId, createdAt: c.startedAt, message: `Enfriamiento de ${c.product} sin cerrar: han pasado ${c.maxMinutes} min o más` });
   }
   const counted = temperatures.filter((t) => t.countsToday);
   const countedCleaning = cleaning.filter((c) => c.countsToday && c.dueToday);
